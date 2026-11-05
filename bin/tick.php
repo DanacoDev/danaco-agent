@@ -14,6 +14,7 @@ if (!$db->tryLock('tick_lock', 900)) {
 
 try {
     app_services()['safety']->emptyOldTrash(30);
+    $db->purgeComplianceEvents();
     $heartbeat = new Heartbeat($db);
     $heartbeat->beat();
     foreach ($db->dueTasks() as $task) {

@@ -51,6 +51,13 @@ if (str_starts_with($uri, '/api/')) {
     $router->dispatch($method, $uri);
     exit;
 }
+if ($uri === '/legal/terms.php' || $uri === '/legal/aup.php') {
+    $legal = __DIR__ . $uri;
+    if (is_file($legal)) {
+        require $legal;
+        exit;
+    }
+}
 if ($uri !== '/' && $uri !== '/index.php') {
     http_response_code(404);
     header('Content-Type: text/plain; charset=utf-8');
@@ -166,6 +173,7 @@ header('X-Danaco: 1');
               <div class="view-head" style="padding:16px 18px 0">
                 <div class="chat-heading">
                   <h2>Chat<span v-if="currentProject" class="project-tag">{{ currentProject.name }}</span></h2>
+                  <p class="hint ai-assist-note">AI-assisted — outputs can be wrong; you remain responsible for decisions.</p>
                 </div>
                 <div class="chat-side">
                   <label class="chat-find">
@@ -223,11 +231,11 @@ header('X-Danaco: 1');
                 </article>
               </div>
               <div v-if="delegation" class="banner">{{ agentLabel(delegation.agent) }} is working on project: {{ delegation.project }}</div>
-              <div v-if="installPrompt" class="banner install-banner">
-                <span>Allow this install? {{ installPrompt.command }}</span>
+              <div v-if="actionPrompt" class="banner install-banner">
+                <span>{{ actionPrompt.summary || ('Allow this ' + (actionPrompt.kind || 'action') + '?') }}</span>
                 <span>
-                  <button class="btn btn-gold" type="button" @click="answerInstall(true)">Allow</button>
-                  <button class="btn" type="button" @click="answerInstall(false)">Don't allow</button>
+                  <button class="btn btn-gold" type="button" @click="answerAction(true)">Allow</button>
+                  <button class="btn" type="button" @click="answerAction(false)">Don't allow</button>
                 </span>
               </div>
               <p v-if="streamError" class="form-error" style="padding:0 18px">{{ errorText(streamError) }} <button v-if="!sending" class="retry-link" type="button" :disabled="chatLocked" @click="retryLast">Retry</button></p>
@@ -470,6 +478,20 @@ header('X-Danaco: 1');
 
           <section v-else-if="tab==='agents'" class="view">
             <div class="view-head"><h2>Agents</h2></div>
+            <div v-if="pendingActions.length" class="setup-box">
+              <h3>Pending approvals</h3>
+              <p class="hint">The agent is waiting for you before continuing.</p>
+              <article v-for="item in pendingActions" :key="item.id" class="log-row email-row">
+                <div>
+                  <strong>{{ item.kind }}</strong>
+                  <div class="hint">{{ item.summary }}</div>
+                </div>
+                <span>
+                  <button class="btn btn-gold" type="button" @click="answerPending(item, true)">Allow</button>
+                  <button class="btn" type="button" @click="answerPending(item, false)">Don't allow</button>
+                </span>
+              </article>
+            </div>
             <div v-if="projectId" class="setup-box">
               <h3>How this project should act</h3>
               <p class="hint">A role, a title, a mission, or how to present output. Not what the project is about.</p>
@@ -594,6 +616,83 @@ header('X-Danaco: 1');
             </div>
           </section>
 
+          <section v-else-if="tab==='compliance'" class="view">
+            <div class="view-head">
+              <h2>Compliance &amp; documentation</h2>
+              <button class="btn" type="button" @click="setTab('setup')">Back to Setup</button>
+            </div>
+            <div class="setup-box">
+              <h3>Roles</h3>
+              <p class="hint"><strong>Danaco</strong> supplies this self-hosted agent framework. <strong>You</strong> install, configure, and operate it. You choose purpose, data, models, and tools, and you are responsible for lawful use under the laws that apply to you.</p>
+              <p class="hint">{{ complianceIntendedPurpose }}</p>
+            </div>
+            <div class="setup-box">
+              <h3>Terms &amp; Acceptable Use</h3>
+              <p class="hint">Version {{ termsVersion }}. {{ settings.terms_accepted ? 'Accepted' + (settings.terms_accepted_at ? ' at ' + settings.terms_accepted_at + ' UTC' : '') + '.' : 'Not accepted yet.' }}</p>
+              <p class="hint"><a href="/legal/terms.php" target="_blank" rel="noopener">Terms of Use</a> · <a href="/legal/aup.php" target="_blank" rel="noopener">Acceptable Use</a></p>
+              <button v-if="!settings.terms_accepted" class="btn btn-gold" type="button" @click="acceptTerms">Accept Terms and AUP</button>
+            </div>
+            <div class="setup-box">
+              <h3>EU AI Act for this deployment</h3>
+              <label class="field">Does the EU AI Act apply?
+                <select v-model="complianceForm.ai_act_applies">
+                  <option value="">Not set</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                  <option value="unsure">Not sure</option>
+                </select>
+              </label>
+              <p class="hint">Yes if your organisation is in the EU/EEA, or if this system is put into service / affects people there in a way that brings the Act into scope. Danaco does not geo-detect or give legal advice.</p>
+              <label class="field">Responsible person<input v-model="complianceForm.responsible_person" maxlength="200" placeholder="Name or role"></label>
+              <label class="field">Notes on intended use<textarea v-model="complianceForm.intended_use" rows="3" maxlength="4000" placeholder="Optional notes for your organisation"></textarea></label>
+            </div>
+            <div class="setup-box">
+              <h3>Optional oversight tools</h3>
+              <p class="hint">Autonomy stays the default. Turn these on only if your organisation wants them.</p>
+              <label class="check-row"><input type="checkbox" v-model="complianceForm.compliance_logging"><span>Record high-impact actions in a compliance log</span></label>
+              <label class="check-row"><input type="checkbox" v-model="complianceForm.hitl_external_actions"><span>Ask before email, FTP, MCP, and risky shell commands</span></label>
+              <label class="field">Log retention (days)<input v-model.number="complianceForm.retention_days" type="number" min="7" max="3650"></label>
+              <button class="btn btn-gold" type="button" @click="saveCompliance">Save compliance settings</button>
+              <p :class="complianceError ? 'form-error' : 'form-ok'">{{ complianceMessage }}</p>
+            </div>
+            <div class="setup-box">
+              <h3>System card</h3>
+              <p class="hint">Export Instructions for Use from the live configuration. Useful for your records; it does not change how the agent runs.</p>
+              <div class="backup-actions">
+                <button class="btn btn-gold" type="button" @click="downloadSystemCard">Download system card</button>
+                <button class="btn" type="button" @click="copyDisclosure">Copy disclosure snippet</button>
+              </div>
+              <p v-if="disclosureCopied" class="form-ok">Copied.</p>
+              <label class="field">Disclosure snippet<textarea :value="complianceDisclosure" rows="3" readonly></textarea></label>
+            </div>
+            <div class="setup-box">
+              <h3>AI literacy (short)</h3>
+              <ul class="hint-list">
+                <li>This is a language-model framework. It can be wrong, incomplete, or confident about false details.</li>
+                <li>You enable tools (email, FTP, MCP, shell). The agent can use them with the autonomy you allow.</li>
+                <li>Cloud models and search send data off this machine under those providers’ terms.</li>
+                <li>Do not use this software for prohibited AI practices or Annex III high-risk uses unless you independently ensure legal conformity.</li>
+                <li>Optional logs and approval gates help oversight; they do not certify compliance.</li>
+              </ul>
+            </div>
+            <div class="setup-box">
+              <div class="view-head">
+                <h3>Compliance log</h3>
+                <span>
+                  <a class="btn" :href="'/api/compliance/events/export?format=csv'">CSV</a>
+                  <a class="btn" :href="'/api/compliance/events/export?format=json'">JSON</a>
+                </span>
+              </div>
+              <article v-for="event in complianceEvents" :key="event.id" class="log-row log-item">
+                <div>
+                  <span class="type">{{ event.event_type }} · {{ event.created_at }} · {{ event.actor }}</span>
+                  <div class="hint">{{ event.summary }}</div>
+                </div>
+              </article>
+              <p v-if="!complianceEvents.length" class="empty">No compliance events yet.</p>
+            </div>
+          </section>
+
           <section v-else class="view">
             <div v-if="updateInfo && updateInfo.available" class="update-note">
               <h3>New update available</h3>
@@ -634,10 +733,30 @@ header('X-Danaco: 1');
                 </div>
               </div>
             </div>
+            <div v-if="settings.show_compliance_box" class="setup-box">
+              <h3>Compliance &amp; documentation</h3>
+              <p class="hint">Optional tools and records for organisations where the EU AI Act (or similar rules) may apply. They do not slow the agent unless you turn on extra approvals.</p>
+              <p class="hint" v-if="settings.ai_act_applies === 'unsure'">If you are unsure, open the compliance page for a short overview, or pick No under jurisdiction if you are outside these rules.</p>
+              <p class="hint">Terms {{ settings.terms_accepted ? 'accepted' : 'not accepted' }} · Logging {{ settings.compliance_logging === '1' ? 'on' : 'off' }} · Extra approvals {{ settings.hitl_external_actions === '1' ? 'on' : 'off' }}</p>
+              <button class="btn btn-gold" type="button" @click="openCompliance">Open compliance →</button>
+            </div>
+            <p v-else class="hint setup-compliance-link"><button class="retry-link" type="button" @click="openCompliance">Compliance &amp; documentation</button></p>
             <form id="setup-form" class="setup-stack" @submit.prevent="saveSetup">
               <div class="setup-box">
                 <h3>Agent</h3>
                 <label class="field">Agent name<input v-model="settings.agent_name" maxlength="40" required></label>
+              </div>
+              <div class="setup-box">
+                <h3>Jurisdiction</h3>
+                <label class="field">Does the EU AI Act apply to this deployment?
+                  <select v-model="settings.ai_act_applies">
+                    <option value="">Not set</option>
+                    <option value="yes">Yes</option>
+                    <option value="no">No</option>
+                    <option value="unsure">Not sure</option>
+                  </select>
+                </label>
+                <p class="hint">Yes if the organisation is in the EU/EEA, or if the system is put into service / affects people there in a way that brings the Act into scope. You decide; Danaco does not geo-detect.</p>
               </div>
               <div class="setup-box">
                 <h3>Appearance</h3>
@@ -939,6 +1058,16 @@ header('X-Danaco: 1');
       <label class="field">Purpose<textarea v-model="projectForm.purpose" rows="4" placeholder="Explain what the mission or goals are for this project"></textarea></label>
       <p class="form-error">{{ projectError }}</p>
       <button class="btn btn-gold" type="submit">Create project</button>
+    </form>
+  </div>
+
+  <div v-if="authed && termsNeeded" class="modal-back">
+    <form class="modal" @submit.prevent="acceptTerms">
+      <h2>Terms &amp; Acceptable Use</h2>
+      <p class="hint">Danaco Agent is a self-hosted framework. You operate this deployment and remain responsible for lawful use. The software is provided as is, without warranty.</p>
+      <p class="hint">Read the <a href="/legal/terms.php" target="_blank" rel="noopener">Terms of Use</a> and <a href="/legal/aup.php" target="_blank" rel="noopener">Acceptable Use Policy</a> (version {{ termsVersion }}).</p>
+      <p class="hint">High-risk Annex III uses and prohibited AI practices are out of intended purpose unless you independently ensure legal conformity.</p>
+      <button class="btn btn-gold" type="submit">I accept</button>
     </form>
   </div>
 

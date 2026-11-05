@@ -37,7 +37,7 @@ class SubagentRunner
             return $shouldStop && $shouldStop();
         };
         try {
-            return $this->finishSubagent($this->runtime->run($agent, $messages, $this->tools($agent, $projectFolder, $projectId), $emit, $this->runtime->maxTurns(), $projectId, $watch));
+            return $this->finishSubagent($this->runtime->run($agent, $messages, $this->tools($agent, $projectFolder, $projectId, $emit, $watch), $emit, $this->runtime->maxTurns(), $projectId, $watch));
         } finally {
             $this->db->unlock('subagent_lock');
         }
@@ -60,21 +60,21 @@ class SubagentRunner
             return 'The Consultant is already working. Wait, then ask again.';
         }
         $this->capabilities->blockedInstalls = [];
+        $watch = function () use ($shouldStop): bool {
+            $this->db->setSetting('consultant_lock', (string)time());
+            return $shouldStop && $shouldStop();
+        };
         $tools = [];
         $prompt = Prompts::CONSULTANT;
         if ($projectFolder !== '') {
             $prompt = $this->systemPrompt('consultant', $projectFolder, $projectId);
-            $tools = $this->tools('consultant', $projectFolder, $projectId);
+            $tools = $this->tools('consultant', $projectFolder, $projectId, $emit, $watch);
         }
         $user = $projectFolder !== '' ? "project: {$projectFolder}\n\n{$instruction}" : $instruction;
         $messages = [
             ['role' => 'system', 'content' => $prompt],
             ['role' => 'user', 'content' => $user],
         ];
-        $watch = function () use ($shouldStop): bool {
-            $this->db->setSetting('consultant_lock', (string)time());
-            return $shouldStop && $shouldStop();
-        };
         try {
             return $this->finishSubagent($this->runtime->run('consultant', $messages, $tools, $emit, $this->runtime->maxTurns(), $projectId > 0 ? $projectId : null, $watch, true));
         } finally {
@@ -169,7 +169,50 @@ TXT;
         return $tail;
     }
 
-    private function tools(string $agent, string $projectFolder, int $projectId): array
+    private function confirmAction(string $kind, string $summary, callable $emit, ?callable $shouldStop, ?int $projectId = null): bool
+    {
+        if (PHP_SAPI === 'cli') {
+            return false;
+        }
+        $id = $this->db->beginActionAsk($kind, $summary, $projectId);
+        $emit(['type' => 'action_prompt', 'id' => $id, 'kind' => $kind, 'summary' => $summary]);
+        $deadline = time() + 180;
+        try {
+            while (time() < $deadline) {
+                if ($shouldStop && $shouldStop()) {
+                    return false;
+                }
+                $answer = (string)$this->db->getSetting('action_ask_' . $id, '');
+                if ($answer === 'yes') {
+                    return true;
+                }
+                if ($answer === 'no') {
+                    return false;
+                }
+                usleep(300000);
+            }
+            return false;
+        } finally {
+            $this->db->clearActionAsk($id);
+        }
+    }
+
+    private function gateExternal(string $kind, string $summary, callable $run, callable $emit, ?callable $shouldStop, int $projectId): string
+    {
+        if ($this->db->hitlExternalActions()) {
+            if (PHP_SAPI === 'cli') {
+                return 'This action needs human approval, but a scheduled run cannot ask. Turn off extra approval gates, or run it from chat.';
+            }
+            if (!$this->confirmAction($kind, $summary, $emit, $shouldStop, $projectId > 0 ? $projectId : null)) {
+                return 'The user did not allow this action.';
+            }
+        }
+        $result = $run();
+        $this->db->logCompliance('tool_' . $kind, 'agent', $summary, ['result' => clip_text($result, 500)], $projectId > 0 ? $projectId : null);
+        return $result;
+    }
+
+    private function tools(string $agent, string $projectFolder, int $projectId, callable $emit, ?callable $shouldStop = null): array
     {
         $tools = [
             'read_file' => function (array $args) use ($projectFolder): string {
@@ -253,6 +296,31 @@ TXT;
             };
         }
         foreach ($this->capabilities->handlers($projectFolder, $projectId) as $name => $handler) {
+            if ($name === 'send_email') {
+                $tools[$name] = function (array $args) use ($handler, $emit, $shouldStop, $projectId): string {
+                    $to = trim((string)($args['to'] ?? ''));
+                    $subject = trim((string)($args['subject'] ?? ''));
+                    $summary = 'Send email to ' . ($to !== '' ? $to : '(unknown)') . ($subject !== '' ? ' — ' . $subject : '');
+                    return $this->gateExternal('email', $summary, fn(): string => $handler($args), $emit, $shouldStop, $projectId);
+                };
+                continue;
+            }
+            if ($name === 'ftp') {
+                $tools[$name] = function (array $args) use ($handler, $emit, $shouldStop, $projectId): string {
+                    $action = strtolower(trim((string)($args['action'] ?? '')));
+                    return $this->gateExternal('ftp', 'FTP ' . ($action !== '' ? $action : 'action'), fn(): string => $handler($args), $emit, $shouldStop, $projectId);
+                };
+                continue;
+            }
+            if ($name === 'mcp') {
+                $tools[$name] = function (array $args) use ($handler, $emit, $shouldStop, $projectId): string {
+                    $server = trim((string)($args['server'] ?? ''));
+                    $tool = trim((string)($args['tool'] ?? ''));
+                    $summary = 'MCP' . ($server !== '' ? ' ' . $server : '') . ($tool !== '' ? ' / ' . $tool : '');
+                    return $this->gateExternal('mcp', $summary, fn(): string => $handler($args), $emit, $shouldStop, $projectId);
+                };
+                continue;
+            }
             $tools[$name] = $handler;
         }
         foreach ($this->skills->activeHandlers($projectFolder) as $name => $handler) {

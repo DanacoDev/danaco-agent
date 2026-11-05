@@ -435,6 +435,10 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 }
 .setup-stack .setup-box { margin-top: 0; }
 .setup-box h3 { margin: 0 0 4px; font-size: 1rem; }
+.ai-assist-note { margin: 4px 0 0; font-size: 0.85rem; }
+.setup-compliance-link { margin: 0 0 12px; }
+.hint-list { margin: 8px 0 0; padding-left: 1.2rem; color: var(--muted); }
+.hint-list li { margin: 0 0 6px; }
 .health-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .health-head h3 { margin: 0; }
 .health-bars { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }

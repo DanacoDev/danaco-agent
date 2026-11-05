@@ -22,8 +22,5 @@ data/.danaco.service
 data/.github-credentials
 data/.github-credentials.tmp
 
-# Installer is sold separately and must not ship in the GitHub repo.
-install.sh
-
 # Public website files are deployed separately and should not be committed.
 public_html/

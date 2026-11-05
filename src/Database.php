@@ -180,6 +180,20 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 SQL);
+        $this->pdo->exec(<<<'SQL'
+CREATE TABLE IF NOT EXISTS compliance_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    project_id INTEGER NULL,
+    actor TEXT NOT NULL DEFAULT 'system',
+    event_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    detail_json TEXT,
+    related_job_id INTEGER NULL
+);
+CREATE INDEX IF NOT EXISTS idx_compliance_events_created ON compliance_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_compliance_events_type ON compliance_events(event_type, id);
+SQL);
     }
 
     private function seedDefaults(array $config): void
@@ -205,6 +219,15 @@ SQL);
             'api_keys' => '1',
             'extra_api_key_name' => '',
             'extra_api_key_value' => '',
+            'ai_act_applies' => '',
+            'compliance_logging' => '0',
+            'hitl_external_actions' => '0',
+            'compliance_retention_days' => '90',
+            'compliance_responsible_person' => '',
+            'compliance_intended_use' => '',
+            'terms_accepted_version' => '',
+            'terms_accepted_at' => '',
+            'system_card_exported_at' => '',
             'agent_status' => json_encode(self::idleStatus()),
         ];
         $stmt = $this->pdo->prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
@@ -800,15 +823,147 @@ SQL);
 
     public function answerInstall(string $id, bool $allow): bool
     {
+        return $this->answerAction($id, $allow);
+    }
+
+    public function hitlExternalActions(): bool
+    {
+        return $this->getSetting('hitl_external_actions', '0') === '1';
+    }
+
+    public function complianceLogging(): bool
+    {
+        return $this->getSetting('compliance_logging', '0') === '1';
+    }
+
+    public function beginActionAsk(string $kind, string $summary, ?int $projectId = null): string
+    {
+        $id = bin2hex(random_bytes(8));
+        $this->setSetting('action_ask_' . $id, '');
+        $meta = json_encode([
+            'kind' => $kind,
+            'summary' => $summary,
+            'project_id' => $projectId,
+            'created_at' => gmdate('Y-m-d H:i:s'),
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $this->setSetting('action_meta_' . $id, $meta === false ? '{}' : $meta);
+        return $id;
+    }
+
+    public function answerAction(string $id, bool $allow): bool
+    {
         if (!preg_match('/^[a-f0-9]{16}$/', $id)) {
             return false;
         }
-        $key = 'install_ask_' . $id;
-        if ($this->getSetting($key, null) === null) {
+        $key = 'action_ask_' . $id;
+        $legacy = 'install_ask_' . $id;
+        if ($this->getSetting($key, null) === null && $this->getSetting($legacy, null) === null) {
             return false;
         }
-        $this->setSetting($key, $allow ? 'yes' : 'no');
+        if ($this->getSetting($key, null) !== null) {
+            $this->setSetting($key, $allow ? 'yes' : 'no');
+        }
+        if ($this->getSetting($legacy, null) !== null) {
+            $this->setSetting($legacy, $allow ? 'yes' : 'no');
+        }
+        $metaRaw = (string)$this->getSetting('action_meta_' . $id, '');
+        $meta = $metaRaw !== '' ? json_decode($metaRaw, true) : null;
+        $summary = is_array($meta) ? (string)($meta['summary'] ?? 'Action') : 'Action';
+        $kind = is_array($meta) ? (string)($meta['kind'] ?? 'action') : 'action';
+        $projectId = is_array($meta) && isset($meta['project_id']) ? (int)$meta['project_id'] : null;
+        $this->logCompliance(
+            $allow ? 'action_allowed' : 'action_denied',
+            'user',
+            ($allow ? 'Allowed' : 'Denied') . ': ' . $summary,
+            ['kind' => $kind, 'id' => $id],
+            $projectId && $projectId > 0 ? $projectId : null
+        );
         return true;
+    }
+
+    public function pendingActions(): array
+    {
+        $out = [];
+        foreach ($this->allSettings() as $key => $value) {
+            if (!str_starts_with($key, 'action_ask_') || $value !== '') {
+                continue;
+            }
+            $id = substr($key, strlen('action_ask_'));
+            if (!preg_match('/^[a-f0-9]{16}$/', $id)) {
+                continue;
+            }
+            $metaRaw = (string)$this->getSetting('action_meta_' . $id, '');
+            $meta = $metaRaw !== '' ? json_decode($metaRaw, true) : [];
+            if (!is_array($meta)) {
+                $meta = [];
+            }
+            $out[] = [
+                'id' => $id,
+                'kind' => (string)($meta['kind'] ?? 'action'),
+                'summary' => (string)($meta['summary'] ?? 'Pending action'),
+                'project_id' => isset($meta['project_id']) ? (int)$meta['project_id'] : null,
+                'created_at' => (string)($meta['created_at'] ?? ''),
+            ];
+        }
+        usort($out, static fn(array $a, array $b): int => strcmp((string)$b['created_at'], (string)$a['created_at']));
+        return $out;
+    }
+
+    public function clearActionAsk(string $id): void
+    {
+        $this->pdo->prepare('DELETE FROM settings WHERE key IN (?, ?, ?)')->execute([
+            'action_ask_' . $id,
+            'action_meta_' . $id,
+            'install_ask_' . $id,
+        ]);
+    }
+
+    public function logCompliance(string $eventType, string $actor, string $summary, ?array $detail = null, ?int $projectId = null, ?int $jobId = null): void
+    {
+        $always = in_array($eventType, ['terms_accepted', 'action_allowed', 'action_denied'], true);
+        if (!$always && !$this->complianceLogging()) {
+            return;
+        }
+        $json = $detail === null ? null : json_encode($detail, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $stmt = $this->pdo->prepare('INSERT INTO compliance_events (project_id, actor, event_type, summary, detail_json, related_job_id) VALUES (?, ?, ?, ?, ?, ?)');
+        $stmt->execute([
+            $projectId && $projectId > 0 ? $projectId : null,
+            $actor !== '' ? $actor : 'system',
+            $eventType,
+            clip_text($summary, 2000),
+            $json === false ? null : $json,
+            $jobId,
+        ]);
+    }
+
+    public function complianceEvents(int $limit = 100, int $afterId = 0): array
+    {
+        $limit = max(1, min(500, $limit));
+        if ($afterId > 0) {
+            $stmt = $this->pdo->prepare('SELECT * FROM compliance_events WHERE id > ? ORDER BY id DESC LIMIT ?');
+            $stmt->bindValue(1, $afterId, PDO::PARAM_INT);
+            $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+            $stmt->execute();
+        } else {
+            $stmt = $this->pdo->prepare('SELECT * FROM compliance_events ORDER BY id DESC LIMIT ?');
+            $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+            $stmt->execute();
+        }
+        return $stmt->fetchAll();
+    }
+
+    public function exportComplianceEvents(): array
+    {
+        return $this->pdo->query('SELECT id, created_at, project_id, actor, event_type, summary, detail_json, related_job_id FROM compliance_events ORDER BY id ASC')->fetchAll();
+    }
+
+    public function purgeComplianceEvents(?int $retentionDays = null): int
+    {
+        $days = $retentionDays ?? (int)$this->getSetting('compliance_retention_days', '90');
+        $days = max(1, min(3650, $days));
+        $stmt = $this->pdo->prepare("DELETE FROM compliance_events WHERE created_at < datetime('now', ?)");
+        $stmt->execute(['-' . $days . ' days']);
+        return $stmt->rowCount();
     }
 
     public function emailAccounts(?int $projectId = null, bool $withSecret = false): array

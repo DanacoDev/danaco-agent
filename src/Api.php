@@ -30,6 +30,14 @@ class Api
         $router->add('POST', '#^/api/chat$#', $this->guard(fn() => $this->chat()));
         $router->add('POST', '#^/api/chat/stop$#', $this->guard(fn() => $this->stopChat()));
         $router->add('POST', '#^/api/install/answer$#', $this->guard(fn() => $this->answerInstall()));
+        $router->add('POST', '#^/api/actions/answer$#', $this->guard(fn() => $this->answerAction()));
+        $router->add('GET', '#^/api/actions/pending$#', $this->guard(fn() => $this->pendingActions()));
+        $router->add('GET', '#^/api/compliance$#', $this->guard(fn() => $this->complianceStatus()));
+        $router->add('POST', '#^/api/compliance$#', $this->guard(fn() => $this->saveCompliance()));
+        $router->add('POST', '#^/api/compliance/terms$#', $this->guard(fn() => $this->acceptTerms()));
+        $router->add('GET', '#^/api/compliance/system-card$#', $this->guard(fn() => $this->systemCard()));
+        $router->add('GET', '#^/api/compliance/events$#', $this->guard(fn() => $this->complianceEvents()));
+        $router->add('GET', '#^/api/compliance/events/export$#', $this->guard(fn() => $this->exportComplianceEvents()));
         $router->add('GET', '#^/api/workspace/tree$#', $this->guard(fn() => $this->tree()));
         $router->add('GET', '#^/api/workspace/file$#', $this->guard(fn() => $this->file()));
         $router->add('GET', '#^/api/workspace/structured$#', $this->guard(fn() => $this->structuredFile()));
@@ -141,9 +149,12 @@ class Api
 
     private function session(): void
     {
+        $docs = new ComplianceDocs($this->db);
         $this->json([
             'authed' => !empty($_SESSION['authed']),
             'password_set' => (string)$this->db->getSetting('password_hash', '') !== '',
+            'terms_accepted' => $docs->termsAccepted(),
+            'terms_version' => ComplianceDocs::TERMS_VERSION,
         ]);
     }
 
@@ -556,13 +567,159 @@ class Api
 
     private function answerInstall(): void
     {
+        $this->answerAction();
+    }
+
+    private function answerAction(): void
+    {
         $body = $this->input();
         $id = (string)($body['id'] ?? '');
-        if (!$this->db->answerInstall($id, !empty($body['allow']))) {
-            $this->json(['error' => 'Unknown install prompt.'], 422);
+        if (!$this->db->answerAction($id, !empty($body['allow']))) {
+            $this->json(['error' => 'Unknown action prompt.'], 422);
             return;
         }
         $this->json(['ok' => true]);
+    }
+
+    private function pendingActions(): void
+    {
+        $this->json([
+            'pending' => $this->db->pendingActions(),
+            'hitl' => $this->db->hitlExternalActions(),
+        ]);
+    }
+
+    private function complianceStatus(): void
+    {
+        $docs = new ComplianceDocs($this->db);
+        $this->json([
+            'status' => $docs->status(),
+            'intended_purpose' => ComplianceDocs::INTENDED_PURPOSE,
+            'disclosure' => $docs->disclosureSnippet(),
+            'events' => $this->db->complianceEvents(50),
+        ]);
+    }
+
+    private function saveCompliance(): void
+    {
+        $body = $this->input();
+        if (array_key_exists('ai_act_applies', $body)) {
+            $value = (string)$body['ai_act_applies'];
+            if (!in_array($value, ['', 'yes', 'no', 'unsure'], true)) {
+                $this->json(['error' => 'Choose yes, no, or not sure.'], 422);
+                return;
+            }
+            $this->db->setSetting('ai_act_applies', $value);
+        }
+        if (array_key_exists('compliance_logging', $body)) {
+            $this->db->setSetting('compliance_logging', !empty($body['compliance_logging']) ? '1' : '0');
+        }
+        if (array_key_exists('hitl_external_actions', $body)) {
+            $this->db->setSetting('hitl_external_actions', !empty($body['hitl_external_actions']) ? '1' : '0');
+        }
+        if (array_key_exists('compliance_retention_days', $body)) {
+            $days = (int)$body['compliance_retention_days'];
+            $this->db->setSetting('compliance_retention_days', (string)max(7, min(3650, $days)));
+        }
+        if (array_key_exists('compliance_responsible_person', $body)) {
+            $person = trim((string)$body['compliance_responsible_person']);
+            if (strlen($person) > 200 || preg_match('/[\r\n]/', $person)) {
+                $this->json(['error' => 'Responsible person must be a single line up to 200 characters.'], 422);
+                return;
+            }
+            $this->db->setSetting('compliance_responsible_person', $person);
+        }
+        if (array_key_exists('compliance_intended_use', $body)) {
+            $notes = trim((string)$body['compliance_intended_use']);
+            if (strlen($notes) > 4000) {
+                $this->json(['error' => 'Intended-use notes are too long.'], 422);
+                return;
+            }
+            $this->db->setSetting('compliance_intended_use', $notes);
+        }
+        $this->db->logCompliance('setup_change', 'user', 'Compliance settings updated.', [
+            'ai_act_applies' => (string)$this->db->getSetting('ai_act_applies', ''),
+            'compliance_logging' => (string)$this->db->getSetting('compliance_logging', '0'),
+            'hitl_external_actions' => (string)$this->db->getSetting('hitl_external_actions', '0'),
+        ]);
+        $docs = new ComplianceDocs($this->db);
+        $this->json([
+            'status' => $docs->status(),
+            'settings' => $this->publicSettings(),
+            'disclosure' => $docs->disclosureSnippet(),
+        ]);
+    }
+
+    private function acceptTerms(): void
+    {
+        $docs = new ComplianceDocs($this->db);
+        $docs->acceptTerms();
+        $this->json([
+            'ok' => true,
+            'status' => $docs->status(),
+            'settings' => $this->publicSettings(),
+        ]);
+    }
+
+    private function systemCard(): void
+    {
+        $docs = new ComplianceDocs($this->db);
+        $markdown = $docs->systemCardMarkdown();
+        $this->db->setSetting('system_card_exported_at', gmdate('Y-m-d H:i:s'));
+        $this->db->logCompliance('system_card_export', 'user', 'System card exported.');
+        $download = !empty($_GET['download']);
+        if ($download) {
+            header('Content-Type: text/markdown; charset=utf-8');
+            header('Content-Disposition: attachment; filename="danaco-system-card.md"');
+            header('Cache-Control: no-store');
+            echo $markdown;
+            return;
+        }
+        $this->json([
+            'markdown' => $markdown,
+            'status' => $docs->status(),
+        ]);
+    }
+
+    private function complianceEvents(): void
+    {
+        $limit = (int)($_GET['limit'] ?? 100);
+        $this->json(['events' => $this->db->complianceEvents($limit)]);
+    }
+
+    private function exportComplianceEvents(): void
+    {
+        $rows = $this->db->exportComplianceEvents();
+        $format = strtolower((string)($_GET['format'] ?? 'json'));
+        if ($format === 'csv') {
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="danaco-compliance-events.csv"');
+            header('Cache-Control: no-store');
+            $out = fopen('php://output', 'w');
+            if ($out === false) {
+                $this->json(['error' => 'Could not write export.'], 500);
+                return;
+            }
+            fputcsv($out, ['id', 'created_at', 'project_id', 'actor', 'event_type', 'summary', 'detail_json', 'related_job_id']);
+            foreach ($rows as $row) {
+                fputcsv($out, [
+                    $row['id'] ?? '',
+                    $row['created_at'] ?? '',
+                    $row['project_id'] ?? '',
+                    $row['actor'] ?? '',
+                    $row['event_type'] ?? '',
+                    $row['summary'] ?? '',
+                    $row['detail_json'] ?? '',
+                    $row['related_job_id'] ?? '',
+                ]);
+            }
+            fclose($out);
+            return;
+        }
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="danaco-compliance-events.json"');
+        header('Cache-Control: no-store');
+        echo json_encode(['events' => $rows], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 
     private function downloadContext(): void
@@ -1602,6 +1759,14 @@ class Api
             }
             $this->db->setSetting('chat_font_size', (string)$size);
         }
+        if (array_key_exists('ai_act_applies', $body)) {
+            $value = (string)$body['ai_act_applies'];
+            if (!in_array($value, ['', 'yes', 'no', 'unsure'], true)) {
+                $this->json(['error' => 'Choose yes, no, or not sure for EU AI Act applicability.'], 422);
+                return;
+            }
+            $this->db->setSetting('ai_act_applies', $value);
+        }
         $this->json(['settings' => $this->publicSettings(), 'hardware' => app_services()['hardware']->snapshot()]);
     }
 
@@ -2214,7 +2379,7 @@ class Api
         $settings['full_system_control'] = ($settings['full_system_control'] ?? '0') === '1' ? '1' : '0';
         $settings['search_provider'] = ($settings['search_provider'] ?? '') === 'bing' ? 'bing' : 'duckduckgo';
         foreach (array_keys($settings) as $key) {
-            if (str_starts_with($key, 'chat_stop_') || str_starts_with($key, 'chat_gen_') || str_starts_with($key, 'context_packed_') || str_starts_with($key, 'context_summary_') || str_starts_with($key, 'context_compress_') || str_starts_with($key, 'recovery_') || str_starts_with($key, 'install_ask_') || $key === 'subagent_lock') {
+            if (str_starts_with($key, 'chat_stop_') || str_starts_with($key, 'chat_gen_') || str_starts_with($key, 'context_packed_') || str_starts_with($key, 'context_summary_') || str_starts_with($key, 'context_compress_') || str_starts_with($key, 'recovery_') || str_starts_with($key, 'install_ask_') || str_starts_with($key, 'action_ask_') || str_starts_with($key, 'action_meta_') || $key === 'subagent_lock') {
                 unset($settings[$key]);
             }
         }
@@ -2222,6 +2387,12 @@ class Api
         $settings['cloud_api_key'] = $this->mask($cloud);
         $settings['extra_api_key_set'] = $extra !== '';
         $settings['extra_api_key_value'] = $this->mask($extra);
+        $settings['compliance_logging'] = ($settings['compliance_logging'] ?? '0') === '1' ? '1' : '0';
+        $settings['hitl_external_actions'] = ($settings['hitl_external_actions'] ?? '0') === '1' ? '1' : '0';
+        $applies = (string)($settings['ai_act_applies'] ?? '');
+        $settings['ai_act_applies'] = in_array($applies, ['yes', 'no', 'unsure'], true) ? $applies : '';
+        $settings['terms_accepted'] = (string)($settings['terms_accepted_version'] ?? '') === ComplianceDocs::TERMS_VERSION;
+        $settings['show_compliance_box'] = $settings['ai_act_applies'] === 'yes' || $settings['ai_act_applies'] === 'unsure';
         return $settings;
     }
 

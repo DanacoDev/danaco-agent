@@ -557,26 +557,56 @@ TXT;
         return '[' . app_local_stamp((string)($row['created_at'] ?? '')) . "]\n" . $content;
     }
 
-    private function confirmInstall(string $command, callable $emit, ?callable $shouldStop): bool
+    private function confirmInstall(string $command, callable $emit, ?callable $shouldStop, ?int $projectId = null): bool
     {
-        $id = bin2hex(random_bytes(8));
-        $this->db->setSetting('install_ask_' . $id, '');
-        $emit(['type' => 'install_prompt', 'id' => $id, 'command' => $command]);
-        $deadline = time() + 180;
-        while (time() < $deadline) {
-            if ($shouldStop && $shouldStop()) {
-                return false;
-            }
-            $answer = (string)$this->db->getSetting('install_ask_' . $id, '');
-            if ($answer === 'yes') {
-                return true;
-            }
-            if ($answer === 'no') {
-                return false;
-            }
-            usleep(300000);
+        return $this->confirmAction('install', 'Install: ' . $command, $emit, $shouldStop, $projectId, ['command' => $command]);
+    }
+
+    private function confirmAction(string $kind, string $summary, callable $emit, ?callable $shouldStop, ?int $projectId = null, array $extra = []): bool
+    {
+        if (PHP_SAPI === 'cli') {
+            return false;
         }
-        return false;
+        $id = $this->db->beginActionAsk($kind, $summary, $projectId);
+        $payload = array_merge(['type' => 'action_prompt', 'id' => $id, 'kind' => $kind, 'summary' => $summary], $extra);
+        if ($kind === 'install' && isset($extra['command'])) {
+            $payload['command'] = $extra['command'];
+        }
+        $emit($payload);
+        $deadline = time() + 180;
+        try {
+            while (time() < $deadline) {
+                if ($shouldStop && $shouldStop()) {
+                    return false;
+                }
+                $answer = (string)$this->db->getSetting('action_ask_' . $id, '');
+                if ($answer === 'yes') {
+                    return true;
+                }
+                if ($answer === 'no') {
+                    return false;
+                }
+                usleep(300000);
+            }
+            return false;
+        } finally {
+            $this->db->clearActionAsk($id);
+        }
+    }
+
+    private function gateExternal(string $kind, string $summary, callable $run, callable $emit, ?callable $shouldStop, ?int $projectId = null): string
+    {
+        if ($this->db->hitlExternalActions()) {
+            if (PHP_SAPI === 'cli') {
+                return 'This action needs human approval, but a scheduled run cannot ask. Turn off extra approval gates, or run it from chat.';
+            }
+            if (!$this->confirmAction($kind, $summary, $emit, $shouldStop, $projectId)) {
+                return 'The user did not allow this action.';
+            }
+        }
+        $result = $run();
+        $this->db->logCompliance('tool_' . $kind, 'agent', $summary, ['result' => clip_text($result, 500)], $projectId);
+        return $result;
     }
 
     private function tools(?array $project, callable $emit, int $projectId, ?callable $shouldStop): array
@@ -732,22 +762,36 @@ TXT;
                 $moved = (new SafetyInterceptor(app_config()['data_dir']))->moveFile($folder, $from, (string)($args['to'] ?? ''));
                 return 'Moved ' . $moved['from'] . ' to ' . $moved['to'] . '.';
             },
-            'run_command' => function (array $args) use ($folder, $emit, $shouldStop): string {
+            'run_command' => function (array $args) use ($folder, $emit, $shouldStop, $projectId): string {
                 $command = trim((string)($args['command'] ?? ''));
                 $tools = new CapabilityTools($this->db);
                 if ($tools->isInstallCommand($command)) {
                     if (PHP_SAPI === 'cli') {
                         return 'Install stopped. A scheduled run cannot ask the user. Do not install it.';
                     }
-                    if (!$this->confirmInstall($command, $emit, $shouldStop)) {
+                    if (!$this->confirmInstall($command, $emit, $shouldStop, $projectId > 0 ? $projectId : null)) {
                         return 'The user did not allow this install. Do not install it.';
                     }
-                    return $tools->handlers($folder, 0, true)['run_command']($args);
+                    $result = $tools->handlers($folder, 0, true)['run_command']($args);
+                    $this->db->logCompliance('tool_install', 'agent', 'Install: ' . $command, null, $projectId > 0 ? $projectId : null);
+                    return $result;
                 }
                 if (!$this->db->fullSystemControl()) {
                     return 'Full system control is off.';
                 }
-                return $tools->handlers($folder)['run_command']($args);
+                if ($this->db->hitlExternalActions()) {
+                    return $this->gateExternal(
+                        'shell',
+                        'Shell: ' . clip_text($command, 200),
+                        fn(): string => $tools->handlers($folder)['run_command']($args),
+                        $emit,
+                        $shouldStop,
+                        $projectId > 0 ? $projectId : null
+                    );
+                }
+                $result = $tools->handlers($folder)['run_command']($args);
+                $this->db->logCompliance('tool_shell', 'agent', 'Shell: ' . clip_text($command, 200), null, $projectId > 0 ? $projectId : null);
+                return $result;
             },
             'create_project' => function (array $args): string {
                 $created = Projects::create(
@@ -829,14 +873,43 @@ TXT;
                 }
                 return 'Saved skill ' . $skill['name'] . ' to data/skills/' . $skill['script_path'] . '. Syntax check passed.';
             },
-            'send_email' => function (array $args) use ($projectId): string {
-                return (new CapabilityTools($this->db))->sendForProject($projectId, $args);
+            'send_email' => function (array $args) use ($projectId, $emit, $shouldStop): string {
+                $to = trim((string)($args['to'] ?? ''));
+                $subject = trim((string)($args['subject'] ?? ''));
+                $summary = 'Send email to ' . ($to !== '' ? $to : '(unknown)') . ($subject !== '' ? ' — ' . $subject : '');
+                return $this->gateExternal(
+                    'email',
+                    $summary,
+                    fn(): string => (new CapabilityTools($this->db))->sendForProject($projectId, $args),
+                    $emit,
+                    $shouldStop,
+                    $projectId > 0 ? $projectId : null
+                );
             },
-            'ftp' => function (array $args) use ($projectId, $folder): string {
-                return (new CapabilityTools($this->db))->ftpForProject($projectId, $folder, $args);
+            'ftp' => function (array $args) use ($projectId, $folder, $emit, $shouldStop): string {
+                $action = strtolower(trim((string)($args['action'] ?? '')));
+                $summary = 'FTP ' . ($action !== '' ? $action : 'action');
+                return $this->gateExternal(
+                    'ftp',
+                    $summary,
+                    fn(): string => (new CapabilityTools($this->db))->ftpForProject($projectId, $folder, $args),
+                    $emit,
+                    $shouldStop,
+                    $projectId > 0 ? $projectId : null
+                );
             },
-            'mcp' => function (array $args): string {
-                return (new CapabilityTools($this->db))->mcp($args);
+            'mcp' => function (array $args) use ($projectId, $emit, $shouldStop): string {
+                $server = trim((string)($args['server'] ?? ''));
+                $tool = trim((string)($args['tool'] ?? ''));
+                $summary = 'MCP' . ($server !== '' ? ' ' . $server : '') . ($tool !== '' ? ' / ' . $tool : '');
+                return $this->gateExternal(
+                    'mcp',
+                    $summary,
+                    fn(): string => (new CapabilityTools($this->db))->mcp($args),
+                    $emit,
+                    $shouldStop,
+                    $projectId > 0 ? $projectId : null
+                );
             },
             'remember' => function (array $args): string {
                 return $this->memory->remember((string)($args['tool'] ?? ''), (string)($args['note'] ?? ''));

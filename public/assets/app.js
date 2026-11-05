@@ -131,7 +131,24 @@
           liveDetail: { thinking: [], tools: [] },
           traceOpen: {},
           delegation: null,
-          installPrompt: null,
+          actionPrompt: null,
+          pendingActions: [],
+          termsNeeded: false,
+          termsVersion: '1',
+          complianceIntendedPurpose: '',
+          complianceDisclosure: '',
+          complianceEvents: [],
+          complianceForm: {
+            ai_act_applies: '',
+            responsible_person: '',
+            intended_use: '',
+            compliance_logging: false,
+            hitl_external_actions: false,
+            retention_days: 90
+          },
+          complianceMessage: '',
+          complianceError: false,
+          disclosureCopied: false,
           streamError: '',
           chatQuery: '',
           chatHits: 0,
@@ -265,6 +282,7 @@
       },
       computed: {
         currentLabel() {
+          if (this.tab === 'compliance') return 'Compliance';
           const item = this.nav.find((entry) => entry.id === this.tab);
           return item ? item.label : 'Agent';
         },
@@ -413,7 +431,8 @@
             id = 'setup';
             if (location.hash !== '#setup') location.hash = 'setup';
           }
-          this.tab = this.nav.some((item) => item.id === id) ? id : 'chat';
+          const allowed = this.nav.some((item) => item.id === id) || id === 'compliance';
+          this.tab = allowed ? id : 'chat';
         },
         onHash() {
           this.syncHash();
@@ -451,6 +470,8 @@
             const data = await this.api('/api/session');
             this.authed = !!data.authed;
             this.passwordSet = !!data.password_set;
+            this.termsVersion = data.terms_version || '1';
+            this.termsNeeded = !!data.authed && !data.terms_accepted;
             if (this.authed) await this.loadAll();
           } catch (error) {
             this.loginError = error.message;
@@ -474,6 +495,9 @@
             this.password = '';
             this.authed = true;
             await this.loadAll();
+            const session = await this.api('/api/session');
+            this.termsVersion = session.terms_version || '1';
+            this.termsNeeded = !session.terms_accepted;
           } catch (error) {
             this.loginError = 'Could not reach the server.';
           }
@@ -485,6 +509,7 @@
             this.authed = false;
           }
           this.authed = false;
+          this.termsNeeded = false;
           this.mobileNav = false;
           this.stopPoll();
         },
@@ -511,6 +536,9 @@
           this.settings = payload.settings || {};
           this.hardware = payload.hardware || null;
           if (this.settings.cloud_max_turns) this.settings.cloud_max_turns = Number(this.settings.cloud_max_turns);
+          if (typeof this.settings.terms_accepted === 'boolean') {
+            this.termsNeeded = !this.settings.terms_accepted;
+          }
         },
         async refreshTab() {
           if (!this.authed) return;
@@ -523,6 +551,7 @@
           if (this.tab === 'agents') {
             await this.refreshLogs();
             await this.loadSoul();
+            await this.refreshPendingActions();
           }
           if (this.tab === 'skills') {
             this.skills = (await this.api('/api/skills')).skills;
@@ -535,6 +564,9 @@
             await this.loadFtpAccounts();
             await this.loadMcpServers();
             await this.loadOllamaModels();
+          }
+          if (this.tab === 'compliance') {
+            await this.loadCompliance();
           }
           await this.refreshStatus();
         },
@@ -1117,17 +1149,131 @@
           }
         },
         stopRun() {
-          this.installPrompt = null;
+          this.actionPrompt = null;
           this.userStop = true;
           const generation = this.chatGeneration || '';
           if (this.chatAbort) this.chatAbort.abort();
           this.api('/api/chat/stop', { method: 'POST', body: { project_id: this.projectId || 0, generation: generation }, quiet: true }).catch(function () {});
         },
-        answerInstall(allow) {
-          const prompt = this.installPrompt;
+        answerAction(allow) {
+          const prompt = this.actionPrompt;
           if (!prompt) return;
-          this.installPrompt = null;
-          this.api('/api/install/answer', { method: 'POST', body: { id: prompt.id, allow: !!allow }, quiet: true }).catch(function () {});
+          this.actionPrompt = null;
+          this.api('/api/actions/answer', { method: 'POST', body: { id: prompt.id, allow: !!allow }, quiet: true }).catch(function () {});
+          this.refreshPendingActions();
+        },
+        answerPending(item, allow) {
+          if (!item || !item.id) return;
+          this.pendingActions = this.pendingActions.filter(function (row) { return row.id !== item.id; });
+          if (this.actionPrompt && this.actionPrompt.id === item.id) this.actionPrompt = null;
+          this.api('/api/actions/answer', { method: 'POST', body: { id: item.id, allow: !!allow }, quiet: true }).catch(function () {});
+        },
+        async refreshPendingActions() {
+          try {
+            const data = await this.api('/api/actions/pending', { quiet: true });
+            this.pendingActions = data.pending || [];
+          } catch (error) {
+            this.pendingActions = [];
+          }
+        },
+        openCompliance() {
+          this.setTab('compliance');
+        },
+        fillComplianceForm(status) {
+          const s = status || {};
+          this.complianceForm = {
+            ai_act_applies: s.ai_act_applies || '',
+            responsible_person: s.responsible_person || '',
+            intended_use: s.intended_use_notes || '',
+            compliance_logging: !!s.compliance_logging,
+            hitl_external_actions: !!s.hitl_external_actions,
+            retention_days: Number(s.retention_days) || 90
+          };
+          if (s.terms_version) this.termsVersion = s.terms_version;
+          this.termsNeeded = !s.terms_accepted;
+        },
+        async loadCompliance() {
+          const data = await this.api('/api/compliance');
+          this.complianceIntendedPurpose = data.intended_purpose || '';
+          this.complianceDisclosure = data.disclosure || '';
+          this.complianceEvents = data.events || [];
+          this.fillComplianceForm(data.status || {});
+          if (data.status) {
+            this.settings = Object.assign({}, this.settings, {
+              terms_accepted: !!data.status.terms_accepted,
+              terms_accepted_at: data.status.terms_accepted_at || '',
+              ai_act_applies: data.status.ai_act_applies || '',
+              compliance_logging: data.status.compliance_logging ? '1' : '0',
+              hitl_external_actions: data.status.hitl_external_actions ? '1' : '0',
+              show_compliance_box: !!data.status.show_compliance_box
+            });
+          }
+        },
+        async saveCompliance() {
+          this.complianceMessage = '';
+          this.complianceError = false;
+          try {
+            const data = await this.api('/api/compliance', {
+              method: 'POST',
+              body: {
+                ai_act_applies: this.complianceForm.ai_act_applies,
+                compliance_responsible_person: this.complianceForm.responsible_person,
+                compliance_intended_use: this.complianceForm.intended_use,
+                compliance_logging: this.complianceForm.compliance_logging,
+                hitl_external_actions: this.complianceForm.hitl_external_actions,
+                compliance_retention_days: this.complianceForm.retention_days
+              }
+            });
+            if (data.settings) this.applySettings({ settings: data.settings, hardware: this.hardware });
+            this.fillComplianceForm(data.status || {});
+            this.complianceDisclosure = data.disclosure || this.complianceDisclosure;
+            this.complianceMessage = 'Saved.';
+            await this.loadCompliance();
+          } catch (error) {
+            this.complianceError = true;
+            this.complianceMessage = error.message;
+          }
+        },
+        async acceptTerms() {
+          try {
+            const data = await this.api('/api/compliance/terms', { method: 'POST', body: {} });
+            if (data.settings) this.applySettings({ settings: data.settings, hardware: this.hardware });
+            this.fillComplianceForm(data.status || {});
+            this.termsNeeded = false;
+          } catch (error) {
+            this.complianceError = true;
+            this.complianceMessage = error.message;
+          }
+        },
+        async downloadSystemCard() {
+          try {
+            const res = await fetch('/api/compliance/system-card?download=1', { cache: 'no-store' });
+            if (!res.ok) throw new Error('Could not download the system card.');
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'danaco-system-card.md';
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+            if (this.tab === 'compliance') await this.loadCompliance();
+          } catch (error) {
+            this.complianceError = true;
+            this.complianceMessage = error.message;
+          }
+        },
+        async copyDisclosure() {
+          const text = this.complianceDisclosure || '';
+          try {
+            await navigator.clipboard.writeText(text);
+            this.disclosureCopied = true;
+            setTimeout(() => { this.disclosureCopied = false; }, 2000);
+          } catch (error) {
+            this.complianceError = true;
+            this.complianceMessage = 'Could not copy.';
+          }
         },
         errorText(text) {
           const value = String(text || '').trim();
@@ -1250,8 +1396,14 @@
             }
           } else if (event === 'delegation') {
             this.delegation = data;
-          } else if (event === 'install_prompt') {
-            this.installPrompt = { id: data.id, command: data.command || '' };
+          } else if (event === 'install_prompt' || event === 'action_prompt') {
+            this.actionPrompt = {
+              id: data.id,
+              kind: data.kind || (event === 'install_prompt' ? 'install' : 'action'),
+              summary: data.summary || (data.command ? ('Allow this install? ' + data.command) : 'Allow this action?'),
+              command: data.command || ''
+            };
+            this.refreshPendingActions();
             this.scrollChat();
           } else if (event === 'tool_call') {
             this.noteTool(data);
@@ -1959,7 +2111,8 @@
             cloud_api_use: this.settings.cloud_api_use,
             cloud_max_turns: Number(this.settings.cloud_max_turns),
             chat_font_size: this.chatFontPx,
-            search_provider: this.settings.search_provider === 'bing' ? 'bing' : 'duckduckgo'
+            search_provider: this.settings.search_provider === 'bing' ? 'bing' : 'duckduckgo',
+            ai_act_applies: this.settings.ai_act_applies || ''
           };
           if (this.cloudKeyDraft) body.cloud_api_key = this.cloudKeyDraft;
           const data = await this.api('/api/setup', { method: 'POST', body: body });
@@ -2217,6 +2370,10 @@
             if (this.tab === 'agents') {
               this.refreshStatus(true).catch(function () {});
               this.refreshLogs(true).catch(function () {});
+              this.refreshPendingActions().catch(function () {});
+            }
+            if (this.settings && this.settings.hitl_external_actions === '1' && (this.tab === 'chat' || this.sending)) {
+              this.refreshPendingActions().catch(function () {});
             }
             if (this.tab === 'setup') {
               this.healthTick += 1;
