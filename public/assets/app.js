@@ -176,6 +176,7 @@
           fileScope: '',
           fileFolder: '',
           fileRel: '',
+          fileIsDir: false,
           fileContent: '',
           fileDraft: '',
           fileEditing: false,
@@ -364,6 +365,7 @@
           return (this.sending || this.awaitingModel) && !this.answerStarted && !this.streamError;
         },
         fileKind() {
+          if (this.fileIsDir) return 'dir';
           return fileKindOf(this.fileName || this.fileRel);
         },
         filePreview() {
@@ -371,6 +373,9 @@
         },
         structuredKind() {
           return ['csv', 'sqlite', 'docx'].includes(this.fileKind) ? this.fileKind : '';
+        },
+        canTrashWorkspace() {
+          return !!(this.fileName && this.fileRel);
         },
         selectedStructuredTable() {
           if (!this.structuredData || this.structuredKind !== 'sqlite') return null;
@@ -579,6 +584,7 @@
           this.filePath = '';
           this.fileName = '';
           this.fileRel = '';
+          this.fileIsDir = false;
           this.fileContent = '';
           this.fileEditing = false;
           this.fileError = '';
@@ -1598,10 +1604,29 @@
           return '/preview/project/' + encodeURIComponent(folder) + '/' + rel;
         },
         async openFile(node) {
-          if (!node || node.type === 'dir') return;
+          if (!node) return;
           const generation = (this.fileLoad || 0) + 1;
           this.fileLoad = generation;
           const name = node.name || '';
+          if (node.type === 'dir') {
+            this.clearFilePreview();
+            this.filePath = '';
+            this.fileName = name;
+            this.fileScope = node.scope || 'project';
+            this.fileFolder = node.folder || '';
+            this.fileRel = node.path || '';
+            this.fileIsDir = true;
+            this.fileContent = '';
+            this.fileDraft = '';
+            this.fileEditing = false;
+            this.structuredData = null;
+            this.structuredTableName = '';
+            this.fileError = '';
+            this.fileMarkdown = false;
+            this.fileKey = this.fileIdentity(node);
+            this.showingSearch = false;
+            return;
+          }
           const kind = fileKindOf(name || node.path || '');
           let previewBlocked = false;
           if (kind === 'html' || kind === 'js') {
@@ -1618,6 +1643,7 @@
           this.fileScope = node.scope || 'project';
           this.fileFolder = node.folder || '';
           this.fileRel = node.path || '';
+          this.fileIsDir = false;
           this.fileContent = '';
           this.fileDraft = '';
           this.fileEditing = false;
@@ -1763,8 +1789,12 @@
           this.saveBlob(name, blob);
         },
         async deleteFile() {
-          const name = this.fileName || 'this file';
-          if (!window.confirm('Move "' + name + '" to the agent trashbin?')) return;
+          if (!this.canTrashWorkspace) return;
+          const name = this.fileName || (this.fileIsDir ? 'this folder' : 'this file');
+          const prompt = this.fileIsDir
+            ? 'Move "' + name + '" and everything inside to the agent trashbin?'
+            : 'Move "' + name + '" to the agent trashbin?';
+          if (!window.confirm(prompt)) return;
           this.fileError = '';
           try {
             await this.api('/api/workspace/delete', {
@@ -1777,6 +1807,7 @@
             this.fileScope = '';
             this.fileFolder = '';
             this.fileRel = '';
+            this.fileIsDir = false;
             this.fileContent = '';
             this.fileDraft = '';
             this.fileEditing = false;
@@ -2513,9 +2544,13 @@
       methods: {
         key(node) {
           return (node.scope || '') + '\n' + (node.folder || '') + '\n' + (node.path || '');
+        },
+        toggle(node, event) {
+          event.stopPropagation();
+          node.open = !node.open;
         }
       },
-      template: '<ul class="tree"><li v-for="node in nodes" :key="key(node)"><button v-if="node.type===\'dir\'" type="button" class="tree-btn" @click="node.open = !node.open"><span class="tree-chevron">{{ node.open ? "▾" : "▸" }}</span><svg class="tree-ico" aria-hidden="true"><use href="#i-folder"></use></svg><span class="tree-name">{{ node.name }}</span></button><button v-else type="button" class="tree-btn file" :class="{active: key(node)===selected}" @click="$emit(\'open\', node)"><span class="tree-chevron"></span><svg class="tree-ico" aria-hidden="true"><use href="#i-file"></use></svg><span class="tree-name">{{ node.name }}</span></button><file-tree v-if="node.type===\'dir\' && node.open" :nodes="node.children" :selected="selected" @open="$emit(\'open\', $event)"></file-tree></li></ul>'
+      template: '<ul class="tree"><li v-for="node in nodes" :key="key(node)"><button v-if="node.type===\'dir\'" type="button" class="tree-btn" :class="{active: key(node)===selected}" @click="$emit(\'open\', node)"><span class="tree-chevron" @click="toggle(node, $event)">{{ node.open ? "▾" : "▸" }}</span><svg class="tree-ico" aria-hidden="true"><use href="#i-folder"></use></svg><span class="tree-name">{{ node.name }}</span></button><button v-else type="button" class="tree-btn file" :class="{active: key(node)===selected}" @click="$emit(\'open\', node)"><span class="tree-chevron"></span><svg class="tree-ico" aria-hidden="true"><use href="#i-file"></use></svg><span class="tree-name">{{ node.name }}</span></button><file-tree v-if="node.type===\'dir\' && node.open" :nodes="node.children" :selected="selected" @open="$emit(\'open\', $event)"></file-tree></li></ul>'
     });
     app.mount('#app');
   }

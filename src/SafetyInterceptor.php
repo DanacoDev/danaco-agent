@@ -340,7 +340,8 @@ class SafetyInterceptor
         $this->assertAgentPathAllowed($path);
         $relative = $this->cleanRelative($path);
         $target = $this->resolveInside($root, $relative, false);
-        if (!is_file($target)) {
+        $isDir = is_dir($target) && !is_link($target);
+        if (!$isDir && !is_file($target)) {
             throw new RuntimeException('File not found.');
         }
         $trashDir = $this->dataDir . '/.trashcan';
@@ -350,8 +351,8 @@ class SafetyInterceptor
         $base = $this->uniqueName($trashDir, basename($target));
         $dest = $trashDir . '/' . $base;
         if (!@rename($target, $dest)) {
-            if (!@copy($target, $dest) || !@unlink($target)) {
-                throw new RuntimeException('Could not move file to trash.');
+            if ($isDir || !@copy($target, $dest) || !@unlink($target)) {
+                throw new RuntimeException($isDir ? 'Could not move that folder to trash.' : 'Could not move file to trash.');
             }
         }
         $meta = [
@@ -361,7 +362,7 @@ class SafetyInterceptor
             'deleted_at' => date('c'),
             'filename' => basename($target),
             'stored_as' => $base,
-            'is_dir' => false,
+            'is_dir' => $isDir,
         ];
         file_put_contents($trashDir . '/' . $base . '.json', json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         $this->reindexWiki();
@@ -449,9 +450,7 @@ class SafetyInterceptor
         if ($relativePath !== '' && $this->machinePath($relativePath)) {
             return $this->listMachine($relativePath);
         }
-        if ($relativePath !== '') {
-            $relativePath = $this->projectPath($projectFolder, $relativePath);
-        }
+        $relativePath = $this->listRelativePath($projectFolder, $relativePath);
         $root = $this->projectRoot($projectFolder);
         $dir = $relativePath === '' ? $root : $this->resolveInside($root, $relativePath, false);
         if (!is_dir($dir)) {
@@ -480,7 +479,7 @@ class SafetyInterceptor
         return $lines ? implode("\n", $lines) : 'No backups or trash.';
     }
 
-    public function emptyOldTrash(int $days = 30): int
+    public function emptyOldTrash(int $days = 10): int
     {
         $dir = $this->dataDir . '/.trashcan';
         if (!is_dir($dir)) {
@@ -554,6 +553,10 @@ class SafetyInterceptor
             return $this->restoreMachine($meta, $file, $metaPath, $kind);
         }
         if ((string)$meta['project_folder'] === 'wiki') {
+            $isDir = !empty($meta['is_dir']);
+            if ($isDir ? !is_dir($file) : !is_file($file)) {
+                throw new RuntimeException('Restore item not found.');
+            }
             $root = realpath($this->dataDir . '/wiki');
             if ($root === false) {
                 throw new RuntimeException('Main wiki not found.');
@@ -568,7 +571,7 @@ class SafetyInterceptor
                 throw new RuntimeException('Could not create directory.');
             }
             if (!@rename($file, $dest)) {
-                throw new RuntimeException('Could not restore that file.');
+                throw new RuntimeException($isDir ? 'Could not restore that folder.' : 'Could not restore that file.');
             }
             @unlink($metaPath);
             $this->reindexWiki();
@@ -841,14 +844,41 @@ class SafetyInterceptor
         @rmdir($dir);
     }
 
+    private function listRelativePath(string $projectFolder, string $relativePath): string
+    {
+        $relativePath = str_replace('\\', '/', trim($relativePath));
+        $relativePath = trim($relativePath, '/');
+        if ($relativePath === '' || $relativePath === '.') {
+            return '';
+        }
+        $folder = trim($projectFolder, '/');
+        if ($relativePath === $folder || $relativePath === 'data/' . $folder) {
+            return '';
+        }
+        return $this->projectPath($projectFolder, $relativePath);
+    }
+
     private function cleanRelative(string $relativePath): string
     {
         $relativePath = str_replace('\\', '/', trim($relativePath));
-        $relativePath = ltrim($relativePath, '/');
+        $relativePath = trim($relativePath, '/');
         if ($relativePath === '' || str_contains($relativePath, "\0")) {
             throw new RuntimeException('Invalid path.');
         }
-        return $relativePath;
+        $parts = [];
+        foreach (explode('/', $relativePath) as $part) {
+            if ($part === '' || $part === '.') {
+                continue;
+            }
+            if ($part === '..') {
+                throw new RuntimeException('Invalid path.');
+            }
+            $parts[] = $part;
+        }
+        if ($parts === []) {
+            throw new RuntimeException('Invalid path.');
+        }
+        return implode('/', $parts);
     }
 
     private function rejectToolNotes(string $path): void

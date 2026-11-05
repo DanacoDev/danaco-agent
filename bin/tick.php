@@ -13,7 +13,7 @@ if (!$db->tryLock('tick_lock', 900)) {
 }
 
 try {
-    app_services()['safety']->emptyOldTrash(30);
+    app_services()['safety']->emptyOldTrash(10);
     $db->purgeComplianceEvents();
     $heartbeat = new Heartbeat($db);
     $heartbeat->beat();

@@ -309,7 +309,7 @@ header('X-Danaco: 1');
                   <form v-if="openTask === task.id" @submit.prevent="saveTask(task)">
                     <label class="field">Title<input v-model="taskEdit.title"></label>
                     <label class="field">{{ column.id==='review' ? 'New instructions' : 'Instructions' }}<textarea v-model="taskEdit.description" rows="5" :placeholder="column.id==='review' ? 'What should be done differently' : ''"></textarea></label>
-                    <p v-if="column.id==='review'" class="hint">Saving new instructions moves this back to In progress.</p>
+                    <p v-if="column.id==='review'" class="hint">Saving new instructions moves this back to In progress. The agent starts in 3 minutes.</p>
                     <label class="field">Agent
                       <select v-model="taskEdit.assigned_agent">
                         <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
@@ -390,24 +390,26 @@ header('X-Danaco: 1');
                     </li>
                   </ul>
                 </template>
-                <p v-else-if="!fileName" class="empty">Choose a file.</p>
+                <p v-else-if="!fileName" class="empty">Choose a file or folder.</p>
                 <template v-else>
                   <div class="file-head">
                     <h3 class="file-title">{{ fileName }}</h3>
                     <div class="file-tools">
-                      <button v-if="fileEditing || (structuredKind && structuredKind!=='sqlite')" class="btn btn-gold" type="button" @click="structuredKind ? saveStructuredFile() : saveFile()">Save</button>
-                      <button v-if="!filePreview" class="file-icon" type="button" :aria-label="fileEditing ? 'Close editor' : 'Edit'" @click="fileEditing ? cancelFileEdit() : startFileEdit()">
+                      <button v-if="!fileIsDir && (fileEditing || (structuredKind && structuredKind!=='sqlite'))" class="btn btn-gold" type="button" @click="structuredKind ? saveStructuredFile() : saveFile()">Save</button>
+                      <button v-if="!fileIsDir && !filePreview" class="file-icon" type="button" :aria-label="fileEditing ? 'Close editor' : 'Edit'" @click="fileEditing ? cancelFileEdit() : startFileEdit()">
                         <svg class="ico" aria-hidden="true"><use :href="fileEditing ? '#i-close' : '#i-edit'"></use></svg>
                       </button>
-                      <button class="file-icon" type="button" aria-label="Download" @click="downloadFile">
+                      <button v-if="!fileIsDir" class="file-icon" type="button" aria-label="Download" @click="downloadFile">
                         <svg class="ico" aria-hidden="true"><use href="#i-download"></use></svg>
                       </button>
-                      <button class="file-icon" type="button" aria-label="Move file to trash" title="Move file to trash" @click="deleteFile">
+                      <button v-if="canTrashWorkspace" class="file-icon" type="button" :aria-label="fileIsDir ? 'Move folder to trash' : 'Move file to trash'" :title="fileIsDir ? 'Move folder to trash' : 'Move file to trash'" @click="deleteFile">
                         <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
                       </button>
                     </div>
                   </div>
                   <p v-if="fileError" class="form-error">{{ fileError }}</p>
+                  <p v-else-if="fileIsDir && !fileRel" class="hint">Top-level project folders cannot be deleted here.</p>
+                  <p v-else-if="fileIsDir" class="hint">This folder and everything inside can be moved to trash.</p>
                   <div v-if="structuredKind" class="structured-editor">
                     <div v-if="structuredLoading" class="hint">Loading structured file…</div>
                     <template v-else-if="structuredKind==='csv' && structuredData">
@@ -462,7 +464,7 @@ header('X-Danaco: 1');
             </div>
             <div v-if="vaultOpen" class="vault panel">
               <h3>Restoration</h3>
-              <p class="hint">Agents can read and restore these files. They cannot delete them. Trash older than 30 days is removed automatically.</p>
+              <p class="hint">Agents can read and restore these files. They cannot delete them. Trash older than 10 days is removed automatically.</p>
               <article v-for="item in backups" :key="'b'+item.stored_as" class="log-row">
                 <div>Backup · {{ item.original }}</div>
                 <button class="btn" type="button" @click="restoreItem('backup', item.stored_as)">Restore</button>
@@ -717,14 +719,6 @@ header('X-Danaco: 1');
                 </div>
               </div>
             </div>
-            <div v-if="settings.show_compliance_box" class="setup-box">
-              <h3>Compliance &amp; documentation</h3>
-              <p class="hint">Optional tools and records for organisations where the EU AI Act (or similar rules) may apply. They do not slow the agent unless you turn on extra approvals.</p>
-              <p class="hint" v-if="settings.ai_act_applies === 'unsure'">If you are unsure, open the compliance page for a short overview, or pick No under jurisdiction if you are outside these rules.</p>
-              <p class="hint">Terms {{ settings.terms_accepted ? 'accepted' : 'not accepted' }} · Logging {{ settings.compliance_logging === '1' ? 'on' : 'off' }} · Extra approvals {{ settings.hitl_external_actions === '1' ? 'on' : 'off' }}</p>
-              <button class="btn btn-gold" type="button" @click="openCompliance">Open compliance →</button>
-            </div>
-            <p v-else class="hint setup-compliance-link"><button class="retry-link" type="button" @click="openCompliance">Compliance &amp; documentation</button></p>
             <form id="setup-form" class="setup-stack" @submit.prevent="saveSetup">
               <div class="setup-box">
                 <h3>Agent</h3>
@@ -741,6 +735,7 @@ header('X-Danaco: 1');
                   </select>
                 </label>
                 <p class="hint">Yes if the organisation is in the EU/EEA, or if the system is put into service / affects people there in a way that brings the Act into scope. You decide; Danaco does not geo-detect.</p>
+                <p class="hint setup-compliance-link"><button class="retry-link" type="button" @click="openCompliance">Compliance &amp; documentation</button></p>
               </div>
               <div class="setup-box">
                 <h3>Appearance</h3>

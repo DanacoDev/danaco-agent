@@ -435,7 +435,7 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 }
 .setup-stack .setup-box { margin-top: 0; }
 .setup-box h3 { margin: 0 0 4px; font-size: 1rem; }
-.setup-compliance-link { margin: 0 0 12px; }
+.setup-compliance-link { margin: 10px 0 0; }
 .hint-list { margin: 8px 0 0; padding-left: 1.2rem; color: var(--muted); }
 .hint-list li { margin: 0 0 6px; }
 .health-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }

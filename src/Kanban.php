@@ -2,6 +2,8 @@
 
 class Kanban
 {
+    private const RESTART_DELAY = 180;
+
     public function __construct(private Database $db)
     {
     }
@@ -52,13 +54,26 @@ class Kanban
         $recurrence = array_key_exists('recurrence', $args) || array_key_exists('recurrence_interval', $args)
             ? $this->recurrence((string)($args['recurrence'] ?? $args['recurrence_interval'] ?? 'none'))
             : (string)($existing['recurrence_interval'] ?? 'none');
-        if (array_key_exists('schedule_time', $args)) {
+        if ($byUser && array_key_exists('description', $args)) {
+            $newDescription = trim((string)($fields['description'] ?? ''));
+            $oldDescription = trim((string)($existing['description'] ?? ''));
+            if ($newDescription !== '' && $newDescription !== $oldDescription && $this->shouldDelayRestart($existing, $recurrence)) {
+                $args['status'] = 'in_progress';
+                $schedule = date('Y-m-d H:i:s', time() + self::RESTART_DELAY);
+                $fields['schedule_time'] = $schedule;
+            }
+        }
+        if ($byUser && $recurrence === 'none' && array_key_exists('status', $args) && $this->place((string)$args['status'], null, 'none', true) === 'backlog') {
+            $schedule = null;
+            $fields['schedule_time'] = null;
+        }
+        if (array_key_exists('schedule_time', $args) || array_key_exists('schedule_time', $fields)) {
             $fields['schedule_time'] = $schedule;
         }
         if (array_key_exists('recurrence', $args) || array_key_exists('recurrence_interval', $args)) {
             $fields['recurrence_interval'] = $recurrence;
         }
-        if (array_key_exists('status', $args) || array_key_exists('schedule_time', $args) || array_key_exists('recurrence', $args) || array_key_exists('recurrence_interval', $args)) {
+        if (array_key_exists('status', $args) || array_key_exists('schedule_time', $args) || array_key_exists('schedule_time', $fields) || array_key_exists('recurrence', $args) || array_key_exists('recurrence_interval', $args)) {
             $status = $this->place((string)($args['status'] ?? $existing['status'] ?? 'backlog'), $schedule, $recurrence, $byUser);
             $fields['status'] = $status;
             if ($status === 'done') {
@@ -140,6 +155,27 @@ class Kanban
             return 'in_progress';
         }
         return $status;
+    }
+
+    private function shouldDelayRestart(array $existing, string $recurrence): bool
+    {
+        $status = (string)($existing['status'] ?? '');
+        if ($status === 'review') {
+            return true;
+        }
+        if ($status !== 'in_progress' || $recurrence !== 'none') {
+            return false;
+        }
+        $when = $existing['schedule_time'] ?? null;
+        if (!is_string($when) || $when === '') {
+            return false;
+        }
+        $at = strtotime($when);
+        if ($at === false) {
+            return false;
+        }
+        $now = time();
+        return $at > $now && $at <= $now + self::RESTART_DELAY;
     }
 
     private function isScheduled(mixed $schedule, string $recurrence): bool
