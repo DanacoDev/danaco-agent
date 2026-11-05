@@ -21,7 +21,7 @@ Choose deletion of the old project files only after the backup is verified. This
 ## 3. Fresh install from GitHub
 
 ```bash
-git clone https://github.com/DanacoDev/agent.git ~/danaco-agent
+git clone https://github.com/DanacoDev/danaco-agent.git ~/danaco-agent
 cd ~/danaco-agent
 bash install.sh
 ```
@@ -37,6 +37,6 @@ danaco restore ~/danaco-projects-backup.zip
 ## 5. Smoke check
 
 - Open the UI (`danaco`) and sign in
-- Confirm footer/settings show version **1.0.0**
-- Confirm `danaco update` talks to `DanacoDev/agent`
+- Confirm footer/settings show version **1.0.7**
+- Confirm `danaco update` talks to `DanacoDev/danaco-agent`
 - Confirm old `dagento` command is gone

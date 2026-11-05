@@ -46,6 +46,10 @@ run_root() {
     sudo "$@"
     return
   fi
+  if command -v pkexec >/dev/null 2>&1; then
+    pkexec env DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}" "$@"
+    return
+  fi
   return 1
 }
 
@@ -54,8 +58,9 @@ install_packages() {
   os="$(uname -s)"
   if [[ "$os" == "Linux" ]] && command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
-    run_root apt-get update
-    run_root apt-get install -y "${PACKAGES[@]}"
+    # One root prompt for both apt steps. The variable is set again inside the
+    # root shell because sudo and pkexec drop it.
+    run_root bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y "$@"' bash "${PACKAGES[@]}" || return 1
     return
   fi
   if [[ "$os" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then

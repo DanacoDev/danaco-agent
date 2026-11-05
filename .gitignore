@@ -24,3 +24,7 @@ data/.github-credentials.tmp
 
 # Public website files are deployed separately and should not be committed.
 public_html/
+
+# Sold setup package. Distributed through Lemon Squeezy, not this repository.
+installer/
+dist/

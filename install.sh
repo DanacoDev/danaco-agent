@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 OS="$(uname -s)"
 
-if [[ ! -t 0 ]]; then
+if [[ "${DANACO_NONINTERACTIVE:-}" != "1" && ! -t 0 ]]; then
   echo "install.sh needs an interactive terminal."
   exit 1
 fi
@@ -13,10 +13,30 @@ fi
 clone_repo() {
   local dest="$1"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    gh repo clone DanacoDev/agent "$dest"
+    gh repo clone DanacoDev/danaco-agent "$dest"
   else
-    git clone https://github.com/DanacoDev/agent.git "$dest"
+    git clone https://github.com/DanacoDev/danaco-agent.git "$dest"
   fi
+}
+
+as_root() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+    return
+  fi
+  if sudo -n true 2>/dev/null; then
+    sudo -n "$@"
+    return
+  fi
+  if [[ -t 0 ]]; then
+    sudo "$@"
+    return
+  fi
+  if command -v pkexec >/dev/null 2>&1; then
+    pkexec "$@"
+    return
+  fi
+  return 1
 }
 
 replace_existing_files() {
@@ -54,18 +74,29 @@ if [[ -f "$ROOT/data/app.sqlite" ]]; then
     next_number=$((next_number + 1))
   done
   next_dir="$parent/${stem}${next_number}"
-  echo
-  echo "An existing Danaco Agent install was found at $ROOT"
-  echo "  1) Replace the old files"
-  echo "  2) Use the existing files"
-  echo "  3) Create a new folder ($(basename "$next_dir"))"
-  while true; do
-    read -r -p "Choice: " REUSE_CHOICE
+  if [[ "${DANACO_NONINTERACTIVE:-}" == "1" ]]; then
+    REUSE_CHOICE="${DANACO_REUSE_CHOICE:-}"
     case "$REUSE_CHOICE" in
-      1|2|3) break ;;
-      *) echo "Enter 1, 2, or 3." ;;
+      1|2|3) ;;
+      *)
+        echo "Missing or invalid DANACO_REUSE_CHOICE." >&2
+        exit 1
+        ;;
     esac
-  done
+  else
+    echo
+    echo "An existing Danaco Agent install was found at $ROOT"
+    echo "  1) Replace the old files"
+    echo "  2) Use the existing files"
+    echo "  3) Create a new folder ($(basename "$next_dir"))"
+    while true; do
+      read -r -p "Choice: " REUSE_CHOICE
+      case "$REUSE_CHOICE" in
+        1|2|3) break ;;
+        *) echo "Enter 1, 2, or 3." ;;
+      esac
+    done
+  fi
   if [[ "$REUSE_CHOICE" == "1" ]]; then
     echo "Replacing the old files in $ROOT"
     replace_existing_files
@@ -95,9 +126,18 @@ if [[ ! -f "$ROOT/bin/danaco" ]]; then
   exec bash "$ROOT/install.sh"
 fi
 
+if [[ "${DANACO_NONINTERACTIVE:-}" == "1" ]]; then
+  PASS="${DANACO_PASSWORD:-}"
+  unset DANACO_PASSWORD
+  if [[ ${#PASS} -lt 8 ]]; then
+    echo "Missing DANACO_PASSWORD, or it is shorter than 8 characters." >&2
+    exit 1
+  fi
+fi
+
 deps=0
 bash "$ROOT/bin/ensure-php.sh" || deps=$?
-if [[ "$deps" -eq 1 ]]; then
+if [[ "$deps" -ne 0 && "$deps" -ne 10 ]]; then
   exit 1
 fi
 
@@ -122,7 +162,29 @@ if command -v ollama >/dev/null 2>&1; then
 fi
 
 echo
-if [[ ${#MODELS[@]} -gt 0 ]]; then
+if [[ "${DANACO_NONINTERACTIVE:-}" == "1" ]]; then
+  MODEL_MODE="${DANACO_MODEL_MODE:-}"
+  LOCAL_MODEL=""
+  case "$MODEL_MODE" in
+    cloud|cpu_failsafe) ;;
+    local)
+      LOCAL_MODEL="${DANACO_LOCAL_MODEL:-}"
+      if [[ -z "$LOCAL_MODEL" ]]; then
+        echo "Missing DANACO_LOCAL_MODEL." >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "Missing or invalid DANACO_MODEL_MODE." >&2
+      exit 1
+      ;;
+  esac
+  if [[ -n "$LOCAL_MODEL" ]]; then
+    echo "Using ${MODEL_MODE} (${LOCAL_MODEL})."
+  else
+    echo "Using ${MODEL_MODE}."
+  fi
+elif [[ ${#MODELS[@]} -gt 0 ]]; then
   echo "Ollama is installed. Choose a model:"
   model_index=1
   for model_name in "${MODELS[@]}"; do
@@ -166,11 +228,27 @@ else
 fi
 
 echo
-read -r -p "Should the agent be accessible from other devices on the same LAN? [y/N]: " LAN_CHOICE
-case "${LAN_CHOICE:-n}" in
-  y|Y|yes|YES) BIND_HOST="0.0.0.0" ;;
-  *) BIND_HOST="127.0.0.1" ;;
-esac
+if [[ "${DANACO_NONINTERACTIVE:-}" == "1" ]]; then
+  BIND_HOST="${DANACO_BIND_HOST:-}"
+  case "$BIND_HOST" in
+    127.0.0.1|0.0.0.0) ;;
+    *)
+      echo "Missing or invalid DANACO_BIND_HOST." >&2
+      exit 1
+      ;;
+  esac
+  if [[ "$BIND_HOST" == "0.0.0.0" ]]; then
+    echo "The agent will be reachable from other devices on this network."
+  else
+    echo "The agent will be reachable only from this computer."
+  fi
+else
+  read -r -p "Should the agent be accessible from other devices on the same LAN? [y/N]: " LAN_CHOICE
+  case "${LAN_CHOICE:-n}" in
+    y|Y|yes|YES) BIND_HOST="0.0.0.0" ;;
+    *) BIND_HOST="127.0.0.1" ;;
+  esac
+fi
 
 port_busy() {
   local port="$1"
@@ -216,8 +294,8 @@ fi
 
 if [[ "$BIND_HOST" == "0.0.0.0" && "$OS" == "Linux" ]]; then
   if command -v ufw >/dev/null 2>&1; then
-    sudo ufw allow ssh
-    sudo ufw allow "${APP_PORT}/tcp"
+    as_root ufw allow ssh
+    as_root ufw allow "${APP_PORT}/tcp"
   else
     echo "ufw is not installed. Open ssh and tcp/${APP_PORT} yourself before using the LAN address."
   fi
@@ -247,31 +325,44 @@ read_masked() {
   return 1
 }
 
-while true; do
-  PASS="$(read_masked "Web UI password (min 8 characters): ")" || { echo "No password entered."; exit 1; }
-  PASS2="$(read_masked "Confirm password: ")" || { echo "No password entered."; exit 1; }
-  if [[ "$PASS" == "$PASS2" && ${#PASS} -ge 8 ]]; then
-    break
-  fi
-  echo "Passwords did not match or were shorter than 8 characters."
-done
+if [[ "${DANACO_NONINTERACTIVE:-}" != "1" ]]; then
+  while true; do
+    PASS="$(read_masked "Web UI password (min 8 characters): ")" || { echo "No password entered."; exit 1; }
+    PASS2="$(read_masked "Confirm password: ")" || { echo "No password entered."; exit 1; }
+    if [[ "$PASS" == "$PASS2" && ${#PASS} -ge 8 ]]; then
+      break
+    fi
+    echo "Passwords did not match or were shorter than 8 characters."
+  done
+fi
 
-echo
-echo "Does the EU AI Act apply to this deployment?"
-echo "  1) Yes — organisation in the EU/EEA, or the system affects people there in a way that brings the Act into scope"
-echo "  2) No"
-echo "  3) Not sure"
-AI_ACT_APPLIES=""
-while [[ -z "$AI_ACT_APPLIES" ]]; do
-  read -r -p "Choice [2]: " AI_ACT_CHOICE
-  AI_ACT_CHOICE="${AI_ACT_CHOICE:-2}"
-  case "$AI_ACT_CHOICE" in
-    1|y|Y|yes|Yes) AI_ACT_APPLIES="yes" ;;
-    2|n|N|no|No) AI_ACT_APPLIES="no" ;;
-    3|u|U|unsure|Unsure) AI_ACT_APPLIES="unsure" ;;
-    *) echo "Enter 1, 2, or 3." ;;
+if [[ "${DANACO_NONINTERACTIVE:-}" == "1" ]]; then
+  AI_ACT_APPLIES="${DANACO_AI_ACT:-}"
+  case "$AI_ACT_APPLIES" in
+    yes|no|unsure) ;;
+    *)
+      echo "Missing or invalid DANACO_AI_ACT." >&2
+      exit 1
+      ;;
   esac
-done
+else
+  echo
+  echo "Does the EU AI Act apply to this deployment?"
+  echo "  1) Yes — organisation in the EU/EEA, or the system affects people there in a way that brings the Act into scope"
+  echo "  2) No"
+  echo "  3) Not sure"
+  AI_ACT_APPLIES=""
+  while [[ -z "$AI_ACT_APPLIES" ]]; do
+    read -r -p "Choice [2]: " AI_ACT_CHOICE
+    AI_ACT_CHOICE="${AI_ACT_CHOICE:-2}"
+    case "$AI_ACT_CHOICE" in
+      1|y|Y|yes|Yes) AI_ACT_APPLIES="yes" ;;
+      2|n|N|no|No) AI_ACT_APPLIES="no" ;;
+      3|u|U|unsure|Unsure) AI_ACT_APPLIES="unsure" ;;
+      *) echo "Enter 1, 2, or 3." ;;
+    esac
+  done
+fi
 
 mkdir -p public/assets data/sessions
 if [[ ! -s public/assets/vue.global.prod.js ]]; then
@@ -358,10 +449,10 @@ if [[ -f "$ROOT/data/tls/ca.crt" ]]; then
   echo "A local certificate was created so the address is encrypted."
   if [[ "$OS" == "Darwin" ]]; then
     echo "macOS will ask to trust it. Safari and Chrome can then open the page."
-    sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$ROOT/data/tls/ca.crt" || echo "The certificate was not trusted. A browser may ask before the first visit."
+    as_root security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$ROOT/data/tls/ca.crt" || echo "The certificate was not trusted. A browser may ask before the first visit."
   elif [[ "$OS" == "Linux" ]] && [[ -d /usr/local/share/ca-certificates ]]; then
-    sudo cp "$ROOT/data/tls/ca.crt" /usr/local/share/ca-certificates/danaco-local-ca.crt
-    sudo update-ca-certificates || echo "The certificate was not trusted. A browser may ask before the first visit."
+    as_root cp "$ROOT/data/tls/ca.crt" /usr/local/share/ca-certificates/danaco-local-ca.crt
+    as_root update-ca-certificates || echo "The certificate was not trusted. A browser may ask before the first visit."
   else
     echo "If a browser asks, trust this file: $ROOT/data/tls/ca.crt"
   fi
