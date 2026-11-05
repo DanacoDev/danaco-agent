@@ -714,13 +714,19 @@
             this.projectError = error.message;
           }
         },
+        contextWindow() {
+          const total = this.context.total || 0;
+          if (total <= 0) return 0;
+          return Math.max(256, Math.floor(total * 0.8));
+        },
         contextFull() {
-          return this.context.total > 0 && this.context.used >= this.context.total;
+          const window = this.contextWindow();
+          return window > 0 && (this.context.used || 0) >= window;
         },
         contextDash() {
           const length = 2 * Math.PI * 14.75;
-          const total = this.context.total || 0;
-          const ratio = total > 0 ? Math.min(1, (this.context.used || 0) / total) : 0;
+          const window = this.contextWindow();
+          const ratio = window > 0 ? Math.min(1, (this.context.used || 0) / window) : 0;
           return (ratio * length) + ' ' + length;
         },
         contextTip() {

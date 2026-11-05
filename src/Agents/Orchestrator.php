@@ -107,9 +107,23 @@ class Orchestrator
         if (is_array($last) && $this->toolWasCutOff((string)($last['content'] ?? ''))) {
             $manual = false;
         }
-        $split = ContextWindow::split($system, $history, $total, $manual);
+        $folder = is_array($project) ? (string)$project['folder_name'] : null;
+        $summary = $this->memory->readContextSummary($folder);
+        $untilKey = 'context_summary_until_' . max(0, $projectId);
+        $until = (int)$this->db->getSetting($untilKey, '0');
+        $live = [];
+        foreach ($history as $message) {
+            if (trim($summary) === '' || (int)($message['id'] ?? 0) > $until) {
+                $live[] = $message;
+            }
+        }
+        $measureSystem = $system;
+        if (trim($summary) !== '') {
+            $measureSystem .= "\n\nEarlier messages were summarized below. Treat that summary as the record of them. Do not invent details that are not in the summary or the later messages. The same summary is saved in the wiki.\n\n" . $summary;
+        }
+        $split = ContextWindow::split($measureSystem, $live, $total, $manual);
         if (is_array($last) && $this->toolWasCutOff((string)($last['content'] ?? ''))) {
-            $keep = !empty($split['compressed']) ? $split['kept'] : $history;
+            $keep = !empty($split['compressed']) ? $split['kept'] : $live;
             $messages = [['role' => 'system', 'content' => $system]];
             foreach ($keep as $message) {
                 $messages[] = [
@@ -125,10 +139,6 @@ class Orchestrator
                 'updated' => false,
             ];
         }
-        $folder = is_array($project) ? (string)$project['folder_name'] : null;
-        $summary = $this->memory->readContextSummary($folder);
-        $untilKey = 'context_summary_until_' . max(0, $projectId);
-        $until = (int)$this->db->getSetting($untilKey, '0');
         $updated = false;
         if ($split['compressed'] && $writeSummary) {
             $fresh = [];
@@ -138,18 +148,27 @@ class Orchestrator
                 }
             }
             if ($fresh) {
+                if ($emit) {
+                    $emit(['type' => 'context', 'used' => $split['used'], 'total' => $split['total']]);
+                }
                 $summary = $this->summarize($summary, $fresh, $shouldStop, $emit);
                 if ($summary !== '') {
                     $this->memory->writeContextSummary($folder, $summary);
-                    $last = (int)$fresh[count($fresh) - 1]['id'];
-                    $this->db->setSetting($untilKey, (string)$last);
+                    $lastId = (int)$fresh[count($fresh) - 1]['id'];
+                    $this->db->setSetting($untilKey, (string)$lastId);
                     $updated = true;
                 }
             }
         }
-        if ($split['compressed'] && trim($summary) !== '') {
+        if ($split['compressed'] && $writeSummary && trim($summary) !== '') {
             $packed = ContextWindow::apply($system, $summary, $split['kept'], $total, $split['used']);
             $packed['updated'] = $updated;
+            return $packed;
+        }
+        if (trim($summary) !== '') {
+            $packed = ContextWindow::apply($system, $summary, $live, $total, $split['used']);
+            $packed['compressed'] = false;
+            $packed['updated'] = false;
             return $packed;
         }
         $messages = [['role' => 'system', 'content' => $system]];
@@ -514,6 +533,10 @@ TXT;
         $lines = [];
         $sawEmail = false;
         foreach ((new CapabilityTools($this->db))->descriptions($project ? (int)$project['id'] : 0) as $line) {
+            if (preg_match('/^- (web_search|fetch_url|browse_url):/', $line, $match)) {
+                $lines[] = $this->researchToolLine($match[1]);
+                continue;
+            }
             if (preg_match('/^- (send_email|ftp|mcp|remember):/', $line)) {
                 $lines[] = $line;
                 if (str_starts_with($line, '- send_email:')) {
@@ -918,16 +941,16 @@ TXT;
                 return $this->memory->remember((string)($args['tool'] ?? ''), (string)($args['note'] ?? ''));
             },
             'web_search' => function (): string {
-                return $this->researchDelegationNotice();
+                return $this->researchDelegationNotice('web_search');
             },
             'search' => function (): string {
-                return $this->researchDelegationNotice();
+                return $this->researchDelegationNotice('web_search');
             },
             'fetch_url' => function (): string {
-                return $this->researchDelegationNotice();
+                return $this->researchDelegationNotice('fetch_url');
             },
             'browse_url' => function (): string {
-                return $this->researchDelegationNotice();
+                return $this->researchDelegationNotice('browse_url');
             },
             'soul' => function (array $args) use ($folder): string {
                 if ($folder === '') {
@@ -1061,8 +1084,18 @@ TXT;
         return null;
     }
 
-    private function researchDelegationNotice(): string
+    private function researchToolLine(string $tool): string
     {
-        return 'Web search and page fetching are researcher tools. Delegate that work to the researcher with a clear instruction. Do not call web_search, search, fetch_url, or browse_url yourself.';
+        return match ($tool) {
+            'web_search' => '- web_search: args query. You know this tool. It searches the web. Only the researcher can call it. Delegate the search to the researcher. Do not call it yourself, and do not say you cannot look something up.',
+            'fetch_url' => '- fetch_url: args url. You know this tool. It opens a public web page. Only the researcher can call it. Delegate the visit to the researcher. Do not say you cannot visit a website.',
+            'browse_url' => '- browse_url: args url. You know this tool. It opens a public web page, the same as fetch_url. Only the researcher can call it. Delegate the visit to the researcher.',
+            default => '',
+        };
+    }
+
+    private function researchDelegationNotice(string $tool): string
+    {
+        return 'Error: ' . $tool . ' must be delegated to the researcher. You know this tool. Only the researcher can call it. Delegate with a clear instruction.';
     }
 }

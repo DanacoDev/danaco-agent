@@ -18,11 +18,8 @@ class ContextWindow
     public static function split(string $system, array $history, int $total, bool $force = false): array
     {
         $total = max(512, $total);
-        $budget = (int)max(256, (int)floor($total * 0.75));
-        $raw = self::tokens($system) + 8;
-        foreach ($history as $message) {
-            $raw += self::tokens((string)($message['content'] ?? '')) + 4;
-        }
+        $budget = (int)max(256, (int)floor($total * 0.80));
+        $raw = self::tokens($system) + 8 + self::messageTokens($history);
         $count = count($history);
         $keepCount = min(self::KEEP, $count);
         $older = array_slice($history, 0, $count - $keepCount);
@@ -40,7 +37,7 @@ class ContextWindow
     public static function fit(string $system, array $history, int $total): array
     {
         $total = max(512, $total);
-        $budget = (int)max(256, (int)floor($total * 0.75));
+        $budget = (int)max(256, (int)floor($total * 0.80));
         $raw = self::tokens($system) + 8 + self::messageTokens($history);
         if ($raw <= $budget || $history === []) {
             return [

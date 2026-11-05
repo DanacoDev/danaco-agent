@@ -107,7 +107,7 @@ class SubagentRunner
             $capLine .= 'You can call these yourself: ' . implode(', ', $own) . ".\n";
         }
         if ($research !== []) {
-            $capLine .= 'Do not call ' . implode(', ', $research) . '. Those are researcher tools. Delegate web research to the researcher with a clear instruction.' . "\n";
+            $capLine .= 'You know ' . implode(', ', $research) . '. They search the web and open public pages. Only the researcher can call them. Delegate that work to the researcher with a clear instruction. Do not say you cannot visit a website.' . "\n";
         }
         if ($teamCaps !== []) {
             $capLine .= 'Subagents can also use: ' . implode(', ', $teamCaps) . ".\n";
