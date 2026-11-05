@@ -85,17 +85,34 @@ class SubagentRunner
     public function teamBrief(int $projectId): string
     {
         $names = ['list_files', 'read_file', 'read_pdf', 'create_pdf', 'write_file', 'delete_file', 'move_file', 'wiki_search', 'wiki_write', 'list_vault', 'read_vault', 'restore_file'];
-        $caps = [];
+        $own = [];
+        $research = [];
+        $teamCaps = [];
         foreach ($this->capabilities->descriptions($projectId) as $line) {
-            if (preg_match('/^- ([a-z_]+):/', $line, $match)) {
-                $caps[] = $match[1];
+            if (!preg_match('/^- ([a-z_]+):/', $line, $match)) {
+                continue;
+            }
+            $name = $match[1];
+            if (in_array($name, ['web_search', 'fetch_url', 'browse_url'], true)) {
+                $research[] = $name;
+            } elseif (in_array($name, ['send_email', 'ftp', 'mcp', 'remember'], true)) {
+                $own[] = $name;
+            } else {
+                $teamCaps[] = $name;
             }
         }
         $shared = implode(', ', $names);
-        $capLine = $caps === []
-            ? ''
-            : 'These are your tools too, not only the team\'s: ' . implode(', ', $caps) . ".\n";
-        if (in_array('send_email', $caps, true)) {
+        $capLine = '';
+        if ($own !== []) {
+            $capLine .= 'You can call these yourself: ' . implode(', ', $own) . ".\n";
+        }
+        if ($research !== []) {
+            $capLine .= 'Do not call ' . implode(', ', $research) . '. Those are researcher tools. Delegate web research to the researcher with a clear instruction.' . "\n";
+        }
+        if ($teamCaps !== []) {
+            $capLine .= 'Subagents can also use: ' . implode(', ', $teamCaps) . ".\n";
+        }
+        if (in_array('send_email', $own, true)) {
             $capLine .= "Call send_email when mail should go out. Do not delegate a send, and do not say the tool is missing. The mailbox on that tool is who the message is from. to is who it is written to.\n";
         }
         $skills = $this->skills->summariesForPrompt();
@@ -109,7 +126,7 @@ class SubagentRunner
 Team. Delegate by the kind of work. Every subagent can use: {$shared}.
 Those tools cover any file in the project, including the wiki. {$scope} A new or replaced skill goes to the coder. You have write_skill when the coder cannot finish it.
 {$capLine}
-- researcher: find and check facts, read pages, and parse documents, then log them with research_pipeline in their own wiki file. Do not put research in the project description.
+- researcher: find and check facts with web_search, fetch_url, and browse_url, parse documents, then log them with research_pipeline in their own wiki file. Do not put research in the project description.
 - writer: draft long-form text, documentation, and communication copy, and save it in the wiki. An article runs write_article and follows every step, including humanizer and a spelling pass. Other prose runs humanizer. A figure, icon, or infographic runs make_graphic, then the file is written and its path comes back. A PDF is the writer's job too. Delegate the brief and the file name. The writer calls create_pdf, and only the file path comes back, so a long document does not fill this chat. Do not give a PDF to the coder.
 - coder: write and debug software, run code_verifier on each changed file, use download_large for a download over 100 MB, and create a reusable PHP skill with write_skill. Skills are not project files. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.

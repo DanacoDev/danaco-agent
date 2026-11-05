@@ -270,7 +270,7 @@ SQL);
                 $memory->remember('browser', 'Headless browser is on. It can read public pages.');
             }
             if ($this->getSetting('web_search', '0') === '1') {
-                $memory->remember('search', 'Web search is on.');
+                $memory->remember('search', 'Web search is on for the researcher. The main agent delegates web research.');
             }
             if ($this->getSetting('terminal', '0') === '1') {
                 $memory->remember('terminal', 'Terminal commands are on inside the project folder.');

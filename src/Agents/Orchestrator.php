@@ -914,6 +914,18 @@ TXT;
             'remember' => function (array $args): string {
                 return $this->memory->remember((string)($args['tool'] ?? ''), (string)($args['note'] ?? ''));
             },
+            'web_search' => function (): string {
+                return $this->researchDelegationNotice();
+            },
+            'search' => function (): string {
+                return $this->researchDelegationNotice();
+            },
+            'fetch_url' => function (): string {
+                return $this->researchDelegationNotice();
+            },
+            'browse_url' => function (): string {
+                return $this->researchDelegationNotice();
+            },
             'soul' => function (array $args) use ($folder): string {
                 if ($folder === '') {
                     return 'Open a project before saving how you should act.';
@@ -1044,5 +1056,10 @@ TXT;
             return 'Use a full path, such as /Users/name/file.';
         }
         return null;
+    }
+
+    private function researchDelegationNotice(): string
+    {
+        return 'Web search and page fetching are researcher tools. Delegate that work to the researcher with a clear instruction. Do not call web_search, search, fetch_url, or browse_url yourself.';
     }
 }

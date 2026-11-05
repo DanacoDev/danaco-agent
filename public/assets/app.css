@@ -75,46 +75,46 @@ svg.sprite { position: absolute; width: 0; height: 0; }
 .sidebar {
   display: none; width: 198px; flex-direction: column; min-height: 0; overflow: hidden;
   background: rgba(12, 8, 18, 0.38); backdrop-filter: blur(12px);
-  border-right: 1px solid var(--line); padding: 14px 10px; gap: 8px;
+  border-right: 1px solid var(--line); padding: 10px 8px; gap: 4px;
 }
 .brand, .sidebar-foot, .topbar, .view-head, .composer, .switch-row, .task-top, .wiki-tools {
   display: flex; align-items: center; gap: 10px;
 }
-.brand { padding: 4px 6px 8px; }
+.brand { padding: 2px 6px 4px; }
 .project-picker {
-  display: flex; flex-direction: column; align-items: stretch; gap: 6px;
-  flex: 1; min-height: 0; margin-top: 16px; padding: 16px 0 0;
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  flex: 1; min-height: 0; margin-top: 8px; padding: 8px 0 0;
   border-top: 1px solid var(--line);
 }
 .project-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px; }
 .project-head h2 { margin: 0; font-size: 0.78rem; font-weight: 650; }
-.project-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-.project-row { display: flex; align-items: center; gap: 2px; border-radius: 12px; }
+.project-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.project-row { display: flex; align-items: center; gap: 2px; border-radius: 10px; }
 .project-row.active { background: rgba(232, 184, 109, 0.12); }
 .project-name {
-  flex: 1; min-width: 0; text-align: left; padding: 8px 8px;
-  background: transparent; border: 0; border-radius: 12px; color: var(--muted);
+  flex: 1; min-width: 0; text-align: left; padding: 5px 8px;
+  background: transparent; border: 0; border-radius: 10px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .project-row.active .project-name { color: var(--gold); }
 .project-edit {
-  flex: 0 0 28px; width: 28px; height: 28px; display: grid; place-items: center;
+  flex: 0 0 24px; width: 24px; height: 24px; display: grid; place-items: center;
   padding: 0; color: #d4d4dc; background: transparent; border: 0;
 }
 .project-edit:hover { color: var(--gold); }
-.project-edit .ico { width: 16px; height: 16px; }
+.project-edit .ico { width: 14px; height: 14px; }
 .top-select { width: 100%; min-width: 0; background: #0e0e12; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
 .new-project { flex: 0 0 auto; padding: 0; background: transparent; border: 0; color: var(--muted); font-size: 0.78rem; }
 .new-project:hover { color: var(--gold); }
 .nav-btn {
-  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
-  padding: 10px 12px; color: var(--muted);
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 6px 10px; color: var(--muted);
 }
 .nav-btn.active { background: rgba(232, 184, 109, 0.12); color: var(--gold); }
-.nav-btn .ico, .icon-btn .ico { width: 18px; height: 18px; flex: 0 0 auto; }
-.sidebar-foot { margin-top: auto; padding-top: 8px; }
+.nav-btn .ico, .icon-btn .ico { width: 16px; height: 16px; flex: 0 0 auto; }
+.sidebar-foot { margin-top: auto; padding-top: 6px; }
 .sidebar-foot .nav-btn { flex: 1; min-width: 0; justify-content: flex-start; text-align: left; }
-.sidebar-foot .icon-btn { flex: 0 0 36px; width: 36px; height: 36px; display: grid; place-items: center; padding: 0; }
+.sidebar-foot .icon-btn { flex: 0 0 32px; width: 32px; height: 32px; display: grid; place-items: center; padding: 0; }
 
 .workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .topbar {

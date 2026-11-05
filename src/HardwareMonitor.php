@@ -51,14 +51,14 @@ class HardwareMonitor
     public function recommendContext(string $mode): int
     {
         if ($mode === 'cloud') {
-            return 65536;
+            return $this->cloudContext();
         }
         if ($mode === 'cpu_failsafe') {
             return 8192;
         }
         $reported = $this->modelContextLength();
         if ($reported >= 512) {
-            return min(65536, $reported);
+            return min(32768, $reported);
         }
         return $this->ramContext();
     }
@@ -73,6 +73,49 @@ class HardwareMonitor
         return max(512, $total);
     }
 
+    private function cloudContext(): int
+    {
+        $model = strtolower(trim((string)$this->db->getSetting('cloud_model', app_config()['cloud_model'])));
+        $slash = strrpos($model, '/');
+        if ($slash !== false) {
+            $model = substr($model, $slash + 1);
+        }
+        if (preg_match('/(?:^|[^a-z0-9])(\d+(?:\.\d+)?)m(?:[^a-z]|$)/', $model, $match)) {
+            return max(512, (int)round((float)$match[1] * 1048576));
+        }
+        if (preg_match('/(?:^|[^a-z0-9])(\d+)k(?:[^a-z]|$)/', $model, $match)) {
+            return max(512, ((int)$match[1]) * 1024);
+        }
+        $windows = [
+            'gpt-4.1' => 1047576,
+            'gpt-4o' => 128000,
+            'chatgpt-4o' => 128000,
+            'gpt-4-turbo' => 128000,
+            'gpt-4' => 8192,
+            'gpt-3.5' => 16385,
+            'o1-mini' => 128000,
+            'o1-preview' => 128000,
+            'o1' => 200000,
+            'o3' => 200000,
+            'o4' => 200000,
+            'claude' => 200000,
+            'gemini' => 1048576,
+            'deepseek' => 65536,
+        ];
+        $best = 0;
+        $length = 0;
+        foreach ($windows as $name => $window) {
+            if ($model !== '' && str_starts_with($model, $name) && strlen($name) > $best) {
+                $best = strlen($name);
+                $length = $window;
+            }
+        }
+        if ($length >= 512) {
+            return $length;
+        }
+        return 128000;
+    }
+
     private function ramContext(): int
     {
         $system = $this->systemMemory();
@@ -83,9 +126,6 @@ class HardwareMonitor
         // Free VRAM looks empty once qwen3.6 is loaded. The extra context is the
         // KV cache, and Ollama keeps that in system RAM when it does not fit on the GPU.
         // About 0.15 GB of RAM per 1024 tokens, with room left for the system.
-        if ($ram >= 10240) {
-            return 65536;
-        }
         if ($ram >= 6144) {
             return 32768;
         }
