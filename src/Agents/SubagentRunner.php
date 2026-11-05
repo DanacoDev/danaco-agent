@@ -276,7 +276,7 @@ TXT;
             },
             'wiki_write' => function (array $args) use ($projectFolder): string {
                 try {
-                    $relative = Projects::wikiRelative($projectFolder, (string)($args['name'] ?? ''));
+                    $relative = Projects::wikiRelativeFromArgs($projectFolder, $args);
                 } catch (InvalidArgumentException $e) {
                     return $e->getMessage();
                 }

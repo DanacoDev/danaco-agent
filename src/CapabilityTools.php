@@ -29,7 +29,7 @@ class CapabilityTools
     public function descriptions(int $projectId = 0): array
     {
         $lines = [];
-        $lines[] = '- web_search: args query. Returns web results with a title, link, and snippet. Supports site:example.com. Then read a result with fetch_url.';
+        $lines[] = '- web_search: args query. One idea, as in a normal search box: two to four plain words. Every word must match, so extra words and synonyms make it miss. Quotes are only for one exact title of several words, plus at most one plain word. Do not quote a single word, do not stack quoted phrases, and do not use OR, AND, NOT, or parentheses to join alternatives. Search the other wording on its own. site:example.com is the only operator. Returns a title, link, and snippet. Then read a result with fetch_url. If this tool rejects the query, rewrite it the way the message says and call once more.';
         $lines[] = '- fetch_url: args url. Reads a public page and lists links on it. Open those links to keep crawling.';
         $lines[] = '- browse_url: args url. Same page text and links as fetch_url. JavaScript on the page is not run.';
         $lines[] = $this->db->fullSystemControl()
@@ -231,9 +231,13 @@ class CapabilityTools
 
     private function webSearch(string $query): string
     {
-        $query = trim($query);
+        $query = str_replace(['“', '”', '„'], '"', trim($query));
         if ($query === '') {
             return 'Missing query.';
+        }
+        $problem = $this->searchQueryProblem($query);
+        if ($problem !== '') {
+            return $problem;
         }
         $provider = $this->searchProvider();
         $results = $provider === 'bing' ? $this->bingResults($query) : $this->duckSearch($query);
@@ -268,7 +272,169 @@ class CapabilityTools
             $home = 'https://' . strtolower($match[1]) . '/';
             return "No search hits for that query. Opened {$home} instead.\n\n" . $this->fetchUrl($home);
         }
-        return 'No web results for that query. Try a shorter query, or fetch_url with a direct https address.';
+        return $this->emptySearchMessage($query);
+    }
+
+    private function searchQueryProblem(string $query): string
+    {
+        if (preg_match('/\b(?:OR|AND|NOT)\b/', $query)) {
+            return $this->operatorProblem($query);
+        }
+        preg_match_all('/"([^"]*)"/u', $query, $quoted);
+        $phrases = [];
+        foreach ($quoted[1] ?? [] as $phrase) {
+            $phrase = trim((string)$phrase);
+            if ($phrase !== '') {
+                $phrases[] = $phrase;
+            }
+        }
+        if (count($phrases) > 1) {
+            $singles = 0;
+            foreach ($phrases as $phrase) {
+                if (!preg_match('/\s/u', $phrase)) {
+                    $singles++;
+                }
+            }
+            $why = $singles === count($phrases)
+                ? 'Quotes around "' . implode('" and "', $phrases) . '" force each single word as an exact token, and stacking them demands every one of those tokens on the same page. That is why this kind of query comes back empty.'
+                : 'More than one quoted phrase means each phrase must appear exactly, on the same page. Stacked quotes are why this kind of query comes back empty.';
+            return 'This query was not searched. ' . $why . ' Write two to four plain words and do not quote a single word. Quotes are only for one exact title of several words, with at most one plain word beside it. Try: ' . $this->suggestedQuery($query) . '.';
+        }
+        if (count($phrases) === 1 && !preg_match('/\s/u', $phrases[0])) {
+            return 'This query was not searched. Quotes around the single word "' . $phrases[0] . '" force an exact token and hide ordinary pages that use the same word. Drop the quotes. A quoted phrase is only for a title of two or more words. Try: ' . $this->suggestedQuery($query) . '.';
+        }
+        if (count($phrases) === 1) {
+            $outside = trim(preg_replace('/"[^"]*"/u', ' ', $query) ?? $query);
+            $extra = $this->searchWords($outside);
+            if (count($extra) > 1) {
+                return 'This query was not searched. A quoted title already has to match word for word. Put at most one plain word beside it, and save the other words for a later search. Try: ' . $this->suggestedQuery($query) . '.';
+            }
+            return '';
+        }
+        $words = $this->searchWords($query);
+        if (count($words) > 6) {
+            return 'This query was not searched. It has too many words. Every word has to match, so each extra word makes a miss more likely. Keep two to four words for one idea, and save the other idea for a later search. Try: ' . $this->suggestedQuery($query) . '.';
+        }
+        return '';
+    }
+
+    private function operatorProblem(string $query): string
+    {
+        $text = preg_replace('/\bNOT\s+\S+/u', ' ', $query) ?? $query;
+        $alts = [];
+        $shared = [];
+        foreach (preg_split('/\bOR\b/u', $text) ?: [] as $branch) {
+            $words = $this->searchWords($branch);
+            if (!$words) {
+                continue;
+            }
+            $alts[] = $words[0];
+            foreach (array_slice($words, 1) as $word) {
+                $shared[] = $word;
+            }
+        }
+        $focus = '';
+        $altKeys = array_map(static fn(string $word): string => mb_strtolower($word), $alts);
+        foreach ($shared as $word) {
+            if (!in_array(mb_strtolower($word), $altKeys, true)) {
+                $focus = $word;
+                break;
+            }
+        }
+        $try = $alts[0] ?? 'the main term';
+        if ($focus !== '') {
+            $try .= ' ' . $focus;
+        }
+        $other = '';
+        if (isset($alts[1])) {
+            $other = ' Search that other wording on its own: ' . $alts[1] . ($focus !== '' ? ' ' . $focus : '') . '.';
+        }
+        return 'This query was not searched. OR, AND, and NOT are not operators here. Every word you send has to appear on the page. OR does not mean either term, and AND is already how a normal search works. Write two to four plain words for one idea, with no quotes around a single word. Try: ' . $try . '.' . $other;
+    }
+
+    private function emptySearchMessage(string $query): string
+    {
+        $pieces = [];
+        if (preg_match_all('/"([^"]+)"/u', $query, $quoted)) {
+            foreach ($quoted[1] as $phrase) {
+                $phrase = trim((string)$phrase);
+                if ($phrase !== '') {
+                    $pieces[] = '"' . $phrase . '"';
+                }
+            }
+        }
+        $outside = trim(preg_replace('/"[^"]*"/u', ' ', $query) ?? $query);
+        foreach ($this->searchWords($outside) as $word) {
+            $pieces[] = $word;
+        }
+        if (count($pieces) > 2) {
+            array_pop($pieces);
+            return 'No web results for that query. Every word has to match, so this is narrower than a normal search. Drop the last word and search once more, with no new quotes: ' . implode(' ', $pieces) . '. If that is also empty, stop and say what you could not find. If you already have the page address, open it with fetch_url.';
+        }
+        return 'No web results for that query. The pages may use a different word. Try one other plain term, or open a page you already know with fetch_url. Do not add quotes, OR, AND, or NOT.';
+    }
+
+    private function suggestedQuery(string $query): string
+    {
+        preg_match_all('/"([^"]+)"/u', $query, $quoted);
+        $title = '';
+        $single = '';
+        foreach ($quoted[1] ?? [] as $phrase) {
+            $phrase = trim((string)$phrase);
+            if ($phrase === '') {
+                continue;
+            }
+            if (preg_match('/\s/u', $phrase) && mb_strlen($phrase) > mb_strlen($title)) {
+                $title = $phrase;
+                continue;
+            }
+            if ($single === '') {
+                $single = $phrase;
+            }
+        }
+        $outside = trim(preg_replace('/"[^"]*"/u', ' ', $query) ?? $query);
+        $outsideWords = $this->searchWords($outside);
+        if ($title !== '') {
+            $extra = $single !== '' ? $single : ($outsideWords[0] ?? '');
+            return '"' . $title . '"' . ($extra !== '' ? ' ' . $extra : '');
+        }
+        $words = $this->searchWords($query);
+        if (!$words) {
+            return 'the two or three main words';
+        }
+        return implode(' ', array_slice($words, 0, 3));
+    }
+
+    private function searchWords(string $query): array
+    {
+        $text = implode(' ', $this->quotedWords($query));
+        $text .= ' ' . (preg_replace('/"[^"]*"/u', ' ', $query) ?? $query);
+        $text = preg_replace('/\b(?:OR|AND|NOT)\b/u', ' ', $text) ?? $text;
+        $text = preg_replace('/\bsite:[^\s]+/iu', ' ', $text) ?? $text;
+        $text = str_replace(['"', '(', ')'], ' ', $text);
+        $skip = ['och', 'att', 'för', 'med', 'som', 'den', 'det', 'en', 'ett', 'om', 'av', 'på', 'till', 'eller', 'and', 'or', 'the', 'of', 'a', 'an'];
+        $out = [];
+        foreach (preg_split('/\s+/u', trim($text)) ?: [] as $part) {
+            if ($part === '' || in_array(mb_strtolower($part), $skip, true) || isset($out[mb_strtolower($part)])) {
+                continue;
+            }
+            $out[mb_strtolower($part)] = $part;
+        }
+        return array_values($out);
+    }
+
+    private function quotedWords(string $query): array
+    {
+        preg_match_all('/"([^"]+)"/u', $query, $quoted);
+        $words = [];
+        foreach ($quoted[1] ?? [] as $phrase) {
+            foreach (preg_split('/\s+/u', trim((string)$phrase)) ?: [] as $part) {
+                if ($part !== '') {
+                    $words[] = str_replace(['(', ')'], '', $part);
+                }
+            }
+        }
+        return $words;
     }
 
     private function duckSearch(string $query): array

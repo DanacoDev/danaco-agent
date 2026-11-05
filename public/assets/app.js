@@ -125,6 +125,7 @@
           steerText: '',
           slowTimer: null,
           slowReply: false,
+          waitPhase: '',
           answerStarted: false,
           live: '',
           liveAgent: 'orchestrator',
@@ -363,6 +364,15 @@
         },
         thinkingSpinner() {
           return (this.sending || this.awaitingModel) && !this.answerStarted && !this.streamError;
+        },
+        thinkingLabel() {
+          if (this.toolPending) return 'Calling a tool';
+          if (!this.thinkingSpinner) return 'Working';
+          if (!this.slowReply) return 'Thinking';
+          let why = '';
+          if (this.waitPhase === 'compressing') why = 'compressing context';
+          else if (this.awaitingModel || (this.modelLoad && this.modelLoad.ready === false && !this.modelLoad.error)) why = 'loading model';
+          return why ? 'Taking longer than expected (' + why + ')' : 'Taking longer than expected';
         },
         fileKind() {
           if (this.fileIsDir) return 'dir';
@@ -1054,6 +1064,7 @@
           this.liveAgent = 'orchestrator';
           this.streamError = '';
           this.slowReply = false;
+          this.waitPhase = '';
           this.delegation = null;
           this.armSlowTimer();
           this.scrollChat();
@@ -1134,6 +1145,7 @@
             if (this.chatRun !== runId) return;
             this.clearSlowTimer();
             this.sending = false;
+            this.waitPhase = '';
             this.answerStarted = false;
             this.live = '';
             this.liveDetail = { thinking: [], tools: [] };
@@ -1146,6 +1158,7 @@
             if (aborted && !next && this.userStop) {
               this.messages.push({ id: 'stop-' + Date.now(), role: 'assistant', agent_name: 'orchestrator', content: 'Stopped.' });
             }
+            if (this.awaitingModel) this.armSlowTimer();
             if (next) await this.runChat(next);
           }
         },
@@ -1326,7 +1339,7 @@
         armSlowTimer() {
           this.clearSlowTimer();
           this.slowTimer = setTimeout(() => {
-            if (this.sending && !this.live) this.slowReply = true;
+            if ((this.sending || this.awaitingModel) && !this.live) this.slowReply = true;
           }, 20000);
         },
         clearSlowTimer() {
@@ -1373,8 +1386,11 @@
           if (!dataLines.length) return;
           let data = {};
           try { data = JSON.parse(dataLines.join('\n')); } catch (error) { return; }
-          if (event === 'token') {
+          if (event === 'phase' && data.phase === 'compressing') {
+            this.waitPhase = 'compressing';
+          } else if (event === 'token') {
             this.slowReply = false;
+            this.waitPhase = '';
             this.clearSlowTimer();
             if (this.live && this.liveAgent !== data.agent) this.flushLive();
             this.liveAgent = data.agent || this.liveAgent;
@@ -1383,6 +1399,7 @@
             this.scrollChat();
           } else if (event === 'thinking') {
             this.slowReply = false;
+            this.waitPhase = '';
             this.answerStarted = false;
             this.noteThinking(data);
             this.scrollChat();
@@ -2344,7 +2361,11 @@
         async refreshModelLoad(quiet) {
           try {
             this.modelLoad = await this.api('/api/model/load', { quiet: !!quiet });
-            if (this.modelLoad && (this.modelLoad.ready === true || this.modelLoad.error)) this.awaitingModel = false;
+            if (this.modelLoad && (this.modelLoad.ready === true || this.modelLoad.error)) {
+              this.awaitingModel = false;
+              this.slowReply = false;
+              this.clearSlowTimer();
+            }
           } catch (error) {
             if (this.modelLoad && this.modelLoad.ready === true) return;
             this.modelLoad = { ready: false, percent: this.modelLoad ? this.modelLoad.percent : 0, model: this.modelLoad ? this.modelLoad.model : '', error: error.message, scratch: true };

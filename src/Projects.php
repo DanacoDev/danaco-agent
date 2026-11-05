@@ -41,6 +41,19 @@ class Projects
         return 'wiki/' . $name;
     }
 
+    public static function wikiRelativeFromArgs(string $folder, array $args): string
+    {
+        $name = '';
+        foreach (['name', 'path', 'file', 'filepath'] as $key) {
+            $value = trim((string)($args[$key] ?? ''));
+            if ($value !== '') {
+                $name = $value;
+                break;
+            }
+        }
+        return self::wikiRelative($folder, $name);
+    }
+
     public static function soulPath(string $folder): string
     {
         return self::root($folder) . '/soul.md';

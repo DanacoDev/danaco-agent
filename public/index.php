@@ -225,7 +225,7 @@ header('X-Danaco: 1');
                   <div v-if="streamError && !live && !liveDetail.thinking.length && !liveDetail.tools.length" class="form-error">{{ errorText(streamError) }}</div>
                   <div v-if="thinkingSpinner || (sending && (answerStarted || toolPending))" class="thinking-row">
                     <span class="spinner" aria-hidden="true"></span>
-                    <span>{{ toolPending ? 'Calling a tool' : (thinkingSpinner ? (slowReply ? 'Taking longer than expected' : 'Thinking') : 'Working') }}</span>
+                    <span>{{ thinkingLabel }}</span>
                   </div>
                 </article>
               </div>

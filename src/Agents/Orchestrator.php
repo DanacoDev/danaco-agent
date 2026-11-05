@@ -17,7 +17,7 @@ class Orchestrator
         if ($projectId > 0 && !$project) {
             throw new RuntimeException('Project not found.');
         }
-        $packed = $this->prepare($projectId, $project, true, $shouldStop);
+        $packed = $this->prepare($projectId, $project, true, $shouldStop, false, $emit);
         if (!empty($packed['updated'])) {
             $this->db->addMessage($projectId, 'notice', ContextWindow::NOTICE, 'orchestrator');
             $emit(['type' => 'notice', 'text' => ContextWindow::NOTICE]);
@@ -87,7 +87,7 @@ class Orchestrator
         ];
     }
 
-    private function prepare(int $projectId, ?array $project, bool $writeSummary, ?callable $shouldStop, bool $activate = false): array
+    private function prepare(int $projectId, ?array $project, bool $writeSummary, ?callable $shouldStop, bool $activate = false, ?callable $emit = null): array
     {
         $history = [];
         foreach ($this->db->messages($projectId, 100) as $row) {
@@ -138,7 +138,7 @@ class Orchestrator
                 }
             }
             if ($fresh) {
-                $summary = $this->summarize($summary, $fresh, $shouldStop);
+                $summary = $this->summarize($summary, $fresh, $shouldStop, $emit);
                 if ($summary !== '') {
                     $this->memory->writeContextSummary($folder, $summary);
                     $last = (int)$fresh[count($fresh) - 1]['id'];
@@ -187,7 +187,7 @@ class Orchestrator
             return $messages;
         }
         $folder = is_array($project) ? (string)$project['folder_name'] : null;
-        $summary = $this->summarize($this->memory->readContextSummary($folder), $split['dropped'], $shouldStop);
+        $summary = $this->summarize($this->memory->readContextSummary($folder), $split['dropped'], $shouldStop, $emit);
         if (trim($summary) === '') {
             return $messages;
         }
@@ -210,7 +210,7 @@ class Orchestrator
             return $messages;
         }
         $folder = is_array($project) ? (string)$project['folder_name'] : null;
-        $summary = $this->summarize($this->memory->readContextSummary($folder), $split['dropped'], $shouldStop);
+        $summary = $this->summarize($this->memory->readContextSummary($folder), $split['dropped'], $shouldStop, $emit);
         if (trim($summary) === '') {
             $emit(['type' => 'context', 'used' => $split['used'], 'total' => $split['total']]);
             return $messages;
@@ -253,8 +253,11 @@ class Orchestrator
         return true;
     }
 
-    private function summarize(string $previous, array $fresh, ?callable $shouldStop): string
+    private function summarize(string $previous, array $fresh, ?callable $shouldStop, ?callable $emit = null): string
     {
+        if ($emit) {
+            $emit(['type' => 'phase', 'phase' => 'compressing']);
+        }
         $window = $this->contextTotal();
         if ($window <= 8192) {
             return $this->summarizeForWindow($previous, $fresh, $shouldStop, $window);
@@ -826,7 +829,7 @@ TXT;
                     return 'General chat has no project wiki. Open a project before writing project notes.';
                 }
                 try {
-                    $relative = Projects::wikiRelative($folder, (string)($args['name'] ?? ''));
+                    $relative = Projects::wikiRelativeFromArgs($folder, $args);
                 } catch (InvalidArgumentException $e) {
                     return $e->getMessage();
                 }
