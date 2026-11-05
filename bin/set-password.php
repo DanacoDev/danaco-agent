@@ -45,5 +45,9 @@ if (preg_match('/^\d+$/', $appPort)) {
         $db->setSetting('port', (string)$portNumber);
     }
 }
+$aiAct = getenv('AI_ACT_APPLIES') ?: '';
+if (in_array($aiAct, ['yes', 'no', 'unsure'], true)) {
+    $db->setSetting('ai_act_applies', $aiAct);
+}
 
 echo $existed ? "Password updated.\n" : "Password saved.\n";

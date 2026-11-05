@@ -435,7 +435,6 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 }
 .setup-stack .setup-box { margin-top: 0; }
 .setup-box h3 { margin: 0 0 4px; font-size: 1rem; }
-.ai-assist-note { margin: 4px 0 0; font-size: 0.85rem; }
 .setup-compliance-link { margin: 0 0 12px; }
 .hint-list { margin: 8px 0 0; padding-left: 1.2rem; color: var(--muted); }
 .hint-list li { margin: 0 0 6px; }
@@ -454,7 +453,7 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 .backup-list .check-row { align-items: center; }
 .check-row, .choice-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 0; }
 .backup-actions, .modal-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
-.file-btn { position: relative; }
+.file-btn { position: relative; cursor: pointer; }
 .file-pick {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
   clip: rect(0, 0, 0, 0); border: 0;

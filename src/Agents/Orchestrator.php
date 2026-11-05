@@ -504,7 +504,7 @@ Tools:
 - read_vault: args kind (backup or trash), stored_as
 - restore_file: args kind, stored_as
 - write_skill: args name, description, filename, source. filename is a lowercase .php file. source is PHP that reads JSON from stdin. Saves to data/skills/, not the project. Cannot replace a built-in skill. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not end the file with a closing PHP tag. Delegate this to the coder. Call it yourself when the coder cannot finish.
-- soul: args action (add or remove), text. One behaviour line for this project: a role, a title, a mission, how to present output, or a standing always or never. Not what the project is about. General chat has no soul file. Open a project first.
+- soul: args action (add or remove), text. Optional persona line only: how you speak, present yourself, or a standing always/never habit. soul.md starts empty; add a line only when the user wants lasting persona behaviour. Never store project facts or subject matter here. General chat has no soul file. Open a project first.
 
 Skills, one line each:
 TXT;

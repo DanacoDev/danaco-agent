@@ -256,10 +256,6 @@
             { label: 'Todoist', target: 'https://ai.todoist.net/mcp', env: '' },
             { label: 'PayPal', target: 'npx -y @paypal/mcp --tools=all', env: 'PAYPAL_ACCESS_TOKEN=\nPAYPAL_ENVIRONMENT=SANDBOX' }
           ],
-          soulLines: [],
-          soulDraft: '',
-          soulMessage: '',
-          soulError: false,
           cloudKeyDraft: '',
           modelLoad: null,
           awaitingModel: false,
@@ -550,7 +546,6 @@
           if (this.tab === 'workspace') await this.loadTree();
           if (this.tab === 'agents') {
             await this.refreshLogs();
-            await this.loadSoul();
             await this.refreshPendingActions();
           }
           if (this.tab === 'skills') {
@@ -2018,42 +2013,6 @@
           await this.api('/api/tools/ftp/' + account.id + '/delete', { method: 'POST', body: {} });
           await this.loadFtpAccounts();
           this.ftpMessage = 'FTP login deleted.';
-        },
-        async loadSoul() {
-          this.soulMessage = '';
-          this.soulError = false;
-          if (!this.projectId) {
-            this.soulLines = [];
-            return;
-          }
-          const data = await this.api('/api/soul?project_id=' + this.projectId);
-          this.soulLines = data.lines || [];
-        },
-        async addSoulLine() {
-          const text = this.soulDraft.trim();
-          if (!text || !this.projectId) return;
-          this.soulMessage = '';
-          this.soulError = false;
-          try {
-            const data = await this.api('/api/soul', { method: 'POST', body: { project_id: this.projectId, action: 'add', text: text } });
-            this.soulLines = data.lines || [];
-            this.soulDraft = '';
-          } catch (error) {
-            this.soulError = true;
-            this.soulMessage = error.message;
-          }
-        },
-        async removeSoulLine(line) {
-          if (!this.projectId) return;
-          this.soulMessage = '';
-          this.soulError = false;
-          try {
-            const data = await this.api('/api/soul', { method: 'POST', body: { project_id: this.projectId, action: 'remove', text: line } });
-            this.soulLines = data.lines || [];
-          } catch (error) {
-            this.soulError = true;
-            this.soulMessage = error.message;
-          }
         },
         modelChoices(key) {
           const names = this.ollamaModels.map((model) => model.name).filter(Boolean);

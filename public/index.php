@@ -173,7 +173,6 @@ header('X-Danaco: 1');
               <div class="view-head" style="padding:16px 18px 0">
                 <div class="chat-heading">
                   <h2>Chat<span v-if="currentProject" class="project-tag">{{ currentProject.name }}</span></h2>
-                  <p class="hint ai-assist-note">AI-assisted — outputs can be wrong; you remain responsible for decisions.</p>
                 </div>
                 <div class="chat-side">
                   <label class="chat-find">
@@ -492,21 +491,6 @@ header('X-Danaco: 1');
                 </span>
               </article>
             </div>
-            <div v-if="projectId" class="setup-box">
-              <h3>How this project should act</h3>
-              <p class="hint">A role, a title, a mission, or how to present output. Not what the project is about.</p>
-              <article v-for="(line, index) in soulLines" :key="index" class="log-row email-row">
-                <div>{{ line }}</div>
-                <button class="btn" type="button" @click="removeSoulLine(line)">Delete</button>
-              </article>
-              <p v-if="!soulLines.length" class="empty">No behaviour lines yet.</p>
-              <form class="email-form" @submit.prevent="addSoulLine">
-                <label class="field">Behaviour<input v-model="soulDraft" maxlength="240" required></label>
-                <button class="btn btn-gold" type="submit">Add</button>
-              </form>
-              <p v-if="soulMessage" :class="soulError ? 'form-error' : 'form-ok'">{{ soulMessage }}</p>
-            </div>
-            <p v-else class="hint">Open a project to set how the agent should act there.</p>
             <div v-if="mainAgent" class="flow-board">
               <div class="flow">
                 <div class="flow-top">

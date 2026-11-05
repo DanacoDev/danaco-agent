@@ -46,6 +46,11 @@ class Projects
         return self::root($folder) . '/soul.md';
     }
 
+    public static function soulHeader(): string
+    {
+        return '# Optional agent persona only. Add a short line when lasting how-you-act habits are needed (voice, always/never). Not project facts — those go in the wiki. Use the soul tool to add or remove lines below.';
+    }
+
     public static function soulLines(string $folder): array
     {
         $path = self::soulPath($folder);
@@ -61,7 +66,7 @@ class Projects
         if ($lines === []) {
             return '';
         }
-        return "How to act in this project, added to your normal rules:\n" . implode("\n", $lines);
+        return "Your persona for this project (soul.md), added to your normal rules:\n" . implode("\n", $lines);
     }
 
     public static function addSoulLine(string $folder, string $text): string
@@ -117,14 +122,19 @@ class Projects
     public static function ensureSoul(string $folder): void
     {
         $path = self::soulPath($folder);
-        if (is_file($path)) {
-            return;
-        }
         $dir = dirname($path);
         if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
             return;
         }
-        file_put_contents($path, '');
+        if (!is_file($path)) {
+            file_put_contents($path, self::soulHeader() . "\n");
+            return;
+        }
+        $raw = (string)file_get_contents($path);
+        $trimmed = ltrim($raw);
+        if ($trimmed === '' || !str_starts_with($trimmed, self::soulHeader())) {
+            self::writeSoul($folder, self::parseSoul($raw));
+        }
     }
 
     private static function soulLine(string $text, bool $clip): ?string
@@ -134,7 +144,8 @@ class Projects
         if ($text === '' || str_starts_with($text, '#')) {
             return '';
         }
-        if (strcasecmp($text, 'How to act in this project, added to your normal rules:') === 0) {
+        if (strcasecmp($text, 'How to act in this project, added to your normal rules:') === 0
+            || strcasecmp($text, 'Your persona for this project (soul.md), added to your normal rules:') === 0) {
             return '';
         }
         if (mb_strlen($text) > 240) {
@@ -178,7 +189,11 @@ class Projects
         if (!is_dir($root) && !mkdir($root, 0775, true) && !is_dir($root)) {
             return false;
         }
-        $body = $lines === [] ? '' : implode("\n", $lines) . "\n";
+        $body = self::soulHeader();
+        if ($lines !== []) {
+            $body .= "\n" . implode("\n", $lines);
+        }
+        $body .= "\n";
         return file_put_contents(self::soulPath($folder), $body) !== false;
     }
 

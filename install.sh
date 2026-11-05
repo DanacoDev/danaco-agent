@@ -256,6 +256,23 @@ while true; do
   echo "Passwords did not match or were shorter than 8 characters."
 done
 
+echo
+echo "Does the EU AI Act apply to this deployment?"
+echo "  1) Yes — organisation in the EU/EEA, or the system affects people there in a way that brings the Act into scope"
+echo "  2) No"
+echo "  3) Not sure"
+AI_ACT_APPLIES=""
+while [[ -z "$AI_ACT_APPLIES" ]]; do
+  read -r -p "Choice [2]: " AI_ACT_CHOICE
+  AI_ACT_CHOICE="${AI_ACT_CHOICE:-2}"
+  case "$AI_ACT_CHOICE" in
+    1|y|Y|yes|Yes) AI_ACT_APPLIES="yes" ;;
+    2|n|N|no|No) AI_ACT_APPLIES="no" ;;
+    3|u|U|unsure|Unsure) AI_ACT_APPLIES="unsure" ;;
+    *) echo "Enter 1, 2, or 3." ;;
+  esac
+done
+
 mkdir -p public/assets data/sessions
 if [[ ! -s public/assets/vue.global.prod.js ]]; then
   curl -fsSL -o public/assets/vue.global.prod.js "https://unpkg.com/vue@3/dist/vue.global.prod.js" || echo "Could not download Vue. The page will try the CDN."
@@ -264,7 +281,7 @@ if [[ ! -s public/assets/tailwind.js ]]; then
   curl -fsSL -o public/assets/tailwind.js "https://cdn.tailwindcss.com" || echo "Could not download Tailwind. The page will try the CDN."
 fi
 
-printf '%s' "$PASS" | MODEL_MODE="$MODEL_MODE" LOCAL_MODEL="${LOCAL_MODEL:-}" APP_PORT="$APP_PORT" OLLAMA_URL="http://127.0.0.1:11434" BIND_HOST="$BIND_HOST" php "$ROOT/bin/set-password.php"
+printf '%s' "$PASS" | MODEL_MODE="$MODEL_MODE" LOCAL_MODEL="${LOCAL_MODEL:-}" APP_PORT="$APP_PORT" OLLAMA_URL="http://127.0.0.1:11434" BIND_HOST="$BIND_HOST" AI_ACT_APPLIES="$AI_ACT_APPLIES" php "$ROOT/bin/set-password.php"
 unset PASS PASS2
 
 ollama_api_up() {
