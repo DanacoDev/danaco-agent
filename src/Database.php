@@ -1,0 +1,1019 @@
+<?php
+
+class Database
+{
+    private static ?self $instance = null;
+    private PDO $pdo;
+
+    public static function instance(): self
+    {
+        if (self::$instance === null) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+
+    private function __construct()
+    {
+        $config = app_config();
+        $dir = $config['data_dir'];
+        foreach ([$dir, $dir . '/skills', $dir . '/wiki', $dir . '/sessions', $dir . '/.backups', $dir . '/.trashcan'] as $path) {
+            if (!is_dir($path) && !mkdir($path, 0775, true) && !is_dir($path)) {
+                throw new RuntimeException('Could not create ' . $path);
+            }
+        }
+        $this->pdo = new PDO('sqlite:' . $config['db_path']);
+        $this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $this->pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $this->pdo->exec('PRAGMA foreign_keys = ON');
+        $this->pdo->exec('PRAGMA busy_timeout = 5000');
+        $this->pdo->query('PRAGMA journal_mode = WAL')->fetch();
+        $this->migrate();
+        $this->seedDefaults($config);
+        Projects::migrateLayout($this->projects());
+    }
+
+    public function pdo(): PDO
+    {
+        return $this->pdo;
+    }
+
+    private function migrate(): void
+    {
+        $this->pdo->exec(<<<'SQL'
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    folder_name TEXT UNIQUE NOT NULL,
+    purpose TEXT,
+    project_type TEXT,
+    status TEXT DEFAULT 'active',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT DEFAULT 'todo',
+    assigned_agent TEXT DEFAULT 'orchestrator',
+    schedule_time DATETIME NULL,
+    recurrence_interval TEXT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS skills (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT NOT NULL,
+    script_path TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    created_by TEXT DEFAULT 'system',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_name TEXT NOT NULL,
+    project_id INTEGER NULL,
+    log_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER,
+    role TEXT NOT NULL,
+    agent_name TEXT,
+    content TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT NOT NULL,
+    success INTEGER NOT NULL DEFAULT 0,
+    attempted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_schedule ON tasks(schedule_time);
+CREATE INDEX IF NOT EXISTS idx_messages_project ON messages(project_id);
+CREATE INDEX IF NOT EXISTS idx_login_ip ON login_attempts(ip, attempted_at);
+CREATE INDEX IF NOT EXISTS idx_agent_logs_lookup ON agent_logs(agent_name, project_id, id);
+SQL);
+        $messageColumns = array_column($this->pdo->query('PRAGMA table_info(messages)')->fetchAll(), 'name');
+        if (!in_array('failed', $messageColumns, true)) {
+            $this->pdo->exec('ALTER TABLE messages ADD COLUMN failed INTEGER NOT NULL DEFAULT 0');
+        }
+        if (!in_array('detail', $messageColumns, true)) {
+            $this->pdo->exec('ALTER TABLE messages ADD COLUMN detail TEXT');
+        }
+        $taskColumns = array_column($this->pdo->query('PRAGMA table_info(tasks)')->fetchAll(), 'name');
+        if (!in_array('result', $taskColumns, true)) {
+            $this->pdo->exec('ALTER TABLE tasks ADD COLUMN result TEXT');
+        }
+        if (!in_array('finished_at', $taskColumns, true)) {
+            $this->pdo->exec('ALTER TABLE tasks ADD COLUMN finished_at DATETIME');
+        }
+        $this->pdo->exec("UPDATE tasks SET status = 'in_progress' WHERE schedule_time IS NOT NULL AND status IN ('todo', 'backlog')");
+        $this->pdo->exec(<<<'SQL'
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    ref_id INTEGER,
+    project_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'running',
+    attempts INTEGER NOT NULL DEFAULT 1,
+    payload TEXT NOT NULL,
+    last_error TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(status, updated_at);
+SQL);
+        $this->pdo->exec(<<<'SQL'
+CREATE TABLE IF NOT EXISTS email_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    from_name TEXT NOT NULL,
+    from_email TEXT NOT NULL,
+    smtp_host TEXT NOT NULL,
+    smtp_port INTEGER NOT NULL,
+    smtp_security TEXT NOT NULL DEFAULT 'tls',
+    username TEXT NOT NULL,
+    password TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+SQL);
+        $this->pdo->exec(<<<'SQL'
+CREATE TABLE IF NOT EXISTS ftp_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    label TEXT NOT NULL,
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    security TEXT NOT NULL DEFAULT 'ftp',
+    username TEXT NOT NULL,
+    password TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+SQL);
+        $this->pdo->exec(<<<'SQL'
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    target TEXT NOT NULL,
+    env_json TEXT NOT NULL DEFAULT '{}',
+    tools_json TEXT NOT NULL DEFAULT '[]',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+SQL);
+    }
+
+    private function seedDefaults(array $config): void
+    {
+        $defaults = [
+            'agent_name' => 'Agent',
+            'model_mode' => 'cpu_failsafe',
+            'ollama_url' => $config['ollama_url'],
+            'local_model' => $config['local_model'],
+            'cpu_failsafe_model' => $config['cpu_failsafe_model'],
+            'cloud_base_url' => $config['cloud_base_url'],
+            'cloud_model' => $config['cloud_model'],
+            'cloud_api_key' => '',
+            'cloud_api_use' => 'main',
+            'max_turns' => (string)$config['max_turns'],
+            'cloud_max_turns' => (string)$config['cloud_max_turns'],
+            'chat_font_size' => '16',
+            'web_search' => '1',
+            'search_provider' => 'duckduckgo',
+            'headless_browser' => '1',
+            'terminal' => '1',
+            'full_system_control' => '0',
+            'api_keys' => '1',
+            'extra_api_key_name' => '',
+            'extra_api_key_value' => '',
+            'agent_status' => json_encode(self::idleStatus()),
+        ];
+        $stmt = $this->pdo->prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
+        foreach ($defaults as $key => $value) {
+            $stmt->execute([$key, $value]);
+        }
+        if ($this->getSetting('max_turns_raised') !== '1') {
+            if ((int)$this->getSetting('max_turns', '8') <= 8) {
+                $this->setSetting('max_turns', '50');
+            }
+            $this->setSetting('max_turns_raised', '1');
+        }
+        if ($this->getSetting('tools_default_on') !== '1') {
+            foreach (['web_search', 'headless_browser', 'terminal', 'api_keys'] as $key) {
+                $this->setSetting($key, '1');
+            }
+            $this->setSetting('tools_default_on', '1');
+        }
+        $wiki = $config['data_dir'] . '/wiki/projects_index.md';
+        $heading = "# Main wiki\n\nProjects are listed here. Check this index before creating a new project.\n";
+        if (!is_file($wiki)) {
+            file_put_contents($wiki, $heading);
+        } else {
+            $text = (string)file_get_contents($wiki);
+            $updated = preg_replace('/\A# Central Hive Wiki\b/', '# Main wiki', $text, 1);
+            if (is_string($updated) && $updated !== $text) {
+                file_put_contents($wiki, $updated);
+            }
+        }
+        $memory = new MemoryManager($config['data_dir']);
+        if ($memory->relocateToolNotes()) {
+            $memory->reindex();
+        }
+        $tools = $config['data_dir'] . '/tool-notes.md';
+        if (!is_file($tools)) {
+            file_put_contents($tools, "# Tools\n\nNotes the agent keeps about email, ftp, the headless browser, and other tools.\n");
+        }
+        if ($this->getSetting('tools_noted') !== '1') {
+            if ($this->getSetting('headless_browser', '0') === '1') {
+                $memory->remember('browser', 'Headless browser is on. It can read public pages.');
+            }
+            if ($this->getSetting('web_search', '0') === '1') {
+                $memory->remember('search', 'Web search is on.');
+            }
+            if ($this->getSetting('terminal', '0') === '1') {
+                $memory->remember('terminal', 'Terminal commands are on inside the project folder.');
+            }
+            $this->setSetting('tools_noted', '1');
+        }
+    }
+
+    public static function idleStatus(): array
+    {
+        return [
+            'orchestrator' => 'idle',
+            'researcher' => 'idle',
+            'writer' => 'idle',
+            'coder' => 'idle',
+            'analyst' => 'idle',
+            'marketer' => 'idle',
+            'consultant' => 'idle',
+        ];
+    }
+
+    public function consultantState(): array
+    {
+        $use = (string)$this->getSetting('cloud_api_use', 'main');
+        $key = trim((string)$this->getSetting('cloud_api_key', ''));
+        $mode = (string)$this->getSetting('model_mode', 'cpu_failsafe');
+        if ($key === '') {
+            return ['active' => false, 'note' => 'No API key', 'reason' => 'no_key'];
+        }
+        if ($use !== 'consultant' || $mode === 'cloud') {
+            return ['active' => false, 'note' => $mode === 'cloud' ? 'API is the main model' : '', 'reason' => 'off'];
+        }
+        return ['active' => true, 'note' => '', 'reason' => 'on'];
+    }
+
+    public function consultantActive(): bool
+    {
+        return $this->consultantState()['active'];
+    }
+
+    public function fullSystemControl(): bool
+    {
+        return $this->getSetting('full_system_control', '0') === '1';
+    }
+
+    public function getSetting(string $key, ?string $default = null): ?string
+    {
+        $stmt = $this->pdo->prepare('SELECT value FROM settings WHERE key = ?');
+        $stmt->execute([$key]);
+        $row = $stmt->fetch();
+        return $row ? (string)$row['value'] : $default;
+    }
+
+    public function setSetting(string $key, string $value): void
+    {
+        $stmt = $this->pdo->prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+        $stmt->execute([$key, $value]);
+    }
+
+    public function allSettings(): array
+    {
+        $rows = $this->pdo->query('SELECT key, value FROM settings')->fetchAll();
+        $out = [];
+        foreach ($rows as $row) {
+            $out[$row['key']] = $row['value'];
+        }
+        return $out;
+    }
+
+    public function projects(): array
+    {
+        return array_map([$this, 'castProject'], $this->pdo->query('SELECT * FROM projects ORDER BY name COLLATE NOCASE')->fetchAll());
+    }
+
+    public function project(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM projects WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ? $this->castProject($row) : null;
+    }
+
+    public function projectByFolder(string $folder): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM projects WHERE folder_name = ?');
+        $stmt->execute([$folder]);
+        $row = $stmt->fetch();
+        return $row ? $this->castProject($row) : null;
+    }
+
+    public function insertProject(string $name, string $folder, string $purpose, string $type): array
+    {
+        $stmt = $this->pdo->prepare('INSERT INTO projects (name, folder_name, purpose, project_type) VALUES (?, ?, ?, ?)');
+        $stmt->execute([$name, $folder, $purpose, $type]);
+        return $this->project((int)$this->pdo->lastInsertId());
+    }
+
+    public function renameProject(int $id, string $name): ?array
+    {
+        $name = trim($name);
+        if ($name === '' || strlen($name) > 120) {
+            throw new InvalidArgumentException('Project name is required.');
+        }
+        if (!$this->project($id)) {
+            return null;
+        }
+        $stmt = $this->pdo->prepare('UPDATE projects SET name = ? WHERE id = ?');
+        $stmt->execute([$name, $id]);
+        return $this->project($id);
+    }
+
+    public function deleteProject(int $id): ?array
+    {
+        $existing = $this->project($id);
+        if (!$existing) {
+            return null;
+        }
+        $this->pdo->prepare('DELETE FROM jobs WHERE project_id = ?')->execute([$id]);
+        $this->pdo->prepare('DELETE FROM projects WHERE id = ?')->execute([$id]);
+        return $existing;
+    }
+
+    public function tasks(?int $projectId = null): array
+    {
+        if ($projectId) {
+            $stmt = $this->pdo->prepare('SELECT * FROM tasks WHERE project_id = ? ORDER BY id DESC');
+            $stmt->execute([$projectId]);
+            $rows = $stmt->fetchAll();
+        } else {
+            $rows = $this->pdo->query('SELECT * FROM tasks ORDER BY id DESC')->fetchAll();
+        }
+        return array_map([$this, 'castTask'], $rows);
+    }
+
+    public function task(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM tasks WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ? $this->castTask($row) : null;
+    }
+
+    public function insertTask(array $fields): array
+    {
+        $stmt = $this->pdo->prepare('INSERT INTO tasks (project_id, title, description, status, assigned_agent, schedule_time, recurrence_interval) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([
+            $fields['project_id'],
+            $fields['title'],
+            $fields['description'] ?? '',
+            $fields['status'] ?? 'todo',
+            $fields['assigned_agent'] ?? 'orchestrator',
+            $fields['schedule_time'] ?? null,
+            $fields['recurrence_interval'] ?? 'none',
+        ]);
+        return $this->task((int)$this->pdo->lastInsertId());
+    }
+
+    public function updateTask(int $id, array $fields): ?array
+    {
+        $allowed = ['title', 'description', 'status', 'assigned_agent', 'schedule_time', 'recurrence_interval', 'project_id', 'result', 'finished_at'];
+        $sets = [];
+        $values = [];
+        foreach ($allowed as $key) {
+            if (!array_key_exists($key, $fields)) {
+                continue;
+            }
+            $sets[] = $key . ' = ?';
+            $values[] = $fields[$key];
+        }
+        if ($sets) {
+            $values[] = $id;
+            $this->pdo->prepare('UPDATE tasks SET ' . implode(', ', $sets) . ' WHERE id = ?')->execute($values);
+        }
+        return $this->task($id);
+    }
+
+    public function deleteTask(int $id): bool
+    {
+        if (!$this->task($id)) {
+            return false;
+        }
+        $this->pdo->prepare("DELETE FROM jobs WHERE kind = 'task' AND ref_id = ?")->execute([$id]);
+        $this->pdo->prepare('DELETE FROM tasks WHERE id = ?')->execute([$id]);
+        return true;
+    }
+
+    public function dueTasks(): array
+    {
+        $stmt = $this->pdo->prepare("SELECT * FROM tasks WHERE project_id IS NOT NULL AND schedule_time IS NOT NULL AND schedule_time <= ? AND status IN ('todo', 'backlog', 'in_progress') AND id NOT IN (SELECT ref_id FROM jobs WHERE kind = 'task' AND status IN ('running', 'error') AND ref_id IS NOT NULL) ORDER BY schedule_time");
+        $stmt->execute([date('Y-m-d H:i:s')]);
+        $rows = $stmt->fetchAll();
+        return array_map([$this, 'castTask'], $rows);
+    }
+
+    public function messages(int $projectId, int $limit = 100): array
+    {
+        if ($projectId <= 0) {
+            $stmt = $this->pdo->prepare('SELECT * FROM messages WHERE project_id IS NULL ORDER BY id DESC LIMIT ?');
+            $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+        } else {
+            $stmt = $this->pdo->prepare('SELECT * FROM messages WHERE project_id = ? ORDER BY id DESC LIMIT ?');
+            $stmt->bindValue(1, $projectId, PDO::PARAM_INT);
+            $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+        }
+        $stmt->execute();
+        return array_map([$this, 'castMessage'], array_reverse($stmt->fetchAll()));
+    }
+
+    public function addMessage(int $projectId, string $role, string $content, ?string $agent = null, bool $failed = false, ?string $detail = null): array
+    {
+        $stmt = $this->pdo->prepare('INSERT INTO messages (project_id, role, agent_name, content, failed, detail) VALUES (?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$projectId > 0 ? $projectId : null, $role, $agent, $content, $failed ? 1 : 0, $detail]);
+        $id = (int)$this->pdo->lastInsertId();
+        $row = $this->pdo->prepare('SELECT * FROM messages WHERE id = ?');
+        $row->execute([$id]);
+        return $this->castMessage($row->fetch());
+    }
+
+    public function deleteFailedMessage(int $projectId, int $id): void
+    {
+        if ($id <= 0) {
+            return;
+        }
+        if ($projectId > 0) {
+            $stmt = $this->pdo->prepare("DELETE FROM messages WHERE id = ? AND project_id = ? AND role = 'assistant' AND (failed = 1 OR content = 'No response.')");
+            $stmt->execute([$id, $projectId]);
+            return;
+        }
+        $stmt = $this->pdo->prepare("DELETE FROM messages WHERE id = ? AND project_id IS NULL AND role = 'assistant' AND (failed = 1 OR content = 'No response.')");
+        $stmt->execute([$id]);
+    }
+
+    public function clearMessages(int $projectId): void
+    {
+        if ($projectId > 0) {
+            $this->pdo->prepare('DELETE FROM messages WHERE project_id = ?')->execute([$projectId]);
+            return;
+        }
+        $this->pdo->prepare('DELETE FROM messages WHERE project_id IS NULL')->execute();
+    }
+
+    public function deleteLatestFailed(int $projectId): void
+    {
+        if ($projectId > 0) {
+            $this->pdo->prepare("DELETE FROM messages WHERE id = (SELECT id FROM messages WHERE project_id = ? AND role = 'assistant' AND (failed = 1 OR content = 'No response.') ORDER BY id DESC LIMIT 1)")->execute([$projectId]);
+            return;
+        }
+        $this->pdo->prepare("DELETE FROM messages WHERE id = (SELECT id FROM messages WHERE project_id IS NULL AND role = 'assistant' AND (failed = 1 OR content = 'No response.') ORDER BY id DESC LIMIT 1)")->execute();
+    }
+
+    public function hasRunningJob(int $projectId): bool
+    {
+        if ($projectId > 0) {
+            $stmt = $this->pdo->prepare("SELECT 1 FROM jobs WHERE project_id = ? AND status = 'running' AND updated_at >= datetime('now', '-3 minutes') LIMIT 1");
+            $stmt->execute([$projectId]);
+        } else {
+            $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE project_id IS NULL AND status = 'running' AND updated_at >= datetime('now', '-3 minutes') LIMIT 1");
+        }
+        return (bool)$stmt->fetchColumn();
+    }
+
+    public function modelInUse(): bool
+    {
+        $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE kind IN ('chat', 'subagent', 'task') AND status = 'running' AND updated_at >= datetime('now', '-3 minutes') LIMIT 1");
+        return (bool)$stmt->fetchColumn();
+    }
+
+    public function startJob(string $kind, ?int $projectId, array $payload, ?int $refId = null): int
+    {
+        $projectId = $projectId && $projectId > 0 ? $projectId : null;
+        if ($kind === 'chat') {
+            if ($projectId) {
+                $this->pdo->prepare("UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE kind = 'chat' AND project_id = ? AND status IN ('running', 'error')")->execute([$projectId]);
+            } else {
+                $this->pdo->prepare("UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE kind = 'chat' AND project_id IS NULL AND status IN ('running', 'error')")->execute();
+            }
+        }
+        $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $stmt = $this->pdo->prepare("INSERT INTO jobs (kind, ref_id, project_id, status, attempts, payload, updated_at) VALUES (?, ?, ?, 'running', 1, ?, datetime('now'))");
+        $stmt->execute([$kind, $refId, $projectId, is_string($json) ? $json : '{}']);
+        return (int)$this->pdo->lastInsertId();
+    }
+
+    public function touchJob(int $id): void
+    {
+        static $last = [];
+        $now = microtime(true);
+        if (isset($last[$id]) && ($now - $last[$id]) < 30) {
+            return;
+        }
+        $last[$id] = $now;
+        $this->pdo->prepare("UPDATE jobs SET updated_at = datetime('now') WHERE id = ? AND status = 'running'")->execute([$id]);
+    }
+
+    public function finishJob(int $id): void
+    {
+        $this->pdo->prepare("UPDATE jobs SET status = 'done', last_error = NULL, updated_at = datetime('now') WHERE id = ?")->execute([$id]);
+    }
+
+    public function bumpJob(int $id): void
+    {
+        $this->pdo->prepare("UPDATE jobs SET attempts = attempts + 1, status = 'running', updated_at = datetime('now') WHERE id = ?")->execute([$id]);
+    }
+
+    public function failJob(int $id, string $error, int $maxAttempts): void
+    {
+        $stmt = $this->pdo->prepare('SELECT attempts FROM jobs WHERE id = ?');
+        $stmt->execute([$id]);
+        $attempts = (int)$stmt->fetchColumn();
+        $status = $attempts >= $maxAttempts ? 'gave_up' : 'error';
+        $this->pdo->prepare("UPDATE jobs SET status = ?, last_error = ?, updated_at = datetime('now') WHERE id = ?")->execute([$status, clip_text($error, 2000), $id]);
+    }
+
+    public function job(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM jobs WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    public function dueJobs(int $staleSeconds, int $maxAttempts): array
+    {
+        $stmt = $this->pdo->prepare("SELECT * FROM jobs WHERE status IN ('running', 'error') AND attempts < ? AND updated_at <= datetime('now', ?) ORDER BY id");
+        $stmt->execute([$maxAttempts, '-' . $staleSeconds . ' seconds']);
+        return $stmt->fetchAll();
+    }
+
+    public function skills(): array
+    {
+        return array_map([$this, 'castSkill'], $this->pdo->query('SELECT * FROM skills ORDER BY name COLLATE NOCASE')->fetchAll());
+    }
+
+    public function skill(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM skills WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ? $this->castSkill($row) : null;
+    }
+
+    public function skillByName(string $name): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM skills WHERE name = ?');
+        $stmt->execute([$name]);
+        $row = $stmt->fetch();
+        return $row ? $this->castSkill($row) : null;
+    }
+
+    public function saveSkill(string $name, string $description, string $scriptPath, bool $active, string $createdBy = 'user'): array
+    {
+        $existing = $this->skillByName($name);
+        if ($existing) {
+            $stmt = $this->pdo->prepare('UPDATE skills SET description = ?, script_path = ?, is_active = ? WHERE id = ?');
+            $stmt->execute([$description, $scriptPath, $active ? 1 : 0, $existing['id']]);
+            return $this->skill($existing['id']);
+        }
+        $stmt = $this->pdo->prepare('INSERT INTO skills (name, description, script_path, is_active, created_by) VALUES (?, ?, ?, ?, ?)');
+        $stmt->execute([$name, $description, $scriptPath, $active ? 1 : 0, $createdBy]);
+        return $this->skill((int)$this->pdo->lastInsertId());
+    }
+
+    public function setSkillActive(int $id, bool $active): ?array
+    {
+        $this->pdo->prepare('UPDATE skills SET is_active = ? WHERE id = ?')->execute([$active ? 1 : 0, $id]);
+        return $this->skill($id);
+    }
+
+    public function deleteSkill(int $id): void
+    {
+        $this->pdo->prepare('DELETE FROM skills WHERE id = ?')->execute([$id]);
+    }
+
+    public function logAgent(string $agent, ?int $projectId, string $type, string $content): void
+    {
+        $projectId = $projectId && $projectId > 0 ? $projectId : null;
+        $stmt = $this->pdo->prepare('INSERT INTO agent_logs (agent_name, project_id, log_type, content) VALUES (?, ?, ?, ?)');
+        $stmt->execute([$agent, $projectId, $type, clip_text($content, 8000)]);
+        $this->trimAgentLogs($agent, $projectId);
+    }
+
+    public function logs(int $afterId = 0, string $agent = '', ?int $projectId = null, int $limit = 100): array
+    {
+        $projectId = $projectId && $projectId > 0 ? $projectId : null;
+        $limit = max(1, min(100, $limit));
+        if ($agent !== '') {
+            $this->trimAgentLogs($agent, $projectId);
+        } else {
+            $this->trimProjectLogs($projectId);
+        }
+        $sql = 'SELECT * FROM agent_logs WHERE id > ?';
+        $values = [$afterId];
+        if ($projectId === null) {
+            $sql .= ' AND (project_id IS NULL OR project_id = 0)';
+        } else {
+            $sql .= ' AND project_id = ?';
+            $values[] = $projectId;
+        }
+        if ($agent !== '') {
+            $sql .= ' AND agent_name = ?';
+            $values[] = $agent;
+        }
+        $sql .= ' ORDER BY id DESC LIMIT ?';
+        $stmt = $this->pdo->prepare($sql);
+        $index = 1;
+        foreach ($values as $value) {
+            $stmt->bindValue($index, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+            $index++;
+        }
+        $stmt->bindValue($index, $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return array_map([$this, 'castLog'], array_reverse($stmt->fetchAll()));
+    }
+
+    private function trimProjectLogs(?int $projectId): void
+    {
+        if ($projectId === null) {
+            $names = $this->pdo->query('SELECT DISTINCT agent_name FROM agent_logs WHERE project_id IS NULL OR project_id = 0')->fetchAll(PDO::FETCH_COLUMN);
+        } else {
+            $stmt = $this->pdo->prepare('SELECT DISTINCT agent_name FROM agent_logs WHERE project_id = ?');
+            $stmt->execute([$projectId]);
+            $names = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        }
+        foreach ($names as $name) {
+            if (is_string($name) && $name !== '') {
+                $this->trimAgentLogs($name, $projectId);
+            }
+        }
+    }
+
+    private function trimAgentLogs(string $agent, ?int $projectId): void
+    {
+        if ($projectId === null) {
+            $sql = 'DELETE FROM agent_logs WHERE agent_name = ? AND (project_id IS NULL OR project_id = 0) AND id < COALESCE((SELECT id FROM agent_logs WHERE agent_name = ? AND (project_id IS NULL OR project_id = 0) ORDER BY id DESC LIMIT 1 OFFSET 99), 0)';
+            $this->pdo->prepare($sql)->execute([$agent, $agent]);
+            return;
+        }
+        $sql = 'DELETE FROM agent_logs WHERE agent_name = ? AND project_id = ? AND id < COALESCE((SELECT id FROM agent_logs WHERE agent_name = ? AND project_id = ? ORDER BY id DESC LIMIT 1 OFFSET 99), 0)';
+        $this->pdo->prepare($sql)->execute([$agent, $projectId, $agent, $projectId]);
+    }
+
+    public function setAgentStatus(string $agent, string $status): void
+    {
+        $all = $this->agentStatus();
+        $all[$agent] = $status;
+        $this->setSetting('agent_status', json_encode($all));
+    }
+
+    public function agentStatus(): array
+    {
+        $decoded = json_decode((string)$this->getSetting('agent_status', '{}'), true);
+        if (!is_array($decoded)) {
+            $decoded = [];
+        }
+        return array_merge(self::idleStatus(), $decoded);
+    }
+
+    public function recordLogin(string $ip, bool $success): void
+    {
+        $this->pdo->prepare("DELETE FROM login_attempts WHERE attempted_at < datetime('now', '-1 day')")->execute();
+        $this->pdo->prepare('INSERT INTO login_attempts (ip, success) VALUES (?, ?)')->execute([$ip, $success ? 1 : 0]);
+    }
+
+    public function failedLogins(string $ip): int
+    {
+        $seconds = (int)app_config()['login_window_seconds'];
+        $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM login_attempts WHERE ip = ? AND success = 0 AND attempted_at >= datetime('now', ?)");
+        $stmt->execute([$ip, '-' . $seconds . ' seconds']);
+        return (int)$stmt->fetchColumn();
+    }
+
+    public function clearLogins(string $ip): void
+    {
+        $this->pdo->prepare('DELETE FROM login_attempts WHERE ip = ?')->execute([$ip]);
+    }
+
+    public function tryLock(string $key, int $seconds): bool
+    {
+        $this->pdo->beginTransaction();
+        try {
+            $current = $this->getSetting($key, '0');
+            if ((int)$current !== 0 && (time() - (int)$current) < $seconds) {
+                $this->pdo->commit();
+                return false;
+            }
+            $this->setSetting($key, (string)time());
+            $this->pdo->commit();
+            return true;
+        } catch (Throwable $e) {
+            if ($this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    public function unlock(string $key): void
+    {
+        $this->setSetting($key, '0');
+    }
+
+    public function beginChat(int $projectId, string $generation): void
+    {
+        $pending = (string)$this->getSetting($this->chatStopGenKey($projectId), '');
+        $this->setSetting($this->chatGenKey($projectId), $generation);
+        if ($pending !== '' && hash_equals($pending, $generation)) {
+            $this->setSetting($this->chatStopKey($projectId), '1');
+            return;
+        }
+        $this->setSetting($this->chatStopKey($projectId), '0');
+    }
+
+    public function requestChatStop(int $projectId, string $generation): void
+    {
+        $generation = trim($generation);
+        if ($generation === '') {
+            return;
+        }
+        $this->setSetting($this->chatStopGenKey($projectId), $generation);
+        $current = (string)$this->getSetting($this->chatGenKey($projectId), '');
+        if ($current !== '' && hash_equals($current, $generation)) {
+            $this->setSetting($this->chatStopKey($projectId), '1');
+        }
+    }
+
+    public function clearChatStop(int $projectId): void
+    {
+        $this->setSetting($this->chatStopKey($projectId), '0');
+    }
+
+    public function chatStopRequested(int $projectId): bool
+    {
+        return $this->getSetting($this->chatStopKey($projectId), '0') === '1';
+    }
+
+    private function chatStopKey(int $projectId): string
+    {
+        return 'chat_stop_' . max(0, $projectId);
+    }
+
+    private function chatGenKey(int $projectId): string
+    {
+        return 'chat_gen_' . max(0, $projectId);
+    }
+
+    private function chatStopGenKey(int $projectId): string
+    {
+        return 'chat_stop_gen_' . max(0, $projectId);
+    }
+
+    public function answerInstall(string $id, bool $allow): bool
+    {
+        if (!preg_match('/^[a-f0-9]{16}$/', $id)) {
+            return false;
+        }
+        $key = 'install_ask_' . $id;
+        if ($this->getSetting($key, null) === null) {
+            return false;
+        }
+        $this->setSetting($key, $allow ? 'yes' : 'no');
+        return true;
+    }
+
+    public function emailAccounts(?int $projectId = null, bool $withSecret = false): array
+    {
+        if ($projectId) {
+            $stmt = $this->pdo->prepare('SELECT * FROM email_accounts WHERE project_id = ? ORDER BY label COLLATE NOCASE');
+            $stmt->execute([$projectId]);
+            $rows = $stmt->fetchAll();
+        } else {
+            $rows = $this->pdo->query('SELECT * FROM email_accounts ORDER BY label COLLATE NOCASE')->fetchAll();
+        }
+        return array_map(fn(array $row): array => $this->castEmail($row, $withSecret), $rows);
+    }
+
+    public function saveEmailAccount(array $fields): array
+    {
+        $stmt = $this->pdo->prepare('INSERT INTO email_accounts (project_id, label, from_name, from_email, smtp_host, smtp_port, smtp_security, username, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([
+            $fields['project_id'],
+            $fields['label'],
+            $fields['from_name'],
+            $fields['from_email'],
+            $fields['smtp_host'],
+            $fields['smtp_port'],
+            $fields['smtp_security'],
+            $fields['username'],
+            $fields['password'],
+        ]);
+        $id = (int)$this->pdo->lastInsertId();
+        $stmt = $this->pdo->prepare('SELECT * FROM email_accounts WHERE id = ?');
+        $stmt->execute([$id]);
+        return $this->castEmail($stmt->fetch(), false);
+    }
+
+    public function deleteEmailAccount(int $id): void
+    {
+        $this->pdo->prepare('DELETE FROM email_accounts WHERE id = ?')->execute([$id]);
+    }
+
+    public function ftpAccounts(?int $projectId = null, bool $withSecret = false): array
+    {
+        if ($projectId) {
+            $stmt = $this->pdo->prepare('SELECT * FROM ftp_accounts WHERE project_id = ? ORDER BY label COLLATE NOCASE');
+            $stmt->execute([$projectId]);
+            $rows = $stmt->fetchAll();
+        } else {
+            $rows = $this->pdo->query('SELECT * FROM ftp_accounts ORDER BY label COLLATE NOCASE')->fetchAll();
+        }
+        return array_map(fn(array $row): array => $this->castFtp($row, $withSecret), $rows);
+    }
+
+    public function saveFtpAccount(array $fields): array
+    {
+        $stmt = $this->pdo->prepare('INSERT INTO ftp_accounts (project_id, label, host, port, security, username, password) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([
+            $fields['project_id'],
+            $fields['label'],
+            $fields['host'],
+            $fields['port'],
+            $fields['security'],
+            $fields['username'],
+            $fields['password'],
+        ]);
+        $id = (int)$this->pdo->lastInsertId();
+        $stmt = $this->pdo->prepare('SELECT * FROM ftp_accounts WHERE id = ?');
+        $stmt->execute([$id]);
+        return $this->castFtp($stmt->fetch(), false);
+    }
+
+    public function deleteFtpAccount(int $id): void
+    {
+        $this->pdo->prepare('DELETE FROM ftp_accounts WHERE id = ?')->execute([$id]);
+    }
+
+    public function mcpServers(bool $withSecret = false): array
+    {
+        $rows = $this->pdo->query('SELECT * FROM mcp_servers ORDER BY label COLLATE NOCASE')->fetchAll();
+        return array_map(fn(array $row): array => $this->castMcp($row, $withSecret), $rows);
+    }
+
+    public function mcpServer(int $id, bool $withSecret = false): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM mcp_servers WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ? $this->castMcp($row, $withSecret) : null;
+    }
+
+    public function saveMcpServer(array $fields): array
+    {
+        $stmt = $this->pdo->prepare('INSERT INTO mcp_servers (label, target, env_json) VALUES (?, ?, ?)');
+        $stmt->execute([$fields['label'], $fields['target'], $fields['env_json']]);
+        $saved = $this->mcpServer((int)$this->pdo->lastInsertId());
+        if (!$saved) {
+            throw new RuntimeException('Could not save the MCP server.');
+        }
+        return $saved;
+    }
+
+    public function saveMcpTools(int $id, array $tools): void
+    {
+        $json = json_encode(array_values($tools), JSON_UNESCAPED_SLASHES);
+        $this->pdo->prepare('UPDATE mcp_servers SET tools_json = ? WHERE id = ?')->execute([$json === false ? '[]' : $json, $id]);
+    }
+
+    public function deleteMcpServer(int $id): void
+    {
+        $this->pdo->prepare('DELETE FROM mcp_servers WHERE id = ?')->execute([$id]);
+    }
+
+    private function castProject(array $row): array
+    {
+        $row['id'] = (int)$row['id'];
+        return $row;
+    }
+
+    private function castTask(array $row): array
+    {
+        $row['id'] = (int)$row['id'];
+        $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
+        return $row;
+    }
+
+    private function castMessage(array $row): array
+    {
+        $row['id'] = (int)$row['id'];
+        $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
+        $row['failed'] = ((int)($row['failed'] ?? 0) === 1 || trim((string)$row['content']) === 'No response.') ? 1 : 0;
+        $detail = null;
+        if (!empty($row['detail'])) {
+            $decoded = json_decode((string)$row['detail'], true);
+            if (is_array($decoded) && (!empty($decoded['thinking']) || !empty($decoded['tools']))) {
+                $detail = [
+                    'thinking' => is_array($decoded['thinking'] ?? null) ? array_values($decoded['thinking']) : [],
+                    'tools' => is_array($decoded['tools'] ?? null) ? array_values($decoded['tools']) : [],
+                ];
+            }
+        }
+        $row['detail'] = $detail;
+        return $row;
+    }
+
+    private function castEmail(array $row, bool $withSecret): array
+    {
+        $row['id'] = (int)$row['id'];
+        $row['project_id'] = (int)$row['project_id'];
+        $row['smtp_port'] = (int)$row['smtp_port'];
+        if (!$withSecret) {
+            unset($row['password']);
+        }
+        return $row;
+    }
+
+    private function castFtp(array $row, bool $withSecret): array
+    {
+        $row['id'] = (int)$row['id'];
+        $row['project_id'] = (int)$row['project_id'];
+        $row['port'] = (int)$row['port'];
+        if (!$withSecret) {
+            unset($row['password']);
+        }
+        return $row;
+    }
+
+    private function castMcp(array $row, bool $withSecret): array
+    {
+        $tools = json_decode((string)($row['tools_json'] ?? '[]'), true);
+        $listed = [];
+        if (is_array($tools)) {
+            foreach ($tools as $tool) {
+                if (!is_array($tool) || trim((string)($tool['name'] ?? '')) === '') {
+                    continue;
+                }
+                $listed[] = [
+                    'name' => (string)$tool['name'],
+                    'description' => (string)($tool['description'] ?? ''),
+                ];
+            }
+        }
+        $envJson = (string)($row['env_json'] ?? '{}');
+        $out = [
+            'id' => (int)$row['id'],
+            'label' => (string)$row['label'],
+            'target' => (string)$row['target'],
+            'has_env' => $envJson !== '' && $envJson !== '{}',
+            'tools' => $listed,
+        ];
+        if ($withSecret) {
+            $env = json_decode($envJson, true);
+            $out['env'] = is_array($env) ? $env : [];
+        }
+        return $out;
+    }
+
+    private function castSkill(array $row): array
+    {
+        $row['id'] = (int)$row['id'];
+        $row['is_active'] = (int)$row['is_active'];
+        return $row;
+    }
+
+    private function castLog(array $row): array
+    {
+        $row['id'] = (int)$row['id'];
+        $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
+        return $row;
+    }
+}

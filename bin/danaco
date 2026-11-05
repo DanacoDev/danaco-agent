@@ -1,0 +1,963 @@
+#!/usr/bin/env bash
+# Open this agent, update it from GitHub, or uninstall it.
+set -euo pipefail
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
+
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  LINK="$(readlink "$SOURCE")"
+  if [[ "$LINK" != /* ]]; then
+    SOURCE="$DIR/$LINK"
+  else
+    SOURCE="$LINK"
+  fi
+done
+ROOT="$(cd -P "$(dirname "$SOURCE")/.." && pwd)"
+LABEL="com.danaco.webui"
+UNIT="danaco.service"
+INSTALL_HOME="$HOME/Library/Application Support/Danaco"
+
+xml_escape() {
+  local s="$1"
+  s=${s//&/&amp;}
+  s=${s//</&lt;}
+  s=${s//>/&gt;}
+  printf '%s' "$s"
+}
+
+find_php() {
+  local candidate
+  for candidate in /opt/homebrew/bin/php /usr/local/bin/php; do
+    if [[ -x "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  if command -v php >/dev/null 2>&1; then
+    command -v php
+    return 0
+  fi
+  return 1
+}
+
+app_port() {
+  local php port
+  php="$(find_php || true)"
+  port=""
+  if [[ -n "$php" ]]; then
+    port="$("$php" -r 'chdir($argv[1]); require "src/bootstrap.php"; $p = (string) Database::instance()->getSetting("port", ""); if ($p === "" || !ctype_digit($p)) { $p = (string) (app_config()["port"] ?? 8000); } echo (int) $p;' "$ROOT" 2>/dev/null || true)"
+  fi
+  if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+    port=8000
+  fi
+  echo "$port"
+}
+
+app_url() {
+  if [[ -f "$ROOT/data/tls/server.crt" ]]; then
+    echo "https://127.0.0.1:$(app_port)/"
+  else
+    echo "http://127.0.0.1:$(app_port)/"
+  fi
+}
+
+http_up() {
+  local url flags
+  url="$(app_url)"
+  flags=(-fsS -D - -o /dev/null --max-time 2)
+  if [[ "$url" == https:* && -f "$ROOT/data/tls/ca.crt" ]]; then
+    flags+=(--cacert "$ROOT/data/tls/ca.crt")
+  elif [[ "$url" == https:* ]]; then
+    flags+=(-k)
+  fi
+  curl "${flags[@]}" "$url" 2>/dev/null | grep -qi '^X-Danaco:'
+}
+
+wait_for_http() {
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if http_up; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+can_sudo() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    return 0
+  fi
+  if sudo -n true 2>/dev/null; then
+    return 0
+  fi
+  if [[ -t 0 ]]; then
+    echo "Administrator permission is required so the agent starts at boot."
+    sudo -v && return 0
+  fi
+  return 1
+}
+
+write_plist() {
+  local dest="$1"
+  local include_user="$2"
+  local root_xml user_keys
+  root_xml="$(xml_escape "$ROOT")"
+  user_keys=""
+  if [[ "$include_user" == "yes" ]]; then
+    user_keys="  <key>UserName</key>
+  <string>$(xml_escape "$(id -un)")</string>
+  <key>GroupName</key>
+  <string>$(xml_escape "$(id -gn)")</string>
+"
+  fi
+  mkdir -p "$(dirname "$dest")"
+  cat > "$dest" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LABEL}</string>
+${user_keys}  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>${root_xml}/bin/run-agent.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${root_xml}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>${root_xml}/data/service.log</string>
+  <key>StandardErrorPath</key>
+  <string>${root_xml}/data/service.log</string>
+</dict>
+</plist>
+EOF
+}
+
+stop_legacy() {
+  local pid
+  for pid in $(pgrep -f "$ROOT/bin/run-agent.sh" 2>/dev/null || true); do
+    kill "$pid" 2>/dev/null || true
+  done
+  for pid in $(pgrep -f "$ROOT/bin/tick.php" 2>/dev/null || true); do
+    kill "$pid" 2>/dev/null || true
+  done
+  if [[ -f "$ROOT/data/server.pid" ]]; then
+    pid="$(cat "$ROOT/data/server.pid" 2>/dev/null || true)"
+    if [[ -n "${pid:-}" ]]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+    rm -f "$ROOT/data/server.pid"
+  fi
+  if [[ -f "$ROOT/data/tick.pid" ]]; then
+    pid="$(cat "$ROOT/data/tick.pid" 2>/dev/null || true)"
+    if [[ -n "${pid:-}" ]]; then
+      kill "$pid" 2>/dev/null || true
+    fi
+    rm -f "$ROOT/data/tick.pid"
+  fi
+  local cmd
+  for pid in $(lsof -nP -iTCP:"$(app_port)" -sTCP:LISTEN -t 2>/dev/null || true); do
+    cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    case "$cmd" in
+      *"$ROOT"*|*public/index.php*) kill "$pid" 2>/dev/null || true ;;
+    esac
+  done
+}
+
+remove_launchdaemon() {
+  if [[ ! -f "/Library/LaunchDaemons/${LABEL}.plist" ]]; then
+    return 0
+  fi
+  if ! can_sudo; then
+    echo "Could not remove the boot service. Run danaco uninstall from a terminal." >&2
+    return 1
+  fi
+  sudo launchctl bootout "system/${LABEL}" 2>/dev/null || true
+  sudo rm -f "/Library/LaunchDaemons/${LABEL}.plist"
+}
+
+remove_launchagent() {
+  local dest="$HOME/Library/LaunchAgents/${LABEL}.plist"
+  if [[ -f "$dest" ]]; then
+    launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
+    rm -f "$dest"
+  fi
+}
+
+remove_systemd() {
+  if [[ -f "/etc/systemd/system/${UNIT}" ]]; then
+    if can_sudo; then
+      sudo systemctl disable --now "$UNIT" 2>/dev/null || true
+      sudo rm -f "/etc/systemd/system/${UNIT}"
+      sudo systemctl daemon-reload 2>/dev/null || true
+    else
+      echo "Could not remove the system service. Run danaco uninstall from a terminal." >&2
+      return 1
+    fi
+  fi
+  local user_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${UNIT}"
+  if [[ -f "$user_unit" ]]; then
+    systemctl --user disable --now "$UNIT" 2>/dev/null || true
+    rm -f "$user_unit"
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+}
+
+remove_services() {
+  local os
+  os="$(uname -s)"
+  if [[ "$os" == "Darwin" ]]; then
+    remove_launchdaemon
+    remove_launchagent
+  elif [[ "$os" == "Linux" ]]; then
+    remove_systemd
+  fi
+  rm -f "$ROOT/data/service.mode"
+}
+
+install_launchdaemon() {
+  local tmp="/Library/LaunchDaemons/${LABEL}.plist"
+  local staging="$ROOT/data/.${LABEL}.plist"
+  write_plist "$staging" yes
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -lint "$staging" >/dev/null
+  fi
+  sudo cp "$staging" "$tmp"
+  rm -f "$staging"
+  sudo chown root:wheel "$tmp"
+  sudo chmod 644 "$tmp"
+  sudo launchctl bootout "system/${LABEL}" 2>/dev/null || true
+  sudo launchctl bootstrap system "$tmp"
+  sudo launchctl enable "system/${LABEL}" 2>/dev/null || true
+  echo launchdaemon > "$ROOT/data/service.mode"
+}
+
+install_launchagent() {
+  local dest="$HOME/Library/LaunchAgents/${LABEL}.plist"
+  write_plist "$dest" no
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -lint "$dest" >/dev/null
+  fi
+  launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$dest"
+  launchctl enable "gui/$(id -u)/${LABEL}" 2>/dev/null || true
+  echo launchagent > "$ROOT/data/service.mode"
+}
+
+write_systemd_unit() {
+  local dest="$1"
+  local user_line="$2"
+  mkdir -p "$(dirname "$dest")"
+  cat > "$dest" <<EOF
+[Unit]
+Description=Danaco Agent web UI
+After=network.target
+
+[Service]
+Type=simple
+${user_line}WorkingDirectory=${ROOT}
+ExecStart=/bin/bash ${ROOT}/bin/run-agent.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+install_systemd() {
+  local staging="$ROOT/data/.${UNIT}"
+  local user_line=""
+  if [[ "$(id -u)" -ne 0 ]]; then
+    user_line="User=$(id -un)
+Group=$(id -gn)
+"
+  fi
+  write_systemd_unit "$staging" "$user_line"
+  sudo cp "$staging" "/etc/systemd/system/${UNIT}"
+  rm -f "$staging"
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now "$UNIT"
+  echo systemd > "$ROOT/data/service.mode"
+}
+
+install_systemd_user() {
+  local dest="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${UNIT}"
+  write_systemd_unit "$dest" ""
+  systemctl --user daemon-reload
+  systemctl --user enable --now "$UNIT"
+  if command -v loginctl >/dev/null 2>&1 && can_sudo; then
+    sudo loginctl enable-linger "$(id -un)" || true
+  fi
+  echo systemd-user > "$ROOT/data/service.mode"
+}
+
+install_service() {
+  local os
+  os="$(uname -s)"
+  mkdir -p "$ROOT/data"
+  stop_legacy
+  sleep 0.3
+  remove_services
+  if [[ "$os" == "Darwin" ]]; then
+    if can_sudo; then
+      install_launchdaemon
+      if wait_for_http; then
+        echo "The agent starts automatically on boot."
+        return 0
+      fi
+      echo "The boot service did not come up. It will start at login instead." >&2
+      remove_launchdaemon || true
+      rm -f "$ROOT/data/service.mode"
+      sleep 0.5
+    fi
+    install_launchagent
+    if wait_for_http; then
+      echo "The agent starts automatically when you log in."
+      return 0
+    fi
+  elif [[ "$os" == "Linux" ]]; then
+    if can_sudo; then
+      install_systemd
+      if wait_for_http; then
+        echo "The agent starts automatically on boot."
+        return 0
+      fi
+      echo "The boot service did not come up. It will start at login instead." >&2
+      remove_systemd || true
+      rm -f "$ROOT/data/service.mode"
+    fi
+    install_systemd_user
+    if wait_for_http; then
+      echo "The agent starts automatically when you log in."
+      return 0
+    fi
+  else
+    echo "Automatic startup is supported on macOS and Linux." >&2
+    return 1
+  fi
+  echo "The server failed to start. See data/server.log and data/service.log" >&2
+  return 1
+}
+
+restart_service() {
+  local mode
+  mode="$(cat "$ROOT/data/service.mode" 2>/dev/null || true)"
+  case "$mode" in
+    launchdaemon)
+      sudo launchctl kickstart -k "system/${LABEL}"
+      ;;
+    launchagent)
+      launchctl kickstart -k "gui/$(id -u)/${LABEL}"
+      ;;
+    systemd)
+      sudo systemctl restart "$UNIT"
+      ;;
+    systemd-user)
+      systemctl --user restart "$UNIT"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+cli_targets() {
+  echo "/opt/homebrew/bin/danaco"
+  echo "/usr/local/bin/danaco"
+  echo "$HOME/.local/bin/danaco"
+  if [[ -f "$ROOT/data/danaco.link" ]]; then
+    cat "$ROOT/data/danaco.link"
+  fi
+}
+
+install_cli() {
+  local target
+  chmod +x "$ROOT/bin/danaco" "$ROOT/bin/run-agent.sh" "$ROOT/bin/git-askpass.sh" "$ROOT/bin/save-github-credentials.sh"
+  if [[ -d /opt/homebrew/bin && -w /opt/homebrew/bin ]]; then
+    target="/opt/homebrew/bin/danaco"
+    ln -sfn "$ROOT/bin/danaco" "$target"
+  elif [[ -d /usr/local/bin && -w /usr/local/bin ]]; then
+    target="/usr/local/bin/danaco"
+    ln -sfn "$ROOT/bin/danaco" "$target"
+  elif [[ -d /usr/local/bin ]] && can_sudo; then
+    target="/usr/local/bin/danaco"
+    sudo ln -sfn "$ROOT/bin/danaco" "$target"
+  else
+    mkdir -p "$HOME/.local/bin"
+    target="$HOME/.local/bin/danaco"
+    ln -sfn "$ROOT/bin/danaco" "$target"
+  fi
+  echo "$target" > "$ROOT/data/danaco.link"
+  echo "Installed command: $target"
+  case ":$PATH:" in
+    *":$(dirname "$target"):"*) ;;
+    *) echo "Add $(dirname "$target") to your PATH, then run: danaco" ;;
+  esac
+}
+
+desktop_dir() {
+  local dir=""
+  if [[ "$(uname -s)" != "Darwin" ]] && command -v xdg-user-dir >/dev/null 2>&1; then
+    dir="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+  fi
+  if [[ -z "$dir" || "$dir" == "$HOME" ]]; then
+    dir="$HOME/Desktop"
+  fi
+  if [[ -d "$dir" ]]; then
+    printf '%s' "$dir"
+    return 0
+  fi
+  if [[ "$(uname -s)" == "Darwin" || -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}${XDG_CURRENT_DESKTOP:-}" ]]; then
+    mkdir -p "$dir" 2>/dev/null || true
+    if [[ -d "$dir" ]]; then
+      printf '%s' "$dir"
+    fi
+  fi
+}
+
+desktop_quote() {
+  local s="$1"
+  s=${s//%/%%}
+  printf '"%s"' "$s"
+}
+
+install_linux_icon() {
+  local base src dir
+  base="${XDG_DATA_HOME:-$HOME/.local/share}"
+  src="$ROOT/public/assets/icon-512.png"
+  [[ -f "$src" ]] || return 0
+  if command -v xdg-icon-resource >/dev/null 2>&1; then
+    xdg-icon-resource install --novendor --size 512 "$src" danaco >/dev/null 2>&1 || true
+    if [[ -f "$ROOT/public/assets/icon-192.png" ]]; then
+      xdg-icon-resource install --novendor --size 192 "$ROOT/public/assets/icon-192.png" danaco >/dev/null 2>&1 || true
+    fi
+  fi
+  dir="$base/icons/hicolor/512x512/apps"
+  mkdir -p "$dir"
+  cp "$src" "$dir/danaco.png"
+  if [[ -f "$ROOT/public/assets/icon-192.png" ]]; then
+    dir="$base/icons/hicolor/192x192/apps"
+    mkdir -p "$dir"
+    cp "$ROOT/public/assets/icon-192.png" "$dir/danaco.png"
+  fi
+  mkdir -p "$base/pixmaps"
+  cp "$src" "$base/pixmaps/danaco.png"
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f "$base/icons/hicolor" >/dev/null 2>&1 || true
+  fi
+}
+
+remove_linux_icon() {
+  local base="${XDG_DATA_HOME:-$HOME/.local/share}"
+  rm -f "$base/icons/hicolor/512x512/apps/danaco.png" \
+    "$base/icons/hicolor/192x192/apps/danaco.png" \
+    "$base/pixmaps/danaco.png"
+}
+
+linux_icon_key() {
+  local base="${XDG_DATA_HOME:-$HOME/.local/share}"
+  if [[ -f "$base/icons/hicolor/512x512/apps/danaco.png" || -f "$base/pixmaps/danaco.png" ]]; then
+    printf '%s' "danaco"
+    return 0
+  fi
+  printf '%s' "$ROOT/public/assets/icon-512.png"
+}
+
+write_linux_desktop() {
+  local dest="$1"
+  local icon exec_line
+  mkdir -p "$(dirname "$dest")"
+  icon="$(linux_icon_key)"
+  if [[ "$icon" == */* ]]; then
+    icon="$(desktop_quote "$icon")"
+  fi
+  exec_line="$(desktop_quote "$ROOT/bin/danaco")"
+  cat > "$dest" <<EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Danaco Agent
+Comment=Open the agent in the browser
+Exec=${exec_line}
+Icon=${icon}
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+EOF
+  chmod 755 "$dest"
+}
+
+desktop_session_bus() {
+  local uid bus
+  bus="${DBUS_SESSION_BUS_ADDRESS:-}"
+  if [[ -n "$bus" ]]; then
+    printf '%s' "$bus"
+    return 0
+  fi
+  uid="$(id -u)"
+  if [[ -S "/run/user/${uid}/bus" ]]; then
+    printf '%s' "unix:path=/run/user/${uid}/bus"
+  fi
+}
+
+desktop_is_trusted() {
+  local line
+  command -v gio >/dev/null 2>&1 || return 1
+  line="$(DBUS_SESSION_BUS_ADDRESS="${1}" gio info -a metadata::trusted "$2" 2>/dev/null || true)"
+  [[ "$line" == *"true"* ]]
+}
+
+trust_linux_desktop() {
+  local file="$1"
+  local bus
+  chmod 755 "$file" || return 0
+  bus="$(desktop_session_bus)"
+  if [[ -n "$bus" ]] && command -v gio >/dev/null 2>&1; then
+    DBUS_SESSION_BUS_ADDRESS="$bus" gio set -t string "$file" metadata::trusted true >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$bus" ]] && ! desktop_is_trusted "$bus" "$file" && command -v python3 >/dev/null 2>&1; then
+    DBUS_SESSION_BUS_ADDRESS="$bus" python3 - "$file" <<'PY' || true
+import sys
+try:
+    from gi.repository import Gio
+except Exception:
+    raise SystemExit(1)
+path = sys.argv[1]
+Gio.File.new_for_path(path).set_attribute_string(
+    "metadata::trusted",
+    "true",
+    Gio.FileQueryInfoFlags.NONE,
+    None,
+)
+PY
+  fi
+  if [[ -n "$bus" ]] && desktop_is_trusted "$bus" "$file"; then
+    return 0
+  fi
+  echo "If the Agent icon on the desktop still looks like a text file, right-click it and choose Allow Launching."
+}
+
+write_mac_icon() {
+  local src="$1"
+  local dest="$2"
+  local tmp size
+  if ! command -v sips >/dev/null 2>&1 || ! command -v iconutil >/dev/null 2>&1; then
+    return 1
+  fi
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/danaco-icon.XXXXXX")"
+  mkdir -p "$tmp/icon.iconset"
+  for size in 16 32 128 256 512; do
+    sips -z "$size" "$size" "$src" --out "$tmp/icon.iconset/icon_${size}x${size}.png" >/dev/null
+    sips -z "$((size * 2))" "$((size * 2))" "$src" --out "$tmp/icon.iconset/icon_${size}x${size}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$tmp/icon.iconset" -o "$dest" >/dev/null
+  rm -rf "$tmp"
+}
+
+write_mac_app() {
+  local dest="$1"
+  local exec_q
+  rm -rf "$dest"
+  mkdir -p "$dest/Contents/MacOS" "$dest/Contents/Resources"
+  exec_q="$(printf '%q' "$ROOT/bin/danaco")"
+  cat > "$dest/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Danaco Agent</string>
+  <key>CFBundleDisplayName</key>
+  <string>Danaco Agent</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.danaco.launcher</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleExecutable</key>
+  <string>Danaco</string>
+  <key>CFBundleIconFile</key>
+  <string>icon</string>
+</dict>
+</plist>
+EOF
+  cat > "$dest/Contents/MacOS/Danaco" <<EOF
+#!/bin/bash
+exec ${exec_q}
+EOF
+  chmod 755 "$dest/Contents/MacOS/Danaco"
+  write_mac_icon "$ROOT/public/assets/icon-512.png" "$dest/Contents/Resources/icon.icns" || true
+}
+
+remove_shortcut() {
+  local path base
+  remove_linux_icon
+  [[ -f "$ROOT/data/desktop.link" ]] || return 0
+  while IFS= read -r path; do
+    [[ -z "$path" ]] && continue
+    base="$(basename "$path")"
+    case "$base" in
+      Danaco.app|Danaco.desktop|danaco.desktop) ;;
+      *) continue ;;
+    esac
+    case "$path" in
+      "$HOME"/*) rm -rf "$path" ;;
+    esac
+  done < "$ROOT/data/desktop.link"
+  rm -f "$ROOT/data/desktop.link"
+}
+
+install_shortcut() {
+  local os desktop dest menu placed=""
+  os="$(uname -s)"
+  remove_shortcut
+  : > "$ROOT/data/desktop.link"
+  if [[ "$os" == "Darwin" ]]; then
+    desktop="$(desktop_dir)"
+    if [[ -n "$desktop" ]]; then
+      dest="$desktop/Danaco.app"
+      write_mac_app "$dest"
+      echo "$dest" >> "$ROOT/data/desktop.link"
+      placed="$dest"
+    fi
+  elif [[ "$os" == "Linux" ]]; then
+    install_linux_icon
+    menu="${XDG_DATA_HOME:-$HOME/.local/share}/applications/danaco.desktop"
+    write_linux_desktop "$menu"
+    if command -v update-desktop-database >/dev/null 2>&1; then
+      update-desktop-database "$(dirname "$menu")" >/dev/null 2>&1 || true
+    fi
+    echo "$menu" >> "$ROOT/data/desktop.link"
+    desktop="$(desktop_dir)"
+    if [[ -n "$desktop" ]]; then
+      dest="$desktop/Danaco.desktop"
+      write_linux_desktop "$dest"
+      trust_linux_desktop "$dest"
+      echo "$dest" >> "$ROOT/data/desktop.link"
+      placed="$dest"
+    fi
+  fi
+  if [[ -n "$placed" ]]; then
+    echo "An Agent icon is on the desktop. It opens the agent in the browser."
+  elif [[ "$os" == "Linux" && -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/danaco.desktop" ]]; then
+    echo "An Agent icon was added to the application menu. It opens the agent in the browser."
+  fi
+}
+
+remove_cli() {
+  local link dest
+  while IFS= read -r link; do
+    [[ -z "$link" || ! -L "$link" ]] && continue
+    dest="$(readlink "$link")"
+    if [[ "$dest" != /* ]]; then
+      dest="$(cd -P "$(dirname "$link")" && pwd)/$dest"
+    fi
+    if [[ "$dest" == "$ROOT/bin/danaco" ]]; then
+      if [[ -w "$(dirname "$link")" ]]; then
+        rm -f "$link"
+      elif can_sudo; then
+        sudo rm -f "$link"
+      else
+        echo "Could not remove $link" >&2
+        return 1
+      fi
+      echo "Removed command: $link"
+    fi
+  done < <(cli_targets | awk 'NF && !seen[$0]++')
+  rm -f "$ROOT/data/danaco.link"
+}
+
+open_browser() {
+  local url
+  url="$(app_url)"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    open "$url" || true
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url" || true
+  else
+    echo "$url"
+    return 0
+  fi
+}
+
+cmd_help() {
+  cat <<EOF
+Usage:
+  danaco              Open the agent in the default browser
+  danaco backup       Save selected projects to a zip file
+  danaco restore      Import projects from a backup zip
+  danaco update       Update to the latest version from GitHub
+  danaco uninstall    Stop the agent, then choose whether to delete the project files
+EOF
+}
+
+require_php_packages() {
+  local deps=0
+  bash "$ROOT/bin/ensure-php.sh" || deps=$?
+  if [[ "$deps" -eq 1 ]]; then
+    exit 1
+  fi
+}
+
+cmd_backup() {
+  local php
+  require_php_packages
+  php="$(find_php || true)"
+  if [[ -z "$php" ]]; then
+    echo "php was not found." >&2
+    exit 1
+  fi
+  "$php" "$ROOT/bin/project-backup.php" backup "$@"
+}
+
+cmd_restore() {
+  local php
+  require_php_packages
+  php="$(find_php || true)"
+  if [[ -z "$php" ]]; then
+    echo "php was not found." >&2
+    exit 1
+  fi
+  "$php" "$ROOT/bin/project-backup.php" restore "$@"
+}
+
+cmd_open() {
+  local url
+  url="$(app_url)"
+  if ! http_up; then
+    restart_service 2>/dev/null || true
+    if ! wait_for_http; then
+      nohup /bin/bash "$ROOT/bin/run-agent.sh" >> "$ROOT/data/service.log" 2>&1 &
+      wait_for_http || echo "The agent is not responding at $url" >&2
+    fi
+  fi
+  open_browser
+}
+
+github_remote() {
+  local url
+  url="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
+  case "$url" in
+    *github.com*)
+      echo origin
+      return 0
+      ;;
+  esac
+  git -C "$ROOT" remote -v | awk '/github\.com/ { print $1; exit }'
+}
+
+save_github_credentials() {
+  bash "$ROOT/bin/save-github-credentials.sh" "$ROOT" || true
+}
+
+git_fetch() {
+  local remote="$1" url token askpass
+  url="$(git -C "$ROOT" remote get-url "$remote" 2>/dev/null || true)"
+  askpass="$ROOT/bin/git-askpass.sh"
+  if [[ -f "$ROOT/data/.github-credentials" && -x "$askpass" ]]; then
+    case "$url" in
+      https://*|http://*)
+        token="$(tr -d '\r\n' < "$ROOT/data/.github-credentials")"
+        if [[ ${#token} -ge 20 && ${#token} -le 300 && "$token" != *[!A-Za-z0-9_]* ]]; then
+          GIT_TERMINAL_PROMPT=0 \
+          DANACO_GITHUB_TOKEN="$token" \
+          GIT_ASKPASS="$askpass" \
+          SSH_ASKPASS="$askpass" \
+            git -C "$ROOT" -c "safe.directory=${ROOT}" -c credential.helper= fetch "$remote" --prune
+          return
+        fi
+        ;;
+    esac
+  fi
+  git -C "$ROOT" -c "safe.directory=${ROOT}" fetch "$remote" --prune
+}
+
+cmd_update() {
+  local remote default current before after
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git is required to update from GitHub." >&2
+    exit 1
+  fi
+  if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "This install is not a git repository, so it cannot update from GitHub." >&2
+    exit 1
+  fi
+  remote="$(github_remote)"
+  if [[ -z "$remote" ]]; then
+    echo "No GitHub remote is configured. Add one with: git remote add origin <url>" >&2
+    exit 1
+  fi
+  if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ]]; then
+    echo "Local changes are present. Commit or stash them, then run danaco update again." >&2
+    exit 1
+  fi
+  save_github_credentials
+  if [[ ! -t 0 || -f "$ROOT/data/.github-credentials" ]]; then
+    export GIT_TERMINAL_PROMPT=0
+  fi
+  if ! git_fetch "$remote"; then
+    echo "Could not fetch the latest version from GitHub." >&2
+    exit 1
+  fi
+  if git -C "$ROOT" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" >/dev/null 2>&1; then
+    default="$(git -C "$ROOT" symbolic-ref --short "refs/remotes/$remote/HEAD")"
+    default="${default#${remote}/}"
+  elif git -C "$ROOT" show-ref --verify --quiet "refs/remotes/$remote/main"; then
+    default="main"
+  elif git -C "$ROOT" show-ref --verify --quiet "refs/remotes/$remote/master"; then
+    default="master"
+  else
+    echo "Could not tell which GitHub branch is the latest." >&2
+    exit 1
+  fi
+  before="$(git -C "$ROOT" rev-parse HEAD)"
+  current="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)"
+  if [[ "$current" != "$default" ]]; then
+    if ! git -C "$ROOT" checkout "$default"; then
+      echo "Could not switch to ${default}." >&2
+      exit 1
+    fi
+  fi
+  if ! git -C "$ROOT" merge --ff-only "$remote/$default"; then
+    echo "Local history has diverged from GitHub. Nothing was overwritten." >&2
+    exit 1
+  fi
+  after="$(git -C "$ROOT" rev-parse HEAD)"
+  if [[ "$before" == "$after" ]]; then
+    echo "Already on the latest version ($(git -C "$ROOT" rev-parse --short HEAD))."
+  else
+    echo "Updated to $(git -C "$ROOT" rev-parse --short HEAD)."
+  fi
+  deps=0
+  bash "$ROOT/bin/ensure-php.sh" || deps=$?
+  if [[ "$before" != "$after" || "$deps" -eq 10 ]]; then
+    restart_service 2>/dev/null || true
+    if wait_for_http; then
+      echo "The agent is running."
+    else
+      echo "The update is in place. The agent did not respond after restart. See data/server.log." >&2
+    fi
+  fi
+  install_shortcut || true
+  if [[ "$deps" -eq 1 ]]; then
+    exit 1
+  fi
+}
+
+cmd_uninstall() {
+  local failed=0 answer
+  stop_legacy || true
+  remove_services || failed=1
+  remove_shortcut || true
+  remove_cli || true
+  if [[ "$failed" == 1 ]]; then
+    exit 1
+  fi
+  echo
+  echo "Project files are in $ROOT"
+  if [[ ! -t 0 ]]; then
+    echo "Kept the project files. Run danaco uninstall from a terminal to choose deletion."
+    return 0
+  fi
+  read -r -p "Delete the project files? Type yes to delete, or press Enter to keep them: " answer
+  case "$answer" in
+    yes|YES|y|Y)
+      rm -rf "$ROOT"
+      echo "Deleted $ROOT"
+      ;;
+    *)
+      echo "Kept the project files in $ROOT"
+      ;;
+  esac
+}
+
+install_is_protected() {
+  [[ "$(uname -s)" == "Darwin" ]] || return 1
+  case "$ROOT" in
+    "$INSTALL_HOME")
+      return 1
+      ;;
+    "$HOME/Desktop"|"$HOME/Desktop"/*|"$HOME/Documents"|"$HOME/Documents"/*|"$HOME/Downloads"|"$HOME/Downloads"/*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+publish_install() {
+  remove_launchagent || true
+  mkdir -p "$INSTALL_HOME"
+  echo "macOS cannot run a background service from Desktop, Documents, or Downloads."
+  echo "Installing a copy at: $INSTALL_HOME"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --delete \
+      --exclude 'data/service.log' \
+      --exclude 'data/server.log' \
+      --exclude 'data/tick.log' \
+      --exclude 'data/*.pid' \
+      --exclude 'data/service.mode' \
+      --exclude 'data/.*.plist' \
+      "$ROOT/" "$INSTALL_HOME/"
+  else
+    cp -R "$ROOT/." "$INSTALL_HOME/"
+  fi
+  chmod +x "$INSTALL_HOME/bin/danaco" "$INSTALL_HOME/bin/run-agent.sh" "$INSTALL_HOME/bin/git-askpass.sh" "$INSTALL_HOME/bin/save-github-credentials.sh"
+}
+
+cmd_install() {
+  save_github_credentials
+  if install_is_protected; then
+    publish_install
+    exec /bin/bash "$INSTALL_HOME/bin/danaco" _install
+  fi
+  install_cli
+  install_service
+  install_shortcut || true
+}
+
+case "${1:-}" in
+  "")
+    [[ $# -eq 0 ]] || { cmd_help >&2; exit 1; }
+    cmd_open
+    ;;
+  update)
+    [[ $# -eq 1 ]] || { cmd_help >&2; exit 1; }
+    cmd_update
+    ;;
+  backup)
+    shift
+    cmd_backup "$@"
+    ;;
+  restore)
+    shift
+    cmd_restore "$@"
+    ;;
+  uninstall)
+    [[ $# -eq 1 ]] || { cmd_help >&2; exit 1; }
+    cmd_uninstall
+    ;;
+  help|-h|--help)
+    cmd_help
+    ;;
+  _install)
+    [[ $# -eq 1 ]] || { cmd_help >&2; exit 1; }
+    cmd_install
+    ;;
+  *)
+    echo "Unknown command: $1" >&2
+    cmd_help >&2
+    exit 1
+    ;;
+esac

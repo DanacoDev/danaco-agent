@@ -1,0 +1,29 @@
+.DS_Store
+data/app.sqlite
+data/app.sqlite-journal
+data/app.sqlite-wal
+data/app.sqlite-shm
+data/sessions/
+data/*.log
+data/model-load.json
+data/model-warm.json
+data/*.pid
+data/danaco.link
+data/service.mode
+data/.backups/
+data/.trashcan/
+data/projects/
+data/*/
+!data/skills/
+data/wiki/
+data/tool-notes.md
+data/.*.plist
+data/.danaco.service
+data/.github-credentials
+data/.github-credentials.tmp
+
+# Installer is sold separately and must not ship in the GitHub repo.
+install.sh
+
+# Public website files are deployed separately and should not be committed.
+public_html/
