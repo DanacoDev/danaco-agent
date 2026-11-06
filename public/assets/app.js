@@ -408,11 +408,19 @@
         messages: {
           handler() {
             if (this.tab === 'chat' && this.chatQuery.trim()) this.queueChatSearch(false);
+            this.queueCitedFileCheck();
           },
           deep: true
         },
         live() {
           if (this.chatQuery.trim()) this.queueChatSearch(false);
+          this.queueCitedFileCheck();
+        },
+        sending(now) {
+          if (!now) this.queueCitedFileCheck();
+        },
+        projectId() {
+          this.queueCitedFileCheck();
         },
         traceOpen: {
           handler() {
@@ -1866,6 +1874,46 @@
           const code = button.parentElement ? button.parentElement.querySelector('code') : null;
           this.saveBlob(button.getAttribute('data-name') || 'note.md', code ? code.textContent : '', 'text/markdown;charset=utf-8');
         },
+        queueCitedFileCheck() {
+          if (this._citeCheckTimer) clearTimeout(this._citeCheckTimer);
+          this._citeCheckTimer = setTimeout(() => {
+            this._citeCheckTimer = null;
+            this.verifyCitedFiles();
+          }, 120);
+        },
+        markCiteMissing(button, message) {
+          if (!button) return;
+          const cite = button.closest('.file-cite');
+          if (!cite) return;
+          cite.classList.add('missing');
+          button.remove();
+          let note = cite.querySelector('.file-cite-missing');
+          if (!note) {
+            note = document.createElement('span');
+            note.className = 'file-cite-missing';
+            cite.appendChild(note);
+          }
+          note.textContent = message || 'File does not exist.';
+        },
+        async verifyCitedFiles() {
+          if (!this.projectId || !this.$refs.transcript) return;
+          await this.$nextTick();
+          const root = this.$refs.transcript;
+          const buttons = root.querySelectorAll('.file-cite-dl[data-download]:not([data-checked="1"])');
+          for (let i = 0; i < buttons.length; i++) {
+            const button = buttons[i];
+            if (!root.contains(button)) continue;
+            const path = button.getAttribute('data-download') || '';
+            button.setAttribute('data-checked', '1');
+            if (!path) continue;
+            try {
+              const data = await this.api('/api/workspace/exists?project_id=' + encodeURIComponent(this.projectId) + '&path=' + encodeURIComponent(path));
+              if (!data.exists) this.markCiteMissing(button);
+            } catch (error) {
+              button.removeAttribute('data-checked');
+            }
+          }
+        },
         async downloadProjectFile(path, button) {
           if (!this.projectId) {
             if (button) button.title = 'Open a project to download this file.';
@@ -1878,7 +1926,12 @@
           }
           if (!res.ok) {
             const data = await res.json().catch(function () { return {}; });
-            if (button) button.title = data.error || 'Could not download that file.';
+            const err = data.error || 'Could not download that file.';
+            if (/not found/i.test(err)) {
+              this.markCiteMissing(button, 'File does not exist.');
+              return;
+            }
+            if (button) button.title = err;
             return;
           }
           const blob = await res.blob();

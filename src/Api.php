@@ -42,6 +42,7 @@ class Api
         $router->add('GET', '#^/api/workspace/file$#', $this->guard(fn() => $this->file()));
         $router->add('GET', '#^/api/workspace/structured$#', $this->guard(fn() => $this->structuredFile()));
         $router->add('GET', '#^/api/workspace/download$#', $this->guard(fn() => $this->download()));
+        $router->add('GET', '#^/api/workspace/exists$#', $this->guard(fn() => $this->exists()));
         $router->add('GET', '#^/api/workspace/raw$#', $this->guard(fn() => $this->rawFile()));
         $router->add('POST', '#^/api/workspace/file$#', $this->guard(fn() => $this->saveWorkspaceFile()));
         $router->add('POST', '#^/api/workspace/structured$#', $this->guard(fn() => $this->saveStructuredFile()));
@@ -784,6 +785,18 @@ class Api
         } catch (Throwable $e) {
             $this->json(['error' => $e->getMessage()], 422);
         }
+    }
+
+    private function exists(): void
+    {
+        $project = $this->projectFromQuery();
+        $path = (string)($_GET['path'] ?? '');
+        try {
+            $ok = app_services()['safety']->fileExists((string)$project['folder_name'], $path);
+        } catch (Throwable $e) {
+            $ok = false;
+        }
+        $this->json(['exists' => $ok]);
     }
 
     private function download(): void

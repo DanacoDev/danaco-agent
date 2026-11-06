@@ -397,6 +397,10 @@ class AgentRuntime
                     $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Emit exactly:\n<<tool>>\n{"name":"tool_name","args":{}}\n<<end>>';
                     if (preg_match('/\bdelegat/i', $turnText)) {
                         $prompt = 'That delegation was not run. Do not describe it. Emit the <<tool>> JSON block for kanban so the card is in_progress, then the <<tool>> JSON block for delegate. Pass task_id when the card already exists.';
+                    } elseif (($xmlTool = $this->fakeXmlToolName($turnText)) !== null) {
+                        $prompt = 'XML tags are not a tool call. Do not write <' . $xmlTool . '>. Emit exactly:\n<<tool>>\n{"name":"' . $xmlTool . '","args":{}}\n<<end>>\nFill args with the real JSON for that tool, then stop.';
+                    } elseif ($this->claimedFileWriteWithoutCall($turnText)) {
+                        $prompt = $this->claimedWriteRetryPrompt($turnText);
                     }
                 } else {
                     $prompt = 'The reply stopped before the work finished. Continue that same task. If a tool still needs to run, call it now.';
@@ -503,14 +507,7 @@ class AgentRuntime
         if (preg_match('/\b(?:creating|created)\b[^.\n]{0,80}\btask\s+#?\d+/i', $text) && preg_match('/\bdelegat(?:e|ing|ed)\b/i', $text)) {
             return true;
         }
-        $names = [
-            'delegate', 'consult', 'list_files', 'read_file', 'read_pdf', 'write_file', 'delete_file', 'move_file',
-            'create_pdf', 'run_command', 'kanban', 'create_project', 'wiki_search', 'wiki_read', 'wiki_write',
-            'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'write_skill', 'remember', 'soul', 'send_email',
-            'web_search', 'fetch_url', 'browse_url', 'ftp', 'mcp', 'download_large', 'task_breakdown',
-            'research_pipeline', 'sqlite_helper', 'code_verifier', 'humanizer', 'write_article', 'make_graphic', 'save_note',
-            'news_fetcher', 'atr_stop_loss',
-        ];
+        $names = $this->toolNames();
         $altAll = implode('|', array_map(static fn(string $n): string => preg_quote($n, '/'), $names));
         if (preg_match('/^\s*:\s*(?:`)?(?:' . $altAll . ')(?:`)?\b/mi', $text)) {
             return true;
@@ -519,6 +516,12 @@ class AgentRuntime
             return true;
         }
         if (preg_match('/^\s*(?:`)?(?:' . $altAll . ')(?:`)?\s*(?:,\s*args\b.*)?$/mi', $text)) {
+            return true;
+        }
+        if ($this->fakeXmlToolName($text) !== null) {
+            return true;
+        }
+        if ($this->claimedFileWriteWithoutCall($text)) {
             return true;
         }
         $found = [];
@@ -548,6 +551,70 @@ class AgentRuntime
             }
         }
         return false;
+    }
+
+    private function toolNames(): array
+    {
+        return [
+            'delegate', 'consult', 'list_files', 'read_file', 'read_pdf', 'write_file', 'delete_file', 'move_file',
+            'create_pdf', 'run_command', 'kanban', 'create_project', 'wiki_search', 'wiki_read', 'wiki_write',
+            'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'write_skill', 'remember', 'soul', 'send_email',
+            'web_search', 'fetch_url', 'browse_url', 'ftp', 'mcp', 'download_large', 'task_breakdown',
+            'research_pipeline', 'sqlite_helper', 'code_verifier', 'humanizer', 'write_article', 'make_graphic', 'save_note',
+            'news_fetcher', 'atr_stop_loss',
+        ];
+    }
+
+    private function fakeXmlToolName(string $text): ?string
+    {
+        $alt = implode('|', array_map(static fn(string $n): string => preg_quote($n, '/'), $this->toolNames()));
+        if (!preg_match('/<\s*(' . $alt . ')\b[^>]*>/i', $text, $match)) {
+            return null;
+        }
+        return strtolower($match[1]);
+    }
+
+    private function claimedFileWriteWithoutCall(string $text): bool
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return false;
+        }
+        $target = 'wiki\/[\w.-]+\.md|project description|description file|\.md\b|marketing (?:strategy |plan )?file|\bfile\b';
+        $intent = 'I am|I\'m|I will|I\'ll|Let me|I am going to|I\'m going to';
+        $doing = 'updat(?:e|ing)|creat(?:e|ing)|writ(?:e|ing)|sav(?:e|ing)|delet(?:e|ing)|add(?:ing)?|edit(?:ing)?';
+        $done = 'updated|created|written|wrote|saved|deleted|edited';
+        if (preg_match('/\b(?:' . $intent . ')\b(?!\s+not\b)[^.\n]{0,120}\b(?:' . $doing . ')\b[^.\n]{0,160}(?:' . $target . ')/i', $text)) {
+            return true;
+        }
+        if (preg_match('/\b(?:I have|I\'ve)\b(?!\s+not\b)[^.\n]{0,120}\b(?:' . $done . ')\b[^.\n]{0,160}(?:' . $target . ')/i', $text)) {
+            return true;
+        }
+        if (preg_match('/\b(?:' . $doing . '|' . $done . ')\b[^.\n]{0,80}(?:wiki\/[\w.-]+\.md|project description)/i', $text)
+            && preg_match('/\b(?:' . $intent . '|I have|I\'ve)\b(?!\s+not\b)/i', $text)) {
+            return true;
+        }
+        if (preg_match('/(?:`?wiki\/[\w.-]+\.md`?)\s*content\s*:/i', $text)) {
+            return true;
+        }
+        if (preg_match('/wiki\/[\w.-]+\.md/i', $text) && preg_match('/```(?:markdown|md)?\s*\n[\s\S]{80,}```/', $text)
+            && preg_match('/\b(?:' . $intent . '|I have|I\'ve)\b(?!\s+not\b)[^.\n]{0,120}\b(?:' . $doing . '|' . $done . ')\b/i', $text)) {
+            return true;
+        }
+        return false;
+    }
+
+    private function claimedWriteRetryPrompt(string $text): string
+    {
+        $path = '';
+        if (preg_match('/wiki\/[\w.-]+\.md/i', $text, $match)) {
+            $path = $match[0];
+        }
+        $prompt = 'You described a wiki or file write but did not call a tool. Showing markdown in chat is not a write. Emit the <<tool>> JSON block for wiki_write (or write_file) now with the full content. Do not say it is done until the tool result returns.';
+        if ($path !== '') {
+            $prompt .= ' Use path ' . $path . ' when that is the file you meant.';
+        }
+        return $prompt;
     }
 
     private function proseDelegation(string $text): ?array
