@@ -1,6 +1,6 @@
 {
-  "name": "Danaco Agent",
-  "short_name": "Danaco",
+  "name": "Agent Danaco",
+  "short_name": "Agent Danaco",
   "description": "Local multi-agent workspace",
   "start_url": "/",
   "scope": "/",

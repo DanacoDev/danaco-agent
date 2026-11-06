@@ -35,7 +35,7 @@ $title = 'Terms of Use — ' . (string) $config['site_title'];
             <p class="lede">2026-11-06<br></p>
 
             <h2>1. What you get</h2>
-            <p>Danaco Agent is a self-hosted <strong>software framework</strong> (orchestrator, Web UI, skills, and related tooling). The open-source code is offered under the MIT License. A paid packaged installer, if purchased, is a convenience for setup. Danaco does not operate your deployment as a hosted AI service.</p>
+            <p>Agent Danaco is a self-hosted <strong>software framework</strong> (orchestrator, Web UI, skills, and related tooling). The open-source code is offered under the MIT License. A paid packaged installer, if purchased, is a convenience for setup. Danaco does not operate your deployment as a hosted AI service.</p>
 
             <h2>2. Your role</h2>
             <p>You (or your organisation) install, configure, and operate the software. You choose models, tools, data, and the purpose of each deployment. You are the operator of that deployment and are responsible for lawful use under the laws that apply to you.</p>

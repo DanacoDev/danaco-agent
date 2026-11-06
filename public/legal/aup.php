@@ -5,7 +5,7 @@ header('Content-Type: text/html; charset=utf-8');
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Acceptable Use — Danaco Agent</title>
+<title>Acceptable Use — Agent Danaco</title>
 <style>
 body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;line-height:1.5;color:#111}
 h1,h2{line-height:1.2} .muted{color:#666} a{color:#0b57d0}

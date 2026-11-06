@@ -1,4 +1,4 @@
-# Danaco Agent
+# Agent Danaco
 
 Self-hosted **agent framework** for your own hardware. Orchestrator, subagents, projects, skills, and a Web UI — without a subscription. You configure models and tools; the runtime can work with a high degree of autonomy inside what you enable.
 
@@ -14,6 +14,6 @@ Linux only. Ubuntu is recommended.
 
 ## Intended purpose
 
-Danaco Agent is a self-hosted software framework for language-model-assisted project work (chat, files, tasks, optional tools) on hardware the operator controls. It is not intended for prohibited AI practices or for high-risk AI system use cases under Annex III of the EU AI Act. The organisation that installs and configures it determines the purpose of each deployment and is responsible for lawful use under the laws that apply to them.
+Agent Danaco is a self-hosted software framework for language-model-assisted project work (chat, files, tasks, optional tools) on hardware the operator controls. It is not intended for prohibited AI practices or for high-risk AI system use cases under Annex III of the EU AI Act. The organisation that installs and configures it determines the purpose of each deployment and is responsible for lawful use under the laws that apply to them.
 
 See [Terms of Use](https://agent.danaco.se/legal/terms.php), [Acceptable Use](https://agent.danaco.se/legal/aup.php), and [Documentation](https://agent.danaco.se/docs/).

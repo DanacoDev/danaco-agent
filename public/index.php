@@ -82,8 +82,8 @@ header('X-Danaco: 1');
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Danaco">
-<title>Danaco Agent</title>
+<meta name="apple-mobile-web-app-title" content="Agent Danaco">
+<title>Agent Danaco</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" href="/assets/icon-32.png" type="image/png" sizes="32x32">
@@ -122,7 +122,7 @@ header('X-Danaco: 1');
     <form class="login-card" @submit.prevent="login">
       <div class="login-brand">
         <img class="login-icon" src="/assets/logo.png" alt="">
-        <h1>Danaco Agent</h1>
+        <h1>Agent Danaco</h1>
       </div>
       <p v-if="!passwordSet" class="form-error">No password is set. Run install.sh first.</p>
       <label class="field">Password
@@ -302,7 +302,7 @@ header('X-Danaco: 1');
                       </button>
                     </span>
                   </div>
-                  <p v-if="task.schedule_time || (task.recurrence_interval && task.recurrence_interval !== 'none')" class="hint">{{ task.schedule_time || 'No time yet' }} · {{ repeatLabel(task.recurrence_interval) }}</p>
+                  <p class="hint">{{ task.schedule_time || 'immediately' }} · {{ repeatLabel(task.recurrence_interval) }}</p>
                   <p v-if="task.result" class="task-result">{{ task.result }}</p>
                   <label class="field move-field">Move
                     <select :value="columnStatus(task)" @change="moveTask(task, $event.target.value)">
@@ -321,10 +321,17 @@ header('X-Danaco: 1');
                         <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
                       </select>
                     </label>
-                    <label class="field">Time<input type="datetime-local" v-model="taskEdit.schedule_time"></label>
+                    <label class="field">Time
+                      <select v-model="taskEdit.when">
+                        <option value="immediately">immediately</option>
+                        <option value="at">at a time</option>
+                      </select>
+                    </label>
+                    <label v-if="taskEdit.when==='at'" class="field">When<input type="datetime-local" v-model="taskEdit.schedule_time"></label>
+                    <p v-if="taskError" class="form-error">{{ taskError }}</p>
                     <label class="field">Repeat
                       <select v-model="taskEdit.recurrence_interval">
-                        <option value="none">none</option>
+                        <option value="none">run once</option>
                         <option value="5min">every 5 min</option>
                         <option value="15min">every 15 min</option>
                         <option value="30min">every 30 min</option>
@@ -1050,7 +1057,7 @@ header('X-Danaco: 1');
   <div v-if="authed && termsNeeded" class="modal-back">
     <form class="modal" @submit.prevent="acceptTerms">
       <h2>Terms &amp; Acceptable Use</h2>
-      <p class="hint">Danaco Agent is a self-hosted framework. You operate this deployment and remain responsible for lawful use. The software is provided as is, without warranty.</p>
+      <p class="hint">Agent Danaco is a self-hosted framework. You operate this deployment and remain responsible for lawful use. The software is provided as is, without warranty.</p>
       <p class="hint">Read the <a href="/legal/terms.php" target="_blank" rel="noopener">Terms of Use</a> and <a href="/legal/aup.php" target="_blank" rel="noopener">Acceptable Use Policy</a> (version {{ termsVersion }}).</p>
       <p class="hint">High-risk Annex III uses and prohibited AI practices are out of intended purpose unless you independently ensure legal conformity.</p>
       <button class="btn btn-gold" type="submit">I accept</button>

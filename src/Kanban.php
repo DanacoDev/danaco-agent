@@ -50,7 +50,7 @@ class Kanban
         if (array_key_exists('agent', $args) || array_key_exists('assigned_agent', $args)) {
             $fields['assigned_agent'] = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
         }
-        $schedule = array_key_exists('schedule_time', $args) ? $this->schedule($args['schedule_time']) : ($existing['schedule_time'] ?? null);
+        $schedule = array_key_exists('schedule_time', $args) ? $this->schedule($args['schedule_time'], $byUser) : ($existing['schedule_time'] ?? null);
         $recurrence = array_key_exists('recurrence', $args) || array_key_exists('recurrence_interval', $args)
             ? $this->recurrence((string)($args['recurrence'] ?? $args['recurrence_interval'] ?? 'none'))
             : (string)($existing['recurrence_interval'] ?? 'none');
@@ -98,9 +98,13 @@ class Kanban
             $line = '#' . $task['id'] . ' [' . $this->column($task) . '] ' . $task['title'] . ' (' . $task['assigned_agent'] . ')';
             if (!empty($task['schedule_time'])) {
                 $line .= ' at ' . $task['schedule_time'];
-                if (($task['recurrence_interval'] ?? 'none') !== 'none') {
-                    $line .= ' ' . $task['recurrence_interval'];
-                }
+            } else {
+                $line .= ' immediately';
+            }
+            if (($task['recurrence_interval'] ?? 'none') !== 'none') {
+                $line .= ' ' . $task['recurrence_interval'];
+            } else {
+                $line .= ' run once';
             }
             $result = trim((string)($task['result'] ?? ''));
             if ($result !== '') {
@@ -213,16 +217,23 @@ class Kanban
         return in_array($value, ['none', '5min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly'], true) ? $value : 'none';
     }
 
-    private function schedule(mixed $value): ?string
+    private function schedule(mixed $value, bool $strict = false): ?string
     {
         if ($value === null || $value === '') {
             return null;
         }
         $value = str_replace('T', ' ', trim((string)$value));
+        $value = preg_replace('/\.\d+$/', '', $value) ?? $value;
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
+            return null;
+        }
         if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/', $value)) {
             $value .= ':00';
         }
         if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value)) {
+            if ($strict) {
+                throw new InvalidArgumentException('Time must be a date and a clock time, or left empty to run immediately.');
+            }
             return null;
         }
         return $value;

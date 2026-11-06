@@ -4,7 +4,7 @@ return [
     'hero' => [
         'kicker' => 'Self-hosted agent framework',
         'lines' => ['The AI agent framework', 'for local hardware.', 'Zero monthly fees.'],
-        'lede' => 'Danaco Agent is a self-hosted orchestration toolkit for project work. You configure models and tools on your own hardware. Your files stay on your machine unless you choose a cloud model.',
+        'lede' => 'Agent Danaco is a self-hosted orchestration toolkit for project work. You configure models and tools on your own hardware. Your files stay on your machine unless you choose a cloud model.',
         'note' => 'Requires Linux.',
     ],
     'shots' => [
@@ -21,17 +21,17 @@ return [
         'kicker' => 'Requirements',
         'title' => 'Recommended hardware.',
         'items' => [
-            ['title' => 'Linux', 'text' => 'The system Danaco Agent runs on.'],
+            ['title' => 'Linux', 'text' => 'The system Agent Danaco runs on.'],
             ['title' => '8 GB RAM', 'text' => 'The minimum memory.'],
             ['title' => '16 GB GPU', 'text' => 'Recommended for local models.'],
         ],
-        'note' => 'During installation, Danaco Agent finds and installs the best suitable local model automatically.',
+        'note' => 'During installation, Agent Danaco finds and installs the best suitable local model automatically.',
     ],
     'values' => [
-        'kicker' => 'Why Danaco Agent',
+        'kicker' => 'Why Agent Danaco',
         'title' => 'An agent framework you can actually keep.',
         'cards' => [
-            ['title' => 'You own your data', 'text' => 'SaaS tools read your emails to train their models. Danaco Agent runs on your machine. Cloud models are opt-in.'],
+            ['title' => 'You own your data', 'text' => 'SaaS tools read your emails to train their models. Agent Danaco runs on your machine. Cloud models are opt-in.'],
             ['title' => 'Automate without coding', 'text' => 'Designed for project managers and business leads. Describe procedures in natural language; the runtime executes with the tools you enable.'],
             ['title' => 'Unbounded intelligence', 'text' => 'No per-user API rate limit on the local runtime. The more capable your hardware, the more work it can take on.'],
         ],
@@ -92,7 +92,7 @@ return [
     'compliance' => [
         'kicker' => 'EU AI Act',
         'title' => 'Built with the EU AI Act in mind.',
-        'lede' => 'Most local agent projects ignore regulation until someone asks. Danaco Agent is an open-source, self-hosted framework designed from the start so business operators can document their role, keep an optional audit trail, and stay clear of high-risk misuse — rare among open-source local agents.',
+        'lede' => 'Most local agent projects ignore regulation until someone asks. Agent Danaco is an open-source, self-hosted framework designed from the start so business operators can document their role, keep an optional audit trail, and stay clear of high-risk misuse — rare among open-source local agents.',
         'points' => [
             ['title' => 'Clear roles', 'text' => 'Danaco supplies the framework. You operate the deployment, choose models and tools, and remain responsible for lawful use.'],
             ['title' => 'Optional compliance tools', 'text' => 'Setup asks whether the EU AI Act applies. When it does, open Compliance & documentation for Terms, a system card export, and optional logging or approvals.'],
@@ -103,7 +103,7 @@ return [
     'compare' => [
         'kicker' => 'Compared',
         'title' => 'Your server, or theirs.',
-        'headers' => ['', 'Danaco Agent', 'SaaS competitors'],
+        'headers' => ['', 'Agent Danaco', 'SaaS competitors'],
         'rows' => [
             ['Data hosting', 'Your server', 'Their cloud'],
             ['Cost', 'One-time $20, or build from source', 'Per user, per month'],
@@ -115,6 +115,6 @@ return [
         ],
     ],
     'footer' => [
-        'note' => 'Danaco Agent is an MIT-licensed self-hosted framework. Help is in the docs. Packaged-installer purchases are handled by Lemon Squeezy. You operate the deployment and remain responsible for lawful use.',
+        'note' => 'Agent Danaco is an MIT-licensed self-hosted framework. Help is in the docs. Packaged-installer purchases are handled by Lemon Squeezy. You operate the deployment and remain responsible for lawful use.',
     ],
 ];

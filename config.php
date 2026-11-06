@@ -1,7 +1,7 @@
 <?php
 
 return [
-    'app_name' => 'Danaco Agent',
+    'app_name' => 'Agent Danaco',
     'db_path' => __DIR__ . '/data/app.sqlite',
     'data_dir' => __DIR__ . '/data',
     'session_name' => 'agent_session',

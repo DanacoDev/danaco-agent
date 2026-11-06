@@ -213,6 +213,124 @@ class RepeatLineGuard
     }
 }
 
+class ReplyNoiseFilter
+{
+    private const THINK = ['think', 'thinking', 'reasoning', 'thought'];
+
+    private string $pending = '';
+
+    private string $mode = '';
+
+    private string $closer = '';
+
+    public function __construct(private array $toolNames)
+    {
+    }
+
+    public function push(string $token): array
+    {
+        if ($token === '') {
+            return ['visible' => '', 'aside' => ''];
+        }
+        $this->pending .= $token;
+        return $this->drain(false);
+    }
+
+    public function finish(): array
+    {
+        return $this->drain(true);
+    }
+
+    private function drain(bool $end): array
+    {
+        $visible = '';
+        $aside = '';
+        while ($this->pending !== '') {
+            if ($this->mode === '') {
+                $at = strpos($this->pending, '<');
+                if ($at === false) {
+                    $visible .= $this->pending;
+                    $this->pending = '';
+                    break;
+                }
+                $visible .= substr($this->pending, 0, $at);
+                $rest = substr($this->pending, $at);
+                $tag = $this->readOpen($rest, $end);
+                if ($tag === null) {
+                    $this->pending = $rest;
+                    break;
+                }
+                if ($tag['kind'] === 'literal') {
+                    $visible .= $tag['raw'];
+                    $this->pending = substr($rest, strlen($tag['raw']));
+                    continue;
+                }
+                $aside .= $tag['raw'];
+                $this->mode = $tag['kind'];
+                $this->closer = $tag['closer'];
+                $this->pending = substr($rest, strlen($tag['raw']));
+                continue;
+            }
+            $closeAt = stripos($this->pending, $this->closer);
+            if ($closeAt === false) {
+                if (!$end) {
+                    $hold = $this->suffixHold($this->pending, $this->closer);
+                    $cut = strlen($this->pending) - $hold;
+                    if ($cut > 0) {
+                        $aside .= substr($this->pending, 0, $cut);
+                        $this->pending = substr($this->pending, $cut);
+                    }
+                    break;
+                }
+                $aside .= $this->pending;
+                $this->pending = '';
+                $this->mode = '';
+                $this->closer = '';
+                break;
+            }
+            $aside .= substr($this->pending, 0, $closeAt) . substr($this->pending, $closeAt, strlen($this->closer));
+            $this->pending = substr($this->pending, $closeAt + strlen($this->closer));
+            $this->mode = '';
+            $this->closer = '';
+        }
+        return ['visible' => $visible, 'aside' => $aside];
+    }
+
+    private function readOpen(string $rest, bool $end): ?array
+    {
+        if ($rest === '' || $rest[0] !== '<') {
+            return ['kind' => 'literal', 'raw' => $rest === '' ? '' : $rest[0], 'closer' => ''];
+        }
+        if (isset($rest[1]) && $rest[1] === '<') {
+            return ['kind' => 'literal', 'raw' => '<', 'closer' => ''];
+        }
+        if (!preg_match('/\A<([A-Za-z_][\w-]*)(\s[^>]*)?>/', $rest, $match)) {
+            if (!$end && strlen($rest) < 80 && !str_contains(substr($rest, 1), '<') && !str_contains($rest, "\n")) {
+                return null;
+            }
+            return ['kind' => 'literal', 'raw' => '<', 'closer' => ''];
+        }
+        $name = strtolower($match[1]);
+        $raw = $match[0];
+        if (in_array($name, self::THINK, true) || in_array($name, $this->toolNames, true)) {
+            return ['kind' => $name, 'raw' => $raw, 'closer' => '</' . $match[1] . '>'];
+        }
+        return ['kind' => 'literal', 'raw' => '<', 'closer' => ''];
+    }
+
+    private function suffixHold(string $text, string $closer): int
+    {
+        $max = min(strlen($text), strlen($closer) - 1);
+        $hold = 0;
+        for ($i = 1; $i <= $max; $i++) {
+            if (stripos($closer, substr($text, -$i)) === 0) {
+                $hold = $i;
+            }
+        }
+        return $hold;
+    }
+}
+
 class AgentRuntime
 {
     public function __construct(private LLMClient $llm, private Database $db)
@@ -255,6 +373,7 @@ class AgentRuntime
             $emit(['type' => 'status', 'agent' => $agent, 'status' => 'thinking']);
             $parser = new ToolStreamParser();
             $markers = new OutputLineFilter();
+            $noise = new ReplyNoiseFilter($this->toolNames());
             $turnText = '';
             $guard = new RepeatLineGuard();
             $show = function (string $text) use ($guard, $emit, $agent, &$visible, &$turnText): void {
@@ -281,8 +400,29 @@ class AgentRuntime
                 $thinkAt = microtime(true);
                 $emit(['type' => 'thinking', 'agent' => $agent, 'text' => $chunk]);
             };
+            $keepAside = function (string $aside) use (&$thinkBuf, &$thinkAt, $flushThinking, &$turnText): void {
+                if ($aside === '') {
+                    return;
+                }
+                $turnText .= $aside;
+                if ($thinkBuf === '') {
+                    $thinkAt = microtime(true);
+                }
+                $thinkBuf .= $aside;
+                $flushThinking(false);
+            };
+            $present = function (string $text) use ($noise, $keepAside, $show): void {
+                $split = $noise->push($text);
+                $keepAside($split['aside']);
+                $show($split['visible']);
+            };
+            $finishNoise = function () use ($noise, $keepAside, $show): void {
+                $split = $noise->finish();
+                $keepAside($split['aside']);
+                $show($split['visible']);
+            };
             try {
-                $raw = $this->llm->stream($messages, function (string $token) use ($parser, $emit, $agent, &$toolNoted, $shouldStop, $markers, $guard, $show): void {
+                $raw = $this->llm->stream($messages, function (string $token) use ($parser, $emit, $agent, &$toolNoted, $shouldStop, $markers, $guard, $present): void {
                     if ($shouldStop && $shouldStop()) {
                         throw new ChatStopped('Stopped.');
                     }
@@ -291,7 +431,7 @@ class AgentRuntime
                         $toolNoted = true;
                         $emit(['type' => 'activity', 'agent' => $agent, 'text' => 'Calling a tool']);
                     }
-                    $show($text);
+                    $present($text);
                     if ($guard->tripped) {
                         throw new OutputRepeated();
                     }
@@ -311,11 +451,13 @@ class AgentRuntime
                 $flushThinking(true);
                 $this->flushRecoveries($emit, $projectId, $agent);
             } catch (ChatStopped $e) {
+                $present($this->releaseMarker($markers, $parser));
+                $finishNoise();
                 $flushThinking(true);
-                $show($this->releaseMarker($markers, $parser));
                 $this->db->setAgentStatus($agent, 'idle');
                 throw $e;
             } catch (OutputRepeated $e) {
+                $finishNoise();
                 $flushThinking(true);
                 $this->flushRecoveries($emit, $projectId, $agent);
                 if ($turnText !== '') {
@@ -353,12 +495,13 @@ class AgentRuntime
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'error']);
                 throw new LlmException($notice, $e->retryable);
             }
-            $show($this->releaseMarker($markers, $parser));
+            $present($this->releaseMarker($markers, $parser));
             $tail = $parser->finish();
             $cutOff = !empty($tail['open']);
             if ($tail['text'] !== '' && !$cutOff) {
-                $show($tail['text']);
+                $present($tail['text']);
             }
+            $finishNoise();
             $rest = $guard->finish();
             if ($rest !== '') {
                 $visible .= $rest;

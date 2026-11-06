@@ -4,7 +4,7 @@ class ComplianceDocs
 {
     public const TERMS_VERSION = '1';
 
-    public const INTENDED_PURPOSE = 'Danaco Agent is a self-hosted software framework for language-model-assisted project work (chat, files, tasks, optional tools) on hardware the operator controls. It is designed to act with a high degree of autonomy within the tools the operator enables. It is not intended for prohibited AI practices or for high-risk AI system use cases under Annex III of the EU AI Act (including employment decisions, creditworthiness, biometric categorisation/emotion recognition, and critical access to essential private/public services). The organisation that installs and configures it determines the purpose of each deployment and is responsible for lawful use under the laws that apply to them.';
+    public const INTENDED_PURPOSE = 'Agent Danaco is a self-hosted software framework for language-model-assisted project work (chat, files, tasks, optional tools) on hardware the operator controls. It is designed to act with a high degree of autonomy within the tools the operator enables. It is not intended for prohibited AI practices or for high-risk AI system use cases under Annex III of the EU AI Act (including employment decisions, creditworthiness, biometric categorisation/emotion recognition, and critical access to essential private/public services). The organisation that installs and configures it determines the purpose of each deployment and is responsible for lawful use under the laws that apply to them.';
 
     public function __construct(private Database $db)
     {
@@ -57,7 +57,7 @@ class ComplianceDocs
         if ($name === '') {
             $name = 'Agent';
         }
-        return 'This conversation is assisted by ' . $name . ', an AI system running on Danaco Agent. Outputs can be wrong. A human operator remains responsible for decisions that affect people or the business.';
+        return 'This conversation is assisted by ' . $name . ', an AI system running on Agent Danaco. Outputs can be wrong. A human operator remains responsible for decisions that affect people or the business.';
     }
 
     public function systemCardMarkdown(): string
@@ -69,7 +69,7 @@ class ComplianceDocs
         $cloudUse = (string)($settings['cloud_api_use'] ?? '');
         $full = ($settings['full_system_control'] ?? '0') === '1' ? 'On' : 'Off';
         $lines = [
-            '# Danaco Agent — Instructions for Use / System Card',
+            '# Agent Danaco — Instructions for Use / System Card',
             '',
             'Generated: ' . gmdate('Y-m-d H:i:s') . ' UTC',
             'Software version: ' . $version,

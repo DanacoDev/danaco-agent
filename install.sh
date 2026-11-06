@@ -85,7 +85,7 @@ if [[ -f "$ROOT/data/app.sqlite" ]]; then
     esac
   else
     echo
-    echo "An existing Danaco Agent install was found at $ROOT"
+    echo "An existing Agent Danaco install was found at $ROOT"
     echo "  1) Replace the old files"
     echo "  2) Use the existing files"
     echo "  3) Create a new folder ($(basename "$next_dir"))"
@@ -111,7 +111,7 @@ if [[ -f "$ROOT/data/app.sqlite" ]]; then
 fi
 
 if [[ ! -f "$ROOT/bin/danaco" ]]; then
-  echo "Fetching Danaco Agent from GitHub..."
+  echo "Fetching Agent Danaco from GitHub..."
   stage="$(mktemp -d "${TMPDIR:-/tmp}/danaco.XXXXXX")"
   clone_repo "$stage/fresh"
   keep_installer="$stage/install.sh"
@@ -576,7 +576,7 @@ fi
 bash "$ROOT/bin/danaco" _install
 
 URL="https://127.0.0.1:${APP_PORT}/"
-echo "Danaco Agent is running at $URL"
+echo "Agent Danaco is running at $URL"
 if [[ "$BIND_HOST" == "0.0.0.0" && -f "$ROOT/data/tls/san.list" ]]; then
   echo "From another device on this network, use https and one of these names:"
   while IFS= read -r san_line; do

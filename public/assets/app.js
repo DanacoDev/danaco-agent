@@ -1485,7 +1485,7 @@
             daily: 'daily',
             weekly: 'weekly',
             monthly: 'monthly'
-          })[value] || 'none';
+          })[value] || 'run once';
         },
         columnStatus(task) {
           if (task.status === 'done' || task.status === 'review' || task.status === 'in_progress') return task.status;
@@ -1545,28 +1545,47 @@
             return;
           }
           this.openTask = task.id;
+          this.taskError = '';
+          const stamp = String(task.schedule_time || '').replace(' ', 'T').slice(0, 16);
           this.taskEdit = {
             title: task.title,
             description: task.description || '',
             assigned_agent: task.assigned_agent,
-            schedule_time: (task.schedule_time || '').replace(' ', 'T').slice(0, 16),
+            when: stamp ? 'at' : 'immediately',
+            schedule_time: stamp,
             recurrence_interval: task.recurrence_interval || 'none'
           };
         },
+        taskScheduleStamp(value) {
+          let text = String(value || '').trim().replace('T', ' ').replace(/\.\d+$/, '');
+          if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(text)) text += ':00';
+          return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text) ? text : '';
+        },
         async saveTask(task) {
+          this.taskError = '';
+          const scheduled = this.taskEdit.when === 'at';
+          const stamp = scheduled ? this.taskScheduleStamp(this.taskEdit.schedule_time) : '';
+          if (scheduled && !stamp) {
+            this.taskError = 'Choose a time, or set the task to run immediately.';
+            return;
+          }
           const body = {
             title: this.taskEdit.title,
             description: this.taskEdit.description,
             assigned_agent: this.taskEdit.assigned_agent,
-            schedule_time: this.taskEdit.schedule_time ? this.taskEdit.schedule_time.replace('T', ' ') + ':00' : null,
+            schedule_time: stamp || null,
             recurrence_interval: this.taskEdit.recurrence_interval
           };
           if (task.status === 'review' && (this.taskEdit.description || '').trim() !== (task.description || '').trim() && (this.taskEdit.description || '').trim() !== '') {
             body.status = 'in_progress';
           }
-          const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: body });
-          Object.assign(task, saved.task);
-          if (saved.task.status !== 'review') this.openTask = null;
+          try {
+            const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: body });
+            Object.assign(task, saved.task);
+            if (saved.task.status !== 'review') this.openTask = null;
+          } catch (error) {
+            this.taskError = error.message || 'Could not save the task.';
+          }
         },
         async finishTask(task) {
           const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: { status: 'done' } });

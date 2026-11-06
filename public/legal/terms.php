@@ -5,7 +5,7 @@ header('Content-Type: text/html; charset=utf-8');
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Terms of Use — Danaco Agent</title>
+<title>Terms of Use — Agent Danaco</title>
 <style>
 body{font-family:system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1rem;line-height:1.5;color:#111}
 h1,h2{line-height:1.2} .muted{color:#666} a{color:#0b57d0}
@@ -15,7 +15,7 @@ h1,h2{line-height:1.2} .muted{color:#666} a{color:#0b57d0}
 <h1>Terms of Use</h1>
 <p class="muted">Version 1. Template for commercial use — have a lawyer review before you rely on it.</p>
 <h2>1. What you get</h2>
-<p>Danaco Agent is a self-hosted software framework. The open-source code is MIT-licensed. A paid packaged installer is a setup convenience. Danaco does not operate your deployment as a hosted AI service.</p>
+<p>Agent Danaco is a self-hosted software framework. The open-source code is MIT-licensed. A paid packaged installer is a setup convenience. Danaco does not operate your deployment as a hosted AI service.</p>
 <h2>2. Your role</h2>
 <p>You install, configure, and operate the software. You choose models, tools, data, and purpose. You are responsible for lawful use under the laws that apply to you.</p>
 <h2>3. No warranty</h2>

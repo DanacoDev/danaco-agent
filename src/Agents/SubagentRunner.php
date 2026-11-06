@@ -180,7 +180,9 @@ Never invent another call format. These do nothing:
 : wiki/notes.md
 list_files
 <task_breakdown>...</task_breakdown>
+<delegate><agent>writer</agent></delegate>
 Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> block runs it.
+Do not print a tool call in the reply. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_write or write_file first, then answer.
 
 Tools:

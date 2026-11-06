@@ -4,7 +4,7 @@ nav: Installation
 title: Installation
 ---
 
-Danaco Agent installs on Linux from an interactive terminal. Ubuntu is recommended. Windows is not supported. Docker is not required. The project is open source under the MIT license.
+Agent Danaco installs on Linux from an interactive terminal. Ubuntu is recommended. Windows is not supported. Docker is not required. The project is open source under the MIT license.
 
 ## Before you start
 
@@ -26,7 +26,7 @@ If you prefer a guided package for less technical users or a business rollout, b
 
 The script installs PHP if it is missing, shows your hardware, and then asks the questions below. At the end it opens the Web UI in your browser.
 
-## If Danaco Agent is already installed
+## If Agent Danaco is already installed
 
 When data/app.sqlite is already in the folder, the script stops and offers three choices.
 
@@ -36,7 +36,7 @@ When data/app.sqlite is already in the folder, the script stops and offers three
 
 ## PHP
 
-Danaco Agent needs PHP 8.2 or newer, with pdo_sqlite, curl, openssl, mbstring, dom, and zip, plus the sqlite3 command. If those are missing, the installer tries to add them.
+Agent Danaco needs PHP 8.2 or newer, with pdo_sqlite, curl, openssl, mbstring, dom, and zip, plus the sqlite3 command. If those are missing, the installer tries to add them.
 
 - Debian or Ubuntu: php-cli, php-sqlite3, sqlite3, php-curl, php-mbstring, php-xml, and php-zip. apt may ask for your password.
 
@@ -48,7 +48,7 @@ The script prints your NVIDIA GPU name and memory when nvidia-smi is available. 
 
 ## Specifications
 
-On install, Danaco Agent suggests a local model from discrete GPU memory and system RAM. Unified memory does not count as GPU memory, so a Mac with no separate graphics card is treated as having none. A Linux machine with no NVIDIA GPU is treated the same way.
+On install, Agent Danaco suggests a local model from discrete GPU memory and system RAM. Unified memory does not count as GPU memory, so a Mac with no separate graphics card is treated as having none. A Linux machine with no NVIDIA GPU is treated the same way.
 
 - With 16 GB or more of discrete GPU memory, the suggested model is `qwen3.6:35b-a3b-nvfp4` when the NVIDIA GPU has compute capability 10.0 or newer, and `qwen3.6:35b-a3b-q4_K_M` otherwise.
 - With less than 16 GB of discrete GPU memory and 8 GB of RAM or more, the suggested model is `qwen3.5:9b-q4_K_M`.
@@ -76,7 +76,7 @@ The script asks whether other devices on the same LAN should reach the agent. Th
 
 On Linux, a yes also opens SSH and the chosen port in ufw when ufw is installed. If ufw is missing, you open those ports yourself.
 
-The Web UI uses port 8000 when it is free. If 8000 is taken by something else, the script walks forward and uses the next free port through 8099. An existing Danaco Agent on 8000 is reused.
+The Web UI uses port 8000 when it is free. If 8000 is taken by something else, the script walks forward and uses the next free port through 8099. An existing Agent Danaco on 8000 is reused.
 
 ## Web UI password
 

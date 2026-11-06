@@ -35,7 +35,7 @@ $title = 'Acceptable Use — ' . (string) $config['site_title'];
             <p class="lede">2026-11-06<br></p>
 
             <h2>1. Intended purpose</h2>
-            <p>Danaco Agent is a self-hosted framework for language-model-assisted project work (chat, files, tasks, optional tools) on hardware the operator controls. It is designed to act with a high degree of autonomy within the tools the operator enables.</p>
+            <p>Agent Danaco is a self-hosted framework for language-model-assisted project work (chat, files, tasks, optional tools) on hardware the operator controls. It is designed to act with a high degree of autonomy within the tools the operator enables.</p>
 
             <h2>2. Prohibited AI practices</h2>
             <p>You may not use the software for practices that are prohibited under the EU AI Act (or equivalent rules where you operate), including social scoring by public authorities, untargeted scraping of facial images for recognition databases, emotion recognition in the workplace or education where forbidden, and other banned practices as defined by applicable law.</p>

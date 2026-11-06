@@ -1,4 +1,4 @@
-# Ubuntu cutover: Dagento → Danaco Agent 1.0.0
+# Ubuntu cutover: Dagento → Agent Danaco 1.0.0
 
 Use this on the machine that still runs the old Dagento install. `install.sh` ships in the MIT-licensed GitHub repo; a packaged installer remains optional for less technical setups.
 

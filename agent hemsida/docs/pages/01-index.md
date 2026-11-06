@@ -1,10 +1,10 @@
 ---
 slug: index
-nav: What Danaco Agent is
-title: What Danaco Agent is
+nav: What Agent Danaco is
+title: What Agent Danaco is
 ---
 
-Danaco Agent is a local **agent framework**. It runs on your Linux machine, keeps a Web UI in the browser, and puts specialized subagents under one orchestrator. You configure models and tools; the runtime can act with a high degree of autonomy inside what you enable.
+Agent Danaco is a local **agent framework**. It runs on your Linux machine, keeps a Web UI in the browser, and puts specialized subagents under one orchestrator. You configure models and tools; the runtime can act with a high degree of autonomy inside what you enable.
 
 ## A team, not a single chat
 
@@ -16,12 +16,12 @@ The interface is a password-protected Web UI: the conversation, a Kanban board, 
 
 ## Who it is for
 
-Danaco Agent is for people who want project help on hardware they control, without a monthly fee for the runtime itself. Project managers and business leads can describe a procedure in plain language. The agent writes and reuses skills when a task needs a script.
+Agent Danaco is for people who want project help on hardware they control, without a monthly fee for the runtime itself. Project managers and business leads can describe a procedure in plain language. The agent writes and reuses skills when a task needs a script.
 
 :::cards
 #### Your files stay put
 
-Notes, the wiki, and project files live on the machine running Danaco Agent. A cloud model is something you turn on, not the default.
+Notes, the wiki, and project files live on the machine running Agent Danaco. A cloud model is something you turn on, not the default.
 
 #### One install
 
@@ -34,7 +34,7 @@ The framework is for language-model-assisted project work on hardware you contro
 
 ## What it is built to avoid
 
-Most local agent frameworks fail in the same few ways. Danaco Agent is arranged so those failures are harder to hit.
+Most local agent frameworks fail in the same few ways. Agent Danaco is arranged so those failures are harder to hit.
 
 - Hours of fragile setup: missing Python packages, vector-database drivers, and an install that breaks on the next update.
 - Agents stuck in a loop, burning GPU memory until the machine stalls.
