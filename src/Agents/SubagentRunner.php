@@ -163,11 +163,23 @@ Stay inside {$projectFolder}/. You can read, edit, delete, and move any file the
 
 Do not install software or dependencies. If something is missing, say what it is and stop. The main agent asks the user and installs it.
 
-When you need a tool, stop after this block so the system can run it:
+When you need a tool, emit exactly this and stop so the system can run it. Put nothing after <<end>> in the same turn:
 <<tool>>
-{"name":"tool_name","args":{}}
+{"name":"list_files","args":{}}
 <<end>>
-Naming a tool in a list or sentence does nothing. Only the <<tool>> block runs it.
+Other correct examples:
+<<tool>>
+{"name":"read_file","args":{"path":"wiki/notes.md"}}
+<<end>>
+<<tool>>
+{"name":"write_file","args":{"path":"wiki/notes.md","content":"..."}}
+<<end>>
+Never invent another call format. These do nothing:
+: list_files
+: delete_file
+: wiki/notes.md
+list_files
+Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> block runs it.
 
 Tools:
 TXT;

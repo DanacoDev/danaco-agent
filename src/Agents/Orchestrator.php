@@ -497,11 +497,26 @@ Each message from the user starts with the local time it was sent, in brackets. 
 
 {$team}
 
-{$consultNote}When you need a tool, stop after this block so the system can run it:
+{$consultNote}When you need a tool, emit exactly this and stop so the system can run it. Put nothing after <<end>> in the same turn:
 <<tool>>
-{"name":"tool_name","args":{}}
+{"name":"list_files","args":{}}
 <<end>>
-Naming a tool in a list or sentence does nothing. Only the <<tool>> block runs it.
+Other correct examples:
+<<tool>>
+{"name":"wiki_read","args":{}}
+<<end>>
+<<tool>>
+{"name":"delete_file","args":{"path":"website"}}
+<<end>>
+<<tool>>
+{"name":"kanban","args":{"action":"list"}}
+<<end>>
+Never invent another call format. These do nothing:
+: list_files
+: delete_file
+: wiki/notes.md
+list_files
+Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> block runs it.
 
 Tools:
 - delegate: args agent (researcher, writer, coder, analyst, or marketer), instruction, project, task_id. One subagent at a time. Pick the agent from the team section. Delegating a card moves it to in_progress. Pass task_id when that card already exists. When it returns, list the kanban and update the matching cards before the next step, even if you have no recollection of any tasks.

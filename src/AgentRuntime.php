@@ -394,7 +394,7 @@ class AgentRuntime
                 if ($cutOff) {
                     $prompt = 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.';
                 } elseif ($proseTools) {
-                    $prompt = 'You named tools but did not call them. Do not list tools in prose. Emit the <<tool>> JSON block now for the first tool you need.';
+                    $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Emit exactly:\n<<tool>>\n{"name":"tool_name","args":{}}\n<<end>>';
                     if (preg_match('/\bdelegat/i', $turnText)) {
                         $prompt = 'That delegation was not run. Do not describe it. Emit the <<tool>> JSON block for kanban so the card is in_progress, then the <<tool>> JSON block for delegate. Pass task_id when the card already exists.';
                     }
@@ -511,6 +511,16 @@ class AgentRuntime
             'research_pipeline', 'sqlite_helper', 'code_verifier', 'humanizer', 'write_article', 'make_graphic', 'save_note',
             'news_fetcher', 'atr_stop_loss',
         ];
+        $altAll = implode('|', array_map(static fn(string $n): string => preg_quote($n, '/'), $names));
+        if (preg_match('/^\s*:\s*(?:`)?(?:' . $altAll . ')(?:`)?\b/mi', $text)) {
+            return true;
+        }
+        if (preg_match('/^\s*:\s*(?:`)?[\w.\/-]+\.(?:md|php|txt|json|csv|pdf|html)(?:`)?\s*$/mi', $text)) {
+            return true;
+        }
+        if (preg_match('/^\s*(?:`)?(?:' . $altAll . ')(?:`)?\s*(?:,\s*args\b.*)?$/mi', $text)) {
+            return true;
+        }
         $found = [];
         foreach ($names as $name) {
             if (preg_match('/(?:^|[^A-Za-z0-9_])' . preg_quote($name, '/') . '(?:[^A-Za-z0-9_]|$)/i', $text)) {
