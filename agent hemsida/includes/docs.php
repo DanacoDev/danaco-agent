@@ -282,7 +282,9 @@ function docs_render_part(array $part): void
     }
     if ($part[0] === 'img') {
         $url = $part[2];
-        if (!preg_match('#^(https?:)?//#', $url) && !str_starts_with($url, '#')) {
+        if (str_starts_with($url, '/')) {
+            $url = site_href($url);
+        } elseif (!preg_match('#^(https?:)?//#', $url) && !str_starts_with($url, '#')) {
             $url = site_href('/docs/' . ltrim($url, '/'));
         }
         echo '<figure class="docs-figure"><img src="' . e($url) . '" alt="' . e($part[1]) . '"></figure>';

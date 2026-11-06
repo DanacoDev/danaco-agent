@@ -452,6 +452,9 @@ class Api
         $this->db->setSetting('context_summary_until_' . $key, '0');
         $this->db->setSetting('context_compress_' . $key, '0');
         $this->db->setSetting('context_compress_pending_' . $key, '0');
+        if ($projectId > 0) {
+            $this->db->setSetting('reread_desc_' . $key, '1');
+        }
         $this->json(['ok' => true]);
     }
 
@@ -2395,7 +2398,7 @@ class Api
         $settings['full_system_control'] = ($settings['full_system_control'] ?? '0') === '1' ? '1' : '0';
         $settings['search_provider'] = ($settings['search_provider'] ?? '') === 'bing' ? 'bing' : 'duckduckgo';
         foreach (array_keys($settings) as $key) {
-            if (str_starts_with($key, 'chat_stop_') || str_starts_with($key, 'chat_gen_') || str_starts_with($key, 'context_packed_') || str_starts_with($key, 'context_summary_') || str_starts_with($key, 'context_compress_') || str_starts_with($key, 'recovery_') || str_starts_with($key, 'install_ask_') || str_starts_with($key, 'action_ask_') || str_starts_with($key, 'action_meta_') || $key === 'subagent_lock') {
+            if (str_starts_with($key, 'chat_stop_') || str_starts_with($key, 'chat_gen_') || str_starts_with($key, 'context_packed_') || str_starts_with($key, 'context_summary_') || str_starts_with($key, 'context_compress_') || str_starts_with($key, 'reread_desc_') || str_starts_with($key, 'recovery_') || str_starts_with($key, 'install_ask_') || str_starts_with($key, 'action_ask_') || str_starts_with($key, 'action_meta_') || $key === 'subagent_lock') {
                 unset($settings[$key]);
             }
         }

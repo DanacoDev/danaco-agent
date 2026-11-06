@@ -90,8 +90,18 @@ $hero = $content['hero'];
             </div>
             <p class="micro">
                 <span><?php echo e($hero['note']); ?></span>
-                <a href="#features">View features</a>
+                <a href="#framework">View features</a>
             </p>
+        </div>
+        <div class="wrap shot-wrap">
+            <div class="shot-row">
+                <?php foreach ($content['shots'] as $shot): ?>
+                <button class="shot" type="button" data-shot data-caption="<?php echo e($shot['title']); ?>" data-alt="<?php echo e($shot['alt']); ?>">
+                    <img src="<?php echo e(site_href($shot['src'])); ?>" alt="">
+                    <span><?php echo e($shot['title']); ?></span>
+                </button>
+                <?php endforeach; ?>
+            </div>
         </div>
     </section>
     <section class="trust">
@@ -173,7 +183,7 @@ $hero = $content['hero'];
             </div>
         </div>
     </section>
-    <section class="section tight">
+    <section class="section tight" id="framework">
         <div class="wrap">
             <div class="section-head">
                 <p class="kicker"><i></i><?php echo e($content['problem']['kicker']); ?></p>
@@ -285,6 +295,26 @@ $hero = $content['hero'];
         </div>
     </div>
 </footer>
+<dialog class="lightbox" data-lightbox aria-label="Screenshot">
+    <div class="lightbox-stage">
+        <button class="lightbox-nav prev" type="button" data-lightbox-prev aria-label="Previous screenshot">
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M14.5 6.5 9 12l5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <figure class="lightbox-frame">
+            <button class="lightbox-close" type="button" data-lightbox-close aria-label="Close">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+            </button>
+            <img alt="" data-lightbox-img>
+            <figcaption class="lightbox-caption">
+                <span data-lightbox-caption></span>
+                <span data-lightbox-index></span>
+            </figcaption>
+        </figure>
+        <button class="lightbox-nav next" type="button" data-lightbox-next aria-label="Next screenshot">
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M9.5 6.5 15 12l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+    </div>
+</dialog>
 <?php site_scripts(); ?>
 </body>
 </html>

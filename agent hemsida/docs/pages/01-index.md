@@ -12,6 +12,8 @@ The core is PHP. There is no Docker stack and no Python environment to keep aliv
 
 The interface is a password-protected Web UI: the conversation, a Kanban board, a file explorer, an agent feed, and the model settings live in one place. Each project keeps a single continuous chat, so you are not switching sessions to find the thread.
 
+![Agent overview](/assets/screen-agents.jpg)
+
 ## Who it is for
 
 Danaco Agent is for people who want project help on hardware they control, without a monthly fee for the runtime itself. Project managers and business leads can describe a procedure in plain language. The agent writes and reuses skills when a task needs a script.
@@ -61,6 +63,8 @@ Edits are backed up. Deletes land in a trashcan the model cannot empty. The agen
 
 Tasks sit on a board you can reorder. Skills stay as one-line summaries until they are called. MCP can add outside tools.
 :::
+
+![Kanban task board](/assets/screen-kanban.jpg)
 
 You also get a live view of what each subagent is doing, a file explorer for the wiki and work files, and guardrails that cut off looped or stalled runs.
 

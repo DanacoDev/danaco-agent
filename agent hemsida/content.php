@@ -7,6 +7,11 @@ return [
         'lede' => 'Danaco Agent is a self-hosted orchestration toolkit for project work. You configure models and tools on your own hardware. Your files stay on your machine unless you choose a cloud model.',
         'note' => 'Requires Linux.',
     ],
+    'shots' => [
+        ['src' => '/assets/screen-agents.jpg', 'title' => 'Agent overview', 'alt' => 'Agent overview with the main agent and subagents'],
+        ['src' => '/assets/screen-kanban.jpg', 'title' => 'Kanban task board', 'alt' => 'Kanban task board with backlog, in progress, and review'],
+        ['src' => '/assets/screen-chat.jpg', 'title' => 'Chat', 'alt' => 'Project chat with the agent'],
+    ],
     'trust' => [
         ['title' => 'Local by default', 'text' => 'Your files stay on your machine. Cloud models are optional.'],
         ['title' => 'One-time install', 'text' => 'No subscriptions. No recurring costs.'],
@@ -49,7 +54,7 @@ return [
     'problem' => [
         'kicker' => 'The local-agent problem',
         'title' => 'The framework that just works.',
-        'lede' => 'Stop fighting fragile setup scripts, context bloat, and lost files. Run a team of specialized subagents on your own hardware or server.',
+        'lede' => 'Stop fighting fragile setup scripts, context bloat, and lost files.',
         'pains' => [
             ['title' => 'Simple setup', 'text' => 'Click on the installer, follow the instructions and get started within minutes. All ready to go directly from the start.'],
             ['title' => 'Less context bloat', 'text' => 'Chat histories can otherwise fill the window, then the model starts to hallucinate or runs out of memory.'],

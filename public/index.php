@@ -124,7 +124,6 @@ header('X-Danaco: 1');
         <img class="login-icon" src="/assets/logo.png" alt="">
         <h1>Danaco Agent</h1>
       </div>
-      <p class="muted">Sign in to the local workspace.</p>
       <p v-if="!passwordSet" class="form-error">No password is set. Run install.sh first.</p>
       <label class="field">Password
         <input v-model="password" type="password" name="password" autocomplete="current-password" required>

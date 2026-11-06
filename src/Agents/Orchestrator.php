@@ -559,8 +559,24 @@ TXT;
             if ($soul !== '') {
                 $tail .= "\n\n" . $soul;
             }
+            if ($this->db->getSetting('reread_desc_' . (int)$project['id'], '0') === '1') {
+                $desc = 'wiki/' . Projects::descFile((string)$project['folder_name']);
+                $tail .= "\n\nThe chat was just cleared. Before you answer or do other work, read {$desc} so you know what this project is. Use wiki_read with no name.\n";
+            }
         }
         return $tail;
+    }
+
+    private function clearDescReread(int $projectId, string $folder, string $path): void
+    {
+        if ($projectId <= 0 || $folder === '') {
+            return;
+        }
+        $path = ltrim(str_replace('\\', '/', trim($path)), '/');
+        if ($path !== 'wiki/' . Projects::descFile($folder)) {
+            return;
+        }
+        $this->db->setSetting('reread_desc_' . $projectId, '0');
     }
 
     private function scheduledRequest(array $messages): bool
@@ -737,12 +753,13 @@ TXT;
                 $tree = (new SafetyInterceptor(app_config()['data_dir']))->listFiles($folder, $path);
                 return json_encode($tree, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '[]';
             },
-            'read_file' => function (array $args) use ($folder): string {
+            'read_file' => function (array $args) use ($folder, $projectId): string {
                 $path = (string)($args['path'] ?? '');
                 $blocked = $this->needsProject($folder, $path, 'Open a project before reading its files.');
                 if ($blocked !== null) {
                     return $blocked;
                 }
+                $this->clearDescReread($projectId, $folder, $path);
                 return (new SafetyInterceptor(app_config()['data_dir']))->readFile($folder, $path);
             },
             'read_pdf' => function (array $args) use ($folder): string {
@@ -832,7 +849,7 @@ TXT;
             'wiki_search' => function (array $args) use ($folder): string {
                 return $this->memory->search((string)($args['query'] ?? ''), $folder !== '' ? $folder : null);
             },
-            'wiki_read' => function (array $args) use ($folder): string {
+            'wiki_read' => function (array $args) use ($folder, $projectId): string {
                 if ($folder === '') {
                     return 'General chat has no project wiki.';
                 }
@@ -841,6 +858,7 @@ TXT;
                 } catch (InvalidArgumentException $e) {
                     return $e->getMessage();
                 }
+                $this->clearDescReread($projectId, $folder, $relative);
                 try {
                     return (new SafetyInterceptor(app_config()['data_dir']))->readFile($folder, $relative, 100000);
                 } catch (Throwable $e) {
