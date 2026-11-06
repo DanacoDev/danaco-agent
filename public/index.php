@@ -15,8 +15,9 @@ if (PHP_SAPI === 'cli-server') {
         return true;
     }
     if ($path === '/favicon.ico') {
-        header('Content-Type: image/png');
-        readfile(__DIR__ . '/assets/icon-192.png');
+        header('Content-Type: image/x-icon');
+        header('Cache-Control: no-cache');
+        readfile(__DIR__ . '/favicon.ico');
         return true;
     }
     $file = __DIR__ . $path;
@@ -25,6 +26,9 @@ if (PHP_SAPI === 'cli-server') {
         $types = [
             'js' => 'text/javascript; charset=utf-8',
             'css' => 'text/css; charset=utf-8',
+            'svg' => 'image/svg+xml',
+            'png' => 'image/png',
+            'ico' => 'image/x-icon',
         ];
         if (isset($types[$ext])) {
             header('Content-Type: ' . $types[$ext]);
@@ -81,8 +85,9 @@ header('X-Danaco: 1');
 <meta name="apple-mobile-web-app-title" content="Danaco">
 <title>Danaco Agent</title>
 <link rel="manifest" href="/manifest.webmanifest">
-<link rel="icon" href="/assets/icon-192.png" type="image/png" sizes="192x192">
-<link rel="apple-touch-icon" href="/assets/icon-192.png">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/assets/icon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
 <link rel="stylesheet" href="/assets/app.css">
 <script src="/assets/tailwind.js"></script>
 <script src="/assets/vue.global.prod.js"></script>
@@ -115,8 +120,10 @@ header('X-Danaco: 1');
 
   <div v-else-if="!authed" class="login-screen">
     <form class="login-card" @submit.prevent="login">
-      <img class="login-icon" src="/assets/icon-192.png" alt="">
-      <h1>Danaco</h1>
+      <div class="login-brand">
+        <img class="login-icon" src="/assets/logo.png" alt="">
+        <h1>Danaco Agent</h1>
+      </div>
       <p class="muted">Sign in to the local workspace.</p>
       <p v-if="!passwordSet" class="form-error">No password is set. Run install.sh first.</p>
       <label class="field">Password
@@ -130,7 +137,7 @@ header('X-Danaco: 1');
   <div v-else class="shell flex h-dvh" :class="{'sidebar-collapsed': sidebarCollapsed}">
     <aside class="sidebar hidden md:flex flex-col">
       <div class="brand">
-        <img class="brand-icon" src="/assets/icon-192.png" alt="">
+        <img class="brand-icon" src="/assets/logo.png" alt="">
         <strong class="brand-name">{{ agentName }}</strong>
       </div>
       <button v-for="item in nav" :key="item.id" type="button" class="nav-btn" :class="{active: tab===item.id}" :aria-current="tab===item.id ? 'page' : null" @click="setTab(item.id)">
@@ -903,8 +910,9 @@ header('X-Danaco: 1');
                 <div>
                   <strong>{{ model.name }}</strong>
                   <p class="hint">{{ model.size_label }}<span v-if="model.parameter_size"> · {{ model.parameter_size }}</span><span v-if="model.modified"> · {{ model.modified }}</span></p>
+                  <p class="hint" v-if="model.protected">CPU failsafe. This model stays installed.</p>
                 </div>
-                <button class="btn" type="button" :disabled="ollamaBusy" @click="deleteOllamaModel(model)">Delete</button>
+                <button v-if="!model.protected" class="btn" type="button" :disabled="ollamaBusy" @click="deleteOllamaModel(model)">Delete</button>
               </article>
               <form class="model-install" @submit.prevent="pullOllamaModel">
                 <input class="inline-input" v-model="ollamaPullName" placeholder="qwen3.6" :disabled="ollamaBusy" aria-label="Model to install">
@@ -964,7 +972,7 @@ header('X-Danaco: 1');
 
     <div v-if="mobileNav" class="drawer-backdrop" @click="mobileNav = false">
       <aside class="drawer" @click.stop>
-        <div class="brand"><img class="brand-icon" src="/assets/icon-192.png" alt=""><strong>{{ agentName }}</strong></div>
+        <div class="brand"><img class="brand-icon" src="/assets/logo.png" alt=""><strong>{{ agentName }}</strong></div>
         <button v-for="item in nav" :key="'d'+item.id" type="button" class="nav-btn" :class="{active: tab===item.id}" @click="setTab(item.id)">
           <svg class="ico"><use :href="'#' + item.icon"></use></svg>
           <span>{{ item.label }}</span>

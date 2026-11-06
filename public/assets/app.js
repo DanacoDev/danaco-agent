@@ -2241,7 +2241,7 @@
           if (!finished) throw new Error('The download stopped before it finished.');
         },
         async deleteOllamaModel(model) {
-          if (this.ollamaBusy) return;
+          if (this.ollamaBusy || model.protected) return;
           if (!window.confirm('Delete ' + model.name + ' from Ollama?')) return;
           this.ollamaBusy = true;
           this.ollamaError = '';

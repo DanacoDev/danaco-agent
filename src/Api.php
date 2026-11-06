@@ -1899,11 +1899,13 @@ class Api
                 continue;
             }
             $size = (int)($row['size'] ?? 0);
+            $name = (string)$row['name'];
             $models[] = [
-                'name' => (string)$row['name'],
+                'name' => $name,
                 'size_label' => $this->formatBytes($size),
                 'modified' => isset($row['modified_at']) ? substr((string)$row['modified_at'], 0, 10) : '',
                 'parameter_size' => (string)($row['details']['parameter_size'] ?? ''),
+                'protected' => $this->isProtectedModel($name),
             ];
         }
         $this->json(['models' => $models, 'error' => null]);
@@ -1914,6 +1916,10 @@ class Api
         $name = $this->modelName((string)($this->input()['name'] ?? ''));
         if ($name === null) {
             $this->json(['error' => 'Enter a model name such as qwen3.6.'], 422);
+            return;
+        }
+        if ($this->isProtectedModel($name)) {
+            $this->json(['error' => 'The CPU failsafe model stays installed.'], 422);
             return;
         }
         $result = $this->ollamaRequest('DELETE', '/api/delete', ['model' => $name], 60);
@@ -2305,6 +2311,16 @@ class Api
             return null;
         }
         return $base;
+    }
+
+    private function isProtectedModel(string $name): bool
+    {
+        $default = strtolower((string)app_config()['cpu_failsafe_model']);
+        $name = strtolower(trim($name));
+        if (str_ends_with($name, ':latest')) {
+            $name = substr($name, 0, -strlen(':latest'));
+        }
+        return $name === $default;
     }
 
     private function modelName(string $name): ?string

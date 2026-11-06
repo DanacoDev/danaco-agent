@@ -143,15 +143,81 @@ fi
 
 echo
 echo "Hardware"
+VRAM_MB=0
+RAM_MB=0
+NVIDIA_CC=""
+GPU_LABEL=""
 if command -v nvidia-smi >/dev/null 2>&1; then
-  nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader || true
+  while IFS= read -r gpu_line; do
+    [[ -z "$gpu_line" ]] && continue
+    gpu_cap="${gpu_line##*, }"
+    gpu_rest="${gpu_line%, *}"
+    gpu_mem="${gpu_rest##*, }"
+    gpu_name="${gpu_rest%, *}"
+    gpu_mem="${gpu_mem// /}"
+    gpu_cap="${gpu_cap// /}"
+    if [[ "$gpu_mem" =~ ^[0-9]+$ ]] && [[ "$gpu_mem" -gt "$VRAM_MB" ]]; then
+      VRAM_MB="$gpu_mem"
+      NVIDIA_CC="$gpu_cap"
+      GPU_LABEL="$gpu_name"
+    fi
+  done < <(nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits 2>/dev/null || true)
+fi
+if [[ "$OS" == "Darwin" ]]; then
+  RAM_MB="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1048576 ))"
+  if [[ "$VRAM_MB" -eq 0 ]]; then
+    mac_vram="$(system_profiler SPDisplaysDataType 2>/dev/null | awk '
+      /^[[:space:]]+Chipset Model:/ {
+        chip = $0
+        sub(/^[[:space:]]+Chipset Model:[[:space:]]*/, "", chip)
+        apple = (chip ~ /^Apple/)
+      }
+      /^[[:space:]]+VRAM \(Total\):/ && !apple {
+        line = $0
+        if (match(line, /[0-9]+/)) {
+          n = substr(line, RSTART, RLENGTH) + 0
+          if (line ~ /GB/) n = n * 1024
+          if (n > max) max = n
+        }
+      }
+      END { print max + 0 }
+    ')"
+    if [[ "$mac_vram" =~ ^[0-9]+$ ]] && [[ "$mac_vram" -gt 0 ]]; then
+      VRAM_MB="$mac_vram"
+      GPU_LABEL="Discrete GPU"
+    fi
+  fi
+elif [[ -r /proc/meminfo ]]; then
+  RAM_MB="$(awk '/MemTotal:/ { print int($2 / 1024) }' /proc/meminfo)"
+fi
+if [[ -n "$GPU_LABEL" && "$VRAM_MB" -gt 0 ]]; then
+  echo "${GPU_LABEL}: ${VRAM_MB} MB"
 elif [[ "$OS" == "Darwin" ]]; then
-  echo "No nvidia-smi. System memory: $(sysctl -n hw.memsize) bytes"
+  echo "No separate GPU detected. System memory: ${RAM_MB} MB"
 else
-  echo "No NVIDIA GPU detected."
+  echo "No NVIDIA GPU detected. System memory: ${RAM_MB} MB"
 fi
 
-SUGGESTED_MODEL="qwen3.6"
+FAILSAFE_MODEL="qwen2.5:0.5b"
+SUGGESTED_MODE="local"
+if [[ "$VRAM_MB" -ge 15360 ]]; then
+  nvfp4=0
+  if [[ -n "$NVIDIA_CC" ]] && awk -v cc="$NVIDIA_CC" 'BEGIN { split(cc, a, "."); exit ((a[1] + 0) >= 10 ? 0 : 1) }'; then
+    nvfp4=1
+  fi
+  if [[ "$nvfp4" -eq 1 ]]; then
+    SUGGESTED_MODEL="qwen3.6:35b-a3b-nvfp4"
+  else
+    SUGGESTED_MODEL="qwen3.6:35b-a3b-q4_K_M"
+  fi
+elif [[ "$RAM_MB" -ge 7168 ]]; then
+  SUGGESTED_MODEL="qwen3.5:9b-q4_K_M"
+else
+  SUGGESTED_MODE="cpu_failsafe"
+  SUGGESTED_MODEL="$FAILSAFE_MODEL"
+fi
+echo "Suggested model: ${SUGGESTED_MODEL}"
+
 LOCAL_MODEL=""
 MODELS=()
 if command -v ollama >/dev/null 2>&1; then
@@ -184,47 +250,67 @@ if [[ "${DANACO_NONINTERACTIVE:-}" == "1" ]]; then
   else
     echo "Using ${MODEL_MODE}."
   fi
-elif [[ ${#MODELS[@]} -gt 0 ]]; then
-  echo "Ollama is installed. Choose a model:"
-  model_index=1
-  for model_name in "${MODELS[@]}"; do
-    echo "  ${model_index}) ${model_name}"
-    model_index=$((model_index + 1))
-  done
-  cloud_choice=$model_index
-  fail_choice=$((cloud_choice + 1))
-  echo "  ${cloud_choice}) Cloud API"
-  echo "  ${fail_choice}) CPU failsafe"
-  read -r -p "Choice [1]: " MODE_CHOICE
-  MODE_CHOICE="${MODE_CHOICE:-1}"
-  if [[ "$MODE_CHOICE" == "$cloud_choice" ]]; then
-    MODEL_MODE="cloud"
-  elif [[ "$MODE_CHOICE" == "$fail_choice" ]]; then
-    MODEL_MODE="cpu_failsafe"
-  elif [[ "$MODE_CHOICE" =~ ^[0-9]+$ && "$MODE_CHOICE" -ge 1 && "$MODE_CHOICE" -le ${#MODELS[@]} ]]; then
-    MODEL_MODE="local"
-    LOCAL_MODEL="${MODELS[$((MODE_CHOICE - 1))]}"
-  else
-    MODEL_MODE="local"
-    LOCAL_MODEL="${MODELS[0]}"
-    echo "Unknown choice. Using ${LOCAL_MODEL}."
-  fi
 else
+  CHOICE_MODE=()
+  CHOICE_MODEL=()
+  add_choice() {
+    CHOICE_MODE+=("$2")
+    CHOICE_MODEL+=("$3")
+    echo "  ${#CHOICE_MODE[@]}) $1"
+  }
+  if [[ "$SUGGESTED_MODE" == "cpu_failsafe" ]]; then
+    echo "This computer will use the CPU failsafe (${FAILSAFE_MODEL})."
+  else
+    echo "Suggested main model for this computer: ${SUGGESTED_MODEL}"
+  fi
   if command -v ollama >/dev/null 2>&1; then
-    echo "Ollama is installed, but it has no models yet."
+    if [[ ${#MODELS[@]} -gt 0 ]]; then
+      echo "Ollama is installed. Choose a model:"
+    else
+      echo "Ollama is installed, but it has no models yet."
+    fi
   else
     echo "Ollama is not installed."
   fi
-  echo "Suggested local model: ${SUGGESTED_MODEL}"
-  echo "  1) Local ${SUGGESTED_MODEL} (suggested)"
-  echo "  2) Cloud API"
-  echo "  3) CPU failsafe"
+  if [[ "$SUGGESTED_MODE" == "cpu_failsafe" ]]; then
+    add_choice "CPU failsafe (suggested)" "cpu_failsafe" ""
+    if [[ ${#MODELS[@]} -gt 0 ]]; then
+      for model_name in "${MODELS[@]}"; do
+        [[ "$model_name" == "$FAILSAFE_MODEL" || "$model_name" == "${FAILSAFE_MODEL}:latest" ]] && continue
+        add_choice "$model_name" "local" "$model_name"
+      done
+    fi
+    if [[ ${#CHOICE_MODE[@]} -eq 1 ]]; then
+      add_choice "Local qwen3.5:9b-q4_K_M" "local" "qwen3.5:9b-q4_K_M"
+    fi
+    add_choice "External LLM" "cloud" ""
+  else
+    add_choice "Local ${SUGGESTED_MODEL} (suggested)" "local" "$SUGGESTED_MODEL"
+    if [[ ${#MODELS[@]} -gt 0 ]]; then
+      for model_name in "${MODELS[@]}"; do
+        [[ "$model_name" == "$SUGGESTED_MODEL" || "$model_name" == "${SUGGESTED_MODEL}:latest" ]] && continue
+        add_choice "$model_name" "local" "$model_name"
+      done
+    fi
+    add_choice "External LLM" "cloud" ""
+    add_choice "CPU failsafe" "cpu_failsafe" ""
+  fi
   read -r -p "Choice [1]: " MODE_CHOICE
-  case "${MODE_CHOICE:-1}" in
-    2) MODEL_MODE="cloud" ;;
-    3) MODEL_MODE="cpu_failsafe" ;;
-    *) MODEL_MODE="local"; LOCAL_MODEL="$SUGGESTED_MODEL" ;;
-  esac
+  MODE_CHOICE="${MODE_CHOICE:-1}"
+  if [[ "$MODE_CHOICE" =~ ^[0-9]+$ && "$MODE_CHOICE" -ge 1 && "$MODE_CHOICE" -le ${#CHOICE_MODE[@]} ]]; then
+    MODEL_MODE="${CHOICE_MODE[$((MODE_CHOICE - 1))]}"
+    LOCAL_MODEL="${CHOICE_MODEL[$((MODE_CHOICE - 1))]}"
+  else
+    MODEL_MODE="${CHOICE_MODE[0]}"
+    LOCAL_MODEL="${CHOICE_MODEL[0]}"
+    if [[ -n "$LOCAL_MODEL" ]]; then
+      echo "Unknown choice. Using ${LOCAL_MODEL}."
+    elif [[ "$MODEL_MODE" == "cpu_failsafe" ]]; then
+      echo "Unknown choice. Using CPU failsafe."
+    else
+      echo "Unknown choice. Using External LLM."
+    fi
+  fi
 fi
 
 echo
@@ -395,6 +481,40 @@ ensure_ollama_server() {
   return 1
 }
 
+install_ollama() {
+  local script
+  if command -v ollama >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Installing Ollama..."
+  if [[ "$OS" == "Darwin" ]]; then
+    if ! command -v brew >/dev/null 2>&1; then
+      echo "Ollama is not installed. Install it from https://ollama.com and run this installer again." >&2
+      return 1
+    fi
+    brew install ollama || return 1
+  else
+    script="$(mktemp "${TMPDIR:-/tmp}/ollama-install.XXXXXX")"
+    if ! curl -fsSL -o "$script" https://ollama.com/install.sh; then
+      rm -f "$script"
+      echo "Could not download Ollama. Install it from https://ollama.com and run this installer again." >&2
+      return 1
+    fi
+    if ! as_root sh "$script"; then
+      rm -f "$script"
+      echo "Could not install Ollama. Install it from https://ollama.com and run this installer again." >&2
+      return 1
+    fi
+    rm -f "$script"
+  fi
+  export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:${PATH}"
+  hash -r || true
+  if ! command -v ollama >/dev/null 2>&1; then
+    echo "Ollama was installed, but it is not on PATH. Install it from https://ollama.com and run this installer again." >&2
+    return 1
+  fi
+}
+
 model_is_installed() {
   local name="$1"
   ollama list 2>/dev/null | awk 'NR>1 { print $1 }' | grep -Fxq "$name"
@@ -420,27 +540,23 @@ fetch_model() {
   echo "Finished downloading ${name}."
 }
 
-if command -v ollama >/dev/null 2>&1; then
-  if ! ensure_ollama_server; then
-    echo "Ollama is installed, but it did not start. The browser was not opened." >&2
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:${PATH}"
+if ! command -v ollama >/dev/null 2>&1; then
+  if ! install_ollama; then
+    echo "The browser was not opened." >&2
     exit 1
   fi
-  if [[ "$MODEL_MODE" == "local" && -n "${LOCAL_MODEL:-}" ]]; then
-    fetch_model "$LOCAL_MODEL"
-  fi
-  if [[ "$MODEL_MODE" == "cpu_failsafe" ]]; then
-    fetch_model "qwen2.5:0.5b"
-  elif [[ "${LOCAL_MODEL:-}" != "qwen2.5:0.5b" ]]; then
-    fetch_model "qwen2.5:0.5b"
-  fi
-  if [[ "$MODEL_MODE" == "local" || "$MODEL_MODE" == "cpu_failsafe" ]]; then
-    echo "The WebUI will open next. Chat stays closed until the model is loaded."
-  fi
-else
-  echo "Ollama is not installed. Install it from https://ollama.com if you want local models."
-  if [[ "$MODEL_MODE" == "local" || "$MODEL_MODE" == "cpu_failsafe" ]]; then
-    echo "After Ollama is installed, run: ollama pull ${LOCAL_MODEL:-qwen2.5:0.5b}"
-  fi
+fi
+if ! ensure_ollama_server; then
+  echo "Ollama is installed, but it did not start. The browser was not opened." >&2
+  exit 1
+fi
+if [[ "$MODEL_MODE" == "local" && -n "${LOCAL_MODEL:-}" && "$LOCAL_MODEL" != "$FAILSAFE_MODEL" ]]; then
+  fetch_model "$LOCAL_MODEL"
+fi
+fetch_model "$FAILSAFE_MODEL"
+if [[ "$MODEL_MODE" == "local" || "$MODEL_MODE" == "cpu_failsafe" ]]; then
+  echo "The WebUI will open next. Chat stays closed until the model is loaded."
 fi
 
 chmod +x "$ROOT/bin/danaco" "$ROOT/bin/run-agent.sh" "$ROOT/bin/ensure-tls.sh" "$ROOT/bin/git-askpass.sh" "$ROOT/bin/save-github-credentials.sh"

@@ -52,8 +52,10 @@ svg.sprite { position: absolute; width: 0; height: 0; }
   display: grid; place-items: center;
   background: var(--gold); color: var(--gold-ink); font-weight: 700;
 }
-.login-icon { width: 64px; height: 64px; border-radius: 16px; display: block; }
-.brand-icon { width: 36px; height: 36px; border-radius: 10px; display: block; flex: 0 0 auto; }
+.login-brand { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 6px; }
+.login-card .login-brand h1 { margin: 0; flex: 1; text-align: right; }
+.login-icon { height: 64px; width: auto; display: block; flex: 0 0 auto; }
+.brand-icon { height: 36px; width: auto; display: block; flex: 0 0 auto; }
 .login-card h1, .modal h2, .view-head h2 { margin: 12px 0 6px; font-size: 1.35rem; }
 .muted, .hint { color: var(--muted); }
 .field { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; font-size: 0.92rem; }
