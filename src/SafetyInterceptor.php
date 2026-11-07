@@ -369,6 +369,68 @@ class SafetyInterceptor
         return $meta;
     }
 
+    public function moveWorkspace(string $scope, string $folder, string $path, string $destScope, string $destFolder, string $destPath): array
+    {
+        if ($path === '') {
+            throw new RuntimeException('Top-level folders cannot be moved.');
+        }
+        $source = $this->locateWorkspace($scope, $folder, $path);
+        $sourceReal = realpath($source['file']);
+        if ($sourceReal === false || is_link($source['file'])) {
+            throw new RuntimeException('File not found.');
+        }
+        $isDir = is_dir($sourceReal) && !is_link($sourceReal);
+        if (!$isDir && !is_file($sourceReal)) {
+            throw new RuntimeException('File not found.');
+        }
+        $dest = $this->locateWorkspace($destScope, $destFolder, $destPath);
+        $destReal = realpath($dest['file']);
+        if ($destReal === false || !is_dir($destReal) || is_link($dest['file'])) {
+            throw new RuntimeException('Drop onto a folder.');
+        }
+        $sourceRelative = $source['relative'];
+        $slash = strrpos($sourceRelative, '/');
+        $parent = $slash === false ? '' : substr($sourceRelative, 0, $slash);
+        if ($source['root'] === $dest['root'] && $parent === $dest['relative']) {
+            return [
+                'scope' => $scope,
+                'folder' => $folder,
+                'path' => $sourceRelative,
+                'from' => $sourceRelative,
+                'to' => $sourceRelative,
+            ];
+        }
+        if ($destReal === $sourceReal || ($isDir && str_starts_with($destReal, $sourceReal . DIRECTORY_SEPARATOR))) {
+            throw new RuntimeException('Cannot move a folder into itself.');
+        }
+        $name = basename($sourceRelative);
+        $targetRelative = $dest['relative'] === '' ? $name : $dest['relative'] . '/' . $name;
+        if ($destScope === 'wiki') {
+            $this->rejectToolNotes($targetRelative);
+        }
+        $this->assertAgentPathAllowed($targetRelative);
+        if ($destScope === 'project') {
+            $this->assertMarkdownLocation($targetRelative);
+        }
+        $target = $this->resolveInside($dest['root'], $targetRelative, true);
+        if (file_exists($target)) {
+            throw new RuntimeException('Something already exists at that path.');
+        }
+        if (!@rename($sourceReal, $target)) {
+            throw new RuntimeException($isDir ? 'Could not move that folder.' : 'Could not move that file.');
+        }
+        if ($scope === 'wiki' || $destScope === 'wiki' || $isDir || $this->isMarkdown($sourceRelative) || $this->isMarkdown($targetRelative)) {
+            $this->reindexWiki();
+        }
+        return [
+            'scope' => $destScope,
+            'folder' => $destFolder,
+            'path' => $targetRelative,
+            'from' => $sourceRelative,
+            'to' => $targetRelative,
+        ];
+    }
+
     public function searchWorkspace(string $query, array $projects): array
     {
         $query = trim($query);

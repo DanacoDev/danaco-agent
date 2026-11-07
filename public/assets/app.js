@@ -82,6 +82,7 @@
   }
 
   function start() {
+    let treeDrag = null;
     let scrollGeneration = 0;
     const app = Vue.createApp({
       data() {
@@ -197,6 +198,9 @@
           filePreviewUrl: '',
           fileLoad: 0,
           fileKey: '',
+          treeMenu: null,
+          treeError: '',
+          treeOverKey: '',
           structuredData: null,
           structuredLoading: false,
           structuredTableName: '',
@@ -431,6 +435,19 @@
       },
       mounted() {
         window.addEventListener('hashchange', () => this.onHash());
+        window.addEventListener('mousedown', (event) => {
+          if (!this.treeMenu || event.button !== 0) return;
+          const menu = document.querySelector('.tree-menu');
+          if (menu && menu.contains(event.target)) return;
+          this.treeMenu = null;
+        });
+        window.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape') this.treeMenu = null;
+        });
+        window.addEventListener('dragend', () => {
+          treeDrag = null;
+          this.treeOverKey = '';
+        });
         this.syncHash();
         this.checkSession();
         if ('serviceWorker' in navigator) {
@@ -454,6 +471,7 @@
           this.tab = allowed ? id : 'chat';
         },
         onHash() {
+          this.treeMenu = null;
           this.syncHash();
           this.mobileNav = false;
           if (this.authed) this.refreshTab();
@@ -1838,6 +1856,95 @@
           const blob = new Blob([this.fileEditing ? this.fileDraft : this.fileContent], { type: 'text/plain;charset=utf-8' });
           this.saveBlob(name, blob);
         },
+        openFileInside(node) {
+          if (!this.fileName || !node || !node.path) return false;
+          if ((this.fileScope || '') !== (node.scope || '')) return false;
+          if ((this.fileFolder || '') !== (node.folder || '')) return false;
+          const rel = this.fileRel || '';
+          return rel === node.path || rel.startsWith(node.path + '/');
+        },
+        openTreeMenu(payload) {
+          if (!payload || !payload.node || !payload.node.path) return;
+          const x = Math.max(8, Math.min(payload.x, window.innerWidth - 168));
+          const y = Math.max(8, Math.min(payload.y, window.innerHeight - 48));
+          this.treeMenu = { x: x, y: y, node: payload.node };
+        },
+        async deleteTreeNode(node) {
+          this.treeMenu = null;
+          if (!node || !node.path) return;
+          const name = node.name || (node.type === 'dir' ? 'this folder' : 'this file');
+          const prompt = node.type === 'dir'
+            ? 'Move "' + name + '" and everything inside to the agent trashbin?'
+            : 'Move "' + name + '" to the agent trashbin?';
+          if (!window.confirm(prompt)) return;
+          this.treeError = '';
+          try {
+            await this.api('/api/workspace/delete', {
+              method: 'POST',
+              body: { scope: node.scope || 'project', folder: node.folder || '', path: node.path }
+            });
+            if (this.openFileInside(node)) {
+              this.clearFilePreview();
+              this.filePath = '';
+              this.fileName = '';
+              this.fileScope = '';
+              this.fileFolder = '';
+              this.fileRel = '';
+              this.fileIsDir = false;
+              this.fileContent = '';
+              this.fileDraft = '';
+              this.fileEditing = false;
+              this.fileKey = '';
+              this.structuredData = null;
+              this.structuredTableName = '';
+              this.fileMarkdown = false;
+            }
+            await this.loadTree();
+            if (this.vaultOpen) {
+              const data = await this.api('/api/workspace/vault');
+              this.backups = data.backups;
+              this.trash = data.trash;
+            }
+          } catch (error) {
+            this.treeError = error.message;
+          }
+        },
+        async moveTreeNode(payload) {
+          const source = payload && payload.source;
+          const dest = payload && payload.dest;
+          if (!source || !source.path || !dest || dest.type !== 'dir') return;
+          this.treeError = '';
+          this.treeOverKey = '';
+          dest.open = true;
+          try {
+            const data = await this.api('/api/workspace/move', {
+              method: 'POST',
+              body: {
+                scope: source.scope || 'project',
+                folder: source.folder || '',
+                path: source.path,
+                dest_scope: dest.scope || 'project',
+                dest_folder: dest.folder || '',
+                dest_path: dest.path || ''
+              }
+            });
+            this.retargetOpenFile(source, data);
+            await this.loadTree();
+          } catch (error) {
+            this.treeError = error.message;
+          }
+        },
+        retargetOpenFile(source, moved) {
+          if (!this.fileName || !moved || !this.openFileInside(source)) return;
+          const suffix = (this.fileRel || '').slice((source.path || '').length);
+          this.fileScope = moved.scope || 'project';
+          this.fileFolder = moved.folder || '';
+          this.fileRel = (moved.path || '') + suffix;
+          this.fileKey = this.fileScope + '\n' + this.fileFolder + '\n' + this.fileRel;
+          if (this.filePreviewUrl) {
+            this.filePreviewUrl = '/api/workspace/raw?scope=' + encodeURIComponent(this.fileScope) + '&folder=' + encodeURIComponent(this.fileFolder) + '&path=' + encodeURIComponent(this.fileRel);
+          }
+        },
         async deleteFile() {
           if (!this.canTrashWorkspace) return;
           const name = this.fileName || (this.fileIsDir ? 'this folder' : 'this file');
@@ -2637,19 +2744,94 @@
       name: 'file-tree',
       props: {
         nodes: { type: Array, default: function () { return []; } },
-        selected: { type: String, default: '' }
+        selected: { type: String, default: '' },
+        overKey: { type: String, default: '' }
       },
-      emits: ['open'],
+      emits: ['open', 'menu', 'move', 'hover'],
+      data: function () {
+        return { dropped: false };
+      },
       methods: {
         key(node) {
           return (node.scope || '') + '\n' + (node.folder || '') + '\n' + (node.path || '');
         },
         toggle(node, event) {
+          if (node.type !== 'dir') return;
           event.stopPropagation();
           node.open = !node.open;
+        },
+        onClick(node) {
+          if (this.dropped) {
+            this.dropped = false;
+            return;
+          }
+          this.$emit('open', node);
+        },
+        onMenu(node, event) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!node.path) return;
+          this.$emit('menu', {
+            x: event.clientX,
+            y: event.clientY,
+            node: {
+              name: node.name || '',
+              path: node.path || '',
+              type: node.type || 'file',
+              scope: node.scope || 'project',
+              folder: node.folder || ''
+            }
+          });
+        },
+        canDrop(node) {
+          const source = treeDrag;
+          if (!source || !source.path || !node || node.type !== 'dir') return false;
+          if ((source.scope || '') === (node.scope || '') && (source.folder || '') === (node.folder || '')) {
+            const parent = source.path.indexOf('/') === -1 ? '' : source.path.slice(0, source.path.lastIndexOf('/'));
+            const destPath = node.path || '';
+            if (parent === destPath) return false;
+            if (source.type === 'dir' && (destPath === source.path || destPath.indexOf(source.path + '/') === 0)) return false;
+          }
+          return true;
+        },
+        onDragStart(node, event) {
+          if (!node.path) {
+            event.preventDefault();
+            return;
+          }
+          event.stopPropagation();
+          treeDrag = {
+            name: node.name || '',
+            path: node.path || '',
+            type: node.type || 'file',
+            scope: node.scope || 'project',
+            folder: node.folder || ''
+          };
+          event.dataTransfer.setData('text/plain', node.path);
+          event.dataTransfer.effectAllowed = 'move';
+        },
+        onDragOver(node, event) {
+          if (!this.canDrop(node)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+          const id = this.key(node);
+          if (this.overKey !== id) this.$emit('hover', id);
+        },
+        onDragLeave(node, event) {
+          if (event.currentTarget.contains(event.relatedTarget)) return;
+          if (this.overKey === this.key(node)) this.$emit('hover', '');
+        },
+        onDrop(node, event) {
+          event.preventDefault();
+          event.stopPropagation();
+          const source = treeDrag;
+          this.dropped = true;
+          this.$emit('hover', '');
+          if (!source || !this.canDrop(node)) return;
+          this.$emit('move', { source: source, dest: node });
         }
       },
-      template: '<ul class="tree"><li v-for="node in nodes" :key="key(node)"><button v-if="node.type===\'dir\'" type="button" class="tree-btn" :class="{active: key(node)===selected}" @click="$emit(\'open\', node)"><span class="tree-chevron" @click="toggle(node, $event)">{{ node.open ? "▾" : "▸" }}</span><svg class="tree-ico" aria-hidden="true"><use href="#i-folder"></use></svg><span class="tree-name">{{ node.name }}</span></button><button v-else type="button" class="tree-btn file" :class="{active: key(node)===selected}" @click="$emit(\'open\', node)"><span class="tree-chevron"></span><svg class="tree-ico" aria-hidden="true"><use href="#i-file"></use></svg><span class="tree-name">{{ node.name }}</span></button><file-tree v-if="node.type===\'dir\' && node.open" :nodes="node.children" :selected="selected" @open="$emit(\'open\', $event)"></file-tree></li></ul>'
+      template: '<ul class="tree"><li v-for="node in nodes" :key="key(node)"><button type="button" class="tree-btn" :class="{file: node.type!==\'dir\', active: key(node)===selected, drop: node.type===\'dir\' && key(node)===overKey}" :draggable="!!node.path" @click="onClick(node)" @contextmenu="onMenu(node, $event)" @dragstart="onDragStart(node, $event)" @dragover="onDragOver(node, $event)" @dragleave="onDragLeave(node, $event)" @drop="onDrop(node, $event)"><span class="tree-chevron" @click="toggle(node, $event)">{{ node.type==="dir" ? (node.open ? "▾" : "▸") : "" }}</span><svg class="tree-ico" aria-hidden="true"><use :href="node.type===\'dir\' ? \'#i-folder\' : \'#i-file\'"></use></svg><span class="tree-name">{{ node.name }}</span></button><file-tree v-if="node.type===\'dir\' && node.open" :nodes="node.children" :selected="selected" :over-key="overKey" @open="$emit(\'open\', $event)" @menu="$emit(\'menu\', $event)" @move="$emit(\'move\', $event)" @hover="$emit(\'hover\', $event)"></file-tree></li></ul>'
     });
     app.mount('#app');
   }

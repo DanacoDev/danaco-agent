@@ -388,8 +388,9 @@ header('X-Danaco: 1');
               <button class="btn" type="submit">Search</button>
             </form>
             <div class="split">
-              <div class="panel">
-                <file-tree :nodes="tree" :selected="fileKey" @open="openFile"></file-tree>
+              <div class="panel" @scroll="treeMenu = null">
+                <p v-if="treeError" class="form-error">{{ treeError }}</p>
+                <file-tree :nodes="tree" :selected="fileKey" :over-key="treeOverKey" @open="openFile" @menu="openTreeMenu" @move="moveTreeNode" @hover="treeOverKey = $event"></file-tree>
                 <p v-if="!tree.length" class="empty">No files yet.</p>
               </div>
               <div class="panel file-pane" :class="{ 'is-editing': (fileEditing || structuredKind) && !showingSearch, 'is-pdf': fileKind==='pdf' && !fileEditing && !showingSearch }">
@@ -1052,6 +1053,10 @@ header('X-Danaco: 1');
       <p class="form-error">{{ projectError }}</p>
       <button class="btn btn-gold" type="submit">Create project</button>
     </form>
+  </div>
+
+  <div v-if="treeMenu" class="tree-menu" :style="{ left: treeMenu.x + 'px', top: treeMenu.y + 'px' }" @mousedown.stop @click.stop @contextmenu.prevent>
+    <button type="button" class="tree-menu-btn" @click="deleteTreeNode(treeMenu.node)">Delete</button>
   </div>
 
   <div v-if="authed && termsNeeded" class="modal-back">
