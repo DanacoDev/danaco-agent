@@ -63,6 +63,47 @@ class LLMClient
         $this->stopModel($model);
     }
 
+    public function releaseOthers(string $keep): void
+    {
+        if (!$this->usableModel($keep)) {
+            return;
+        }
+        foreach ($this->runningModels() as $row) {
+            if ($this->sameModel($row['name'], $keep)) {
+                continue;
+            }
+            $this->stopModel($row['name']);
+        }
+    }
+
+    public function runningModels(): array
+    {
+        $json = $this->ollamaCall('GET', '/api/ps', null, 4);
+        if ($json === null) {
+            return [];
+        }
+        $rows = [];
+        foreach ($json['models'] ?? [] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $name = trim((string)($row['name'] ?? $row['model'] ?? ''));
+            if (!$this->usableModel($name)) {
+                continue;
+            }
+            $rows[] = [
+                'name' => $name,
+                'place' => (int)($row['size_vram'] ?? 0) > 0 ? 'gpu' : 'cpu',
+            ];
+        }
+        return $rows;
+    }
+
+    public function modelMatches(string $running, string $wanted): bool
+    {
+        return $this->sameModel($running, $wanted);
+    }
+
     public function restoreGpu(?callable $onNote = null): void
     {
         $mode = (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
@@ -119,6 +160,9 @@ class LLMClient
 
     public function stream(array $messages, callable $onToken, ?callable $shouldStop = null, ?callable $onThinking = null, bool $cloud = false, string $agent = ''): string
     {
+        if (!$this->usingFailsafe && (string)$this->db->getSetting('model_mode', '') === 'local') {
+            $this->releaseOthers((string)$this->db->getSetting('local_model', app_config()['local_model']));
+        }
         $this->restoreGpu();
         $last = null;
         for ($try = 1; $try <= 3; $try++) {

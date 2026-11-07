@@ -1793,6 +1793,8 @@ class Api
             }
             $this->db->setSetting('agent_name', $name);
         }
+        $previousMode = (string)$this->db->getSetting('model_mode', '');
+        $previousLocal = (string)$this->db->getSetting('local_model', '');
         if (array_key_exists('model_mode', $body)) {
             $mode = (string)$body['model_mode'];
             if (!in_array($mode, ['cloud', 'local', 'cpu_failsafe'], true)) {
@@ -1876,6 +1878,13 @@ class Api
                 return;
             }
             $this->db->setSetting('ai_act_applies', $value);
+        }
+        $modeNow = (string)$this->db->getSetting('model_mode', '');
+        $localNow = (string)$this->db->getSetting('local_model', '');
+        if ($modeNow === 'local' && $localNow !== '' && ($modeNow !== $previousMode || $localNow !== $previousLocal)) {
+            $this->db->setSetting('model_hold', '0');
+            $this->clearModelLoad();
+            app_services()['llm']->releaseOthers($localNow);
         }
         $this->json(['settings' => $this->publicSettings(), 'hardware' => app_services()['hardware']->snapshot()]);
     }
@@ -2004,18 +2013,36 @@ class Api
             return;
         }
         $models = [];
+        $llm = app_services()['llm'];
+        $mode = (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
+        $active = $mode === 'cpu_failsafe'
+            ? (string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model'])
+            : (string)$this->db->getSetting('local_model', app_config()['local_model']);
+        $loaded = [];
+        foreach ($llm->runningModels() as $live) {
+            $loaded[] = $live;
+        }
         foreach (($result['json']['models'] ?? []) as $row) {
             if (!is_array($row) || empty($row['name'])) {
                 continue;
             }
             $size = (int)($row['size'] ?? 0);
             $name = (string)$row['name'];
+            $place = '';
+            foreach ($loaded as $live) {
+                if ($llm->modelMatches((string)$live['name'], $name)) {
+                    $place = (string)$live['place'];
+                    break;
+                }
+            }
             $models[] = [
                 'name' => $name,
                 'size_label' => $this->formatBytes($size),
                 'modified' => isset($row['modified_at']) ? substr((string)$row['modified_at'], 0, 10) : '',
                 'parameter_size' => (string)($row['details']['parameter_size'] ?? ''),
                 'protected' => $this->isProtectedModel($name),
+                'place' => $place,
+                'selected' => $active !== '' && $llm->modelMatches($name, $active),
             ];
         }
         $this->json(['models' => $models, 'error' => null]);
@@ -2238,6 +2265,9 @@ class Api
 
     private function startModelLoad(string $model, ?array $previous): array
     {
+        if ((string)$this->db->getSetting('model_mode', '') === 'local') {
+            app_services()['llm']->releaseOthers($model);
+        }
         $shown = (int)($previous['shown'] ?? 0);
         $blank = [
             'model' => $model,

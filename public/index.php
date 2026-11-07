@@ -920,6 +920,9 @@ header('X-Danaco: 1');
                 <div>
                   <strong>{{ model.name }}</strong>
                   <p class="hint">{{ model.size_label }}<span v-if="model.parameter_size"> · {{ model.parameter_size }}</span><span v-if="model.modified"> · {{ model.modified }}</span></p>
+                  <p class="hint" v-if="model.selected">The agent uses this model.</p>
+                  <p class="hint" v-if="model.place === 'gpu'">Loaded on the GPU.</p>
+                  <p class="hint" v-else-if="model.place === 'cpu'">Loaded in RAM, not on the GPU.</p>
                   <p class="hint" v-if="model.protected">CPU failsafe. This model stays installed.</p>
                 </div>
                 <button v-if="!model.protected" class="btn" type="button" :disabled="ollamaBusy" @click="deleteOllamaModel(model)">Delete</button>
