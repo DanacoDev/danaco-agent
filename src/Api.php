@@ -2248,8 +2248,19 @@ class Api
             $state = $this->tickModelLoad($state);
         } elseif ((int)($state['pid'] ?? 0) > 0 && (int)($state['retry_at'] ?? 0) === 0) {
             $state['pid'] = 0;
-            $state['error'] = $this->modelLoadError();
-            $state['retry_at'] = time() + 12;
+            $error = $this->modelLoadError();
+            if (empty($state['split']) && app_services()['llm']->gpuOverflow($error)) {
+                app_services()['llm']->keepSplit($model);
+                $state = $this->startModelLoad($model, $state);
+                $state['split'] = 1;
+            } else {
+                $state['error'] = $error;
+                $state['retry_at'] = time() + 12;
+            }
+        } elseif (empty($state['split']) && app_services()['llm']->gpuOverflow((string)($state['error'] ?? ''))) {
+            app_services()['llm']->keepSplit($model);
+            $state = $this->startModelLoad($model, $state);
+            $state['split'] = 1;
         } elseif (time() >= (int)($state['retry_at'] ?? 0)) {
             $state = $this->startModelLoad($model, $state);
         }

@@ -50,6 +50,10 @@ class Recovery
             $notes[] = 'The reply ran out of room while thinking. Trying again with more room.';
             $retry = true;
         }
+        if ($this->stoppedWhileThinking($error)) {
+            $notes[] = 'The reply stopped while thinking. Pausing, then trying again.';
+            $retry = true;
+        }
         if (!$retry && ($this->isMissingBody($error) || $this->isUnreachable($error))) {
             $notes[] = 'The model request did not go through. Sending it again.';
             $retry = true;
@@ -62,7 +66,7 @@ class Recovery
 
     public function isModelFailure(string $error): bool
     {
-        return (bool)preg_match('/model .+ failed|did not reply|cannot reach ollama|missing request body|out of memory|requires more system memory|\boom\b|http \d{3}/i', $error);
+        return (bool)preg_match('/model .+ failed|did not reply|cannot reach ollama|missing request body|out of memory|requires more system memory|\boom\b|http \d{3}|error in input stream|stopped while thinking/i', $error);
     }
 
     private function isOom(string $error): bool
@@ -72,12 +76,17 @@ class Recovery
 
     private function isFullGpu(string $error): bool
     {
-        return (bool)preg_match('/cudaMalloc|unable to allocate CUDA/i', $error);
+        return (bool)preg_match('/cudaMalloc|unable to allocate CUDA|projector CPU offload/i', $error);
     }
 
     private function isLength(string $error): bool
     {
         return (bool)preg_match('/output limit|thinking only|empty answer/i', $error);
+    }
+
+    private function stoppedWhileThinking(string $error): bool
+    {
+        return (bool)preg_match('/stopped while thinking|error in input stream/i', $error);
     }
 
     private function isMissingBody(string $error): bool

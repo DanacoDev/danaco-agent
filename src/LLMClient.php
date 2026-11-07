@@ -115,12 +115,19 @@ class LLMClient
         if (array_key_exists($key, $this->fitCache)) {
             return $this->fitCache[$key];
         }
-        $fits = true;
+        if ($this->sameModel((string)$this->db->getSetting('gpu_split_model', ''), $model)) {
+            $this->fitCache[$key] = false;
+            return false;
+        }
+        $fits = false;
         $bytes = $this->modelBytes($model);
         $gpu = $this->hardware->snapshot()['gpu'] ?? null;
         $totalMb = is_array($gpu) ? (int)($gpu['total_mb'] ?? 0) : 0;
-        if ($bytes > 0 && $totalMb > 0 && $bytes >= (int)($totalMb * 1048576 * 0.8)) {
-            $fits = false;
+        if ($bytes > 0 && $totalMb > 0) {
+            $ctx = $this->hardware->effectiveContext('local');
+            $reserveMb = (int)min((int)floor($totalMb * 0.25), (int)ceil($ctx / 1024 * 154));
+            $roomMb = (int)floor($totalMb * 0.9) - $reserveMb;
+            $fits = $roomMb > 0 && $bytes < ($roomMb * 1048576);
         }
         $this->fitCache[$key] = $fits;
         return $fits;
@@ -133,6 +140,14 @@ class LLMClient
             return;
         }
         $this->fitCache[$key] = false;
+        if ($this->usableModel($model)) {
+            $this->db->setSetting('gpu_split_model', $model);
+        }
+    }
+
+    public function gpuOverflow(string $text): bool
+    {
+        return (bool)preg_match('/cudaMalloc|unable to allocate CUDA|projector CPU offload/i', $text);
     }
 
     public function restoreGpu(?callable $onNote = null): void
@@ -214,12 +229,16 @@ class LLMClient
                 if ($try >= 3) {
                     break;
                 }
+                $again = $this->stoppedWhileThinking($e->getMessage());
                 $note = $this->recover($e->getMessage());
                 if ($note === null) {
                     break;
                 }
                 if ($note !== '') {
                     $this->recoveries[] = $note;
+                }
+                if ($again) {
+                    $this->pauseForRetry($shouldStop);
                 }
             }
         }
@@ -494,7 +513,11 @@ class LLMClient
             $hint = $ollama
                 ? 'Cannot reach Ollama at ' . $base . '. Start Ollama or change the model mode in Setup.'
                 : 'Cannot reach the cloud API at ' . $base . '.';
-            throw new LlmException($hint . ($err !== '' ? ' ' . $err : ''), false);
+            $detail = $hint . ($err !== '' ? ' ' . $err : '');
+            if ($this->diedWhileThinking($thinking, $full, $detail)) {
+                throw new LlmException('Model ' . $model . ' failed: The reply stopped while thinking. ' . $detail, true);
+            }
+            throw new LlmException($detail, false);
         }
         if ($code >= 400 || $errorBody !== '') {
             if (!$ollama && $this->isRejectedKey($errorBody, $code)) {
@@ -502,6 +525,9 @@ class LLMClient
             }
             $detail = trim($errorBody) !== '' ? clip_text($errorBody, 500) : 'HTTP ' . $code;
             $retryable = $code >= 500 || $this->isOom($errorBody);
+            if ($this->diedWhileThinking($thinking, $full, $detail)) {
+                throw new LlmException('Model ' . $model . ' failed: The reply stopped while thinking. ' . $detail, true);
+            }
             throw new LlmException('Model ' . $model . ' failed: ' . $detail, $retryable);
         }
         if (trim($full) === '') {
@@ -533,6 +559,30 @@ class LLMClient
         return 'Model ' . $model . ' did not reply. ' . implode(' ', $reasons);
     }
 
+    private function diedWhileThinking(string $thinking, string $full, string $detail): bool
+    {
+        if (trim($full) !== '') {
+            return false;
+        }
+        return trim($thinking) !== '' || $this->stoppedWhileThinking($detail);
+    }
+
+    private function stoppedWhileThinking(string $error): bool
+    {
+        return (bool)preg_match('/stopped while thinking|error in input stream/i', $error);
+    }
+
+    private function pauseForRetry(?callable $shouldStop): void
+    {
+        $until = microtime(true) + 2;
+        while (microtime(true) < $until) {
+            if ($shouldStop && $shouldStop()) {
+                throw new ChatStopped('Stopped.');
+            }
+            usleep(200000);
+        }
+    }
+
     private function isOom(string $text): bool
     {
         return (bool)preg_match('/out of memory|cuda|\\boom\\b|requires more system memory|model requires more/i', $text);
@@ -540,7 +590,7 @@ class LLMClient
 
     private function isFullGpu(string $text): bool
     {
-        return (bool)preg_match('/cudaMalloc|unable to allocate CUDA/i', $text);
+        return $this->gpuOverflow($text);
     }
 
     private function isRejectedKey(string $text, int $code): bool

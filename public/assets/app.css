@@ -531,6 +531,8 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
   .archive-row { grid-template-columns: 1fr; }
   .health-bars { grid-template-columns: 1fr; }
   .view { padding: 14px 12px 18px; }
+  .chat-view { padding: 0; }
+  .composer { padding-bottom: calc(6px + env(safe-area-inset-bottom)); }
 }
 .shell.sidebar-collapsed .sidebar { width: 76px; }
 .shell.sidebar-collapsed .sidebar .nav-label,
