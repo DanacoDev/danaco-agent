@@ -369,6 +369,7 @@ class AgentRuntime
                 }
             }
             $skipCompact = false;
+            $this->scrubAssistantFences($messages);
             $this->db->setAgentStatus($agent, 'thinking');
             $emit(['type' => 'status', 'agent' => $agent, 'status' => 'thinking']);
             $parser = new ToolStreamParser($this->toolNames());
@@ -525,7 +526,7 @@ class AgentRuntime
                 }
             }
             $proseTools = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->announcedToolsWithoutCall($turnText);
-            $emptyFences = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && ($this->hollowReply($turnText) || $this->emptyPayloadFences($turnText));
+            $emptyFences = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->emptyPayloadFences($turnText);
             if (!$tail['tools'] && ($cutOff || $this->llm->incomplete || $proseTools || $emptyFences)) {
                 if ($retryOpen >= 5) {
                     if ($emptyFences) {
@@ -540,7 +541,7 @@ class AgentRuntime
                 $replay = $turnText;
                 if ($emptyFences && !$cutOff) {
                     $replay = trim($this->stripLeakedThink($turnText));
-                    if ($replay === '') {
+                    if ($replay === '' || preg_match('/^\s*```[A-Za-z0-9_+-]*\s*$/', $replay)) {
                         $replay = 'The previous reply was empty code fences.';
                     }
                 }
@@ -548,7 +549,7 @@ class AgentRuntime
                 if ($cutOff) {
                     $prompt = 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.';
                 } elseif ($emptyFences) {
-                    $prompt = 'Those code fences were empty, so nothing was called or saved. Do not open a markdown code fence. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill, PHP or Python, is write_skill with the full source in args.source. A project file is write_file or wiki_write with the full content.';
+                    $prompt = 'That reply was an empty code fence, so nothing was called or saved. ```markdown is not a tool call. Do not output ``` at all. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill, PHP or Python, is write_skill with the full source in args.source. A project file is write_file or wiki_write with the full content.';
                 } elseif ($proseTools) {
                     $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Do not open a markdown code fence. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
                     if (preg_match('/\bdelegat/i', $turnText)) {
@@ -735,17 +736,42 @@ class AgentRuntime
         return strtolower($match[1]);
     }
 
-    private function hollowReply(string $text): bool
+    private function scrubAssistantFences(array &$messages): void
     {
-        if (trim($text) === '') {
-            return false;
+        foreach ($messages as &$message) {
+            if (!is_array($message) || ($message['role'] ?? '') !== 'assistant') {
+                continue;
+            }
+            $content = (string)($message['content'] ?? '');
+            if ($content === '' || !$this->emptyPayloadFences($content)) {
+                continue;
+            }
+            $clean = trim($this->stripLeakedThink($content));
+            if ($clean === '' || preg_match('/^\s*```[A-Za-z0-9_+-]*\s*$/', $clean)) {
+                $message['content'] = 'The previous reply was empty code fences and nothing was called.';
+                continue;
+            }
+            $message['content'] = $clean;
         }
-        return trim($this->stripLeakedThink($text)) === '';
+        unset($message);
     }
 
     private function emptyPayloadFences(string $text): bool
     {
-        return (bool)preg_match('/```[^\n`]*\r?\n\s*```/', $text);
+        if (trim($text) === '') {
+            return false;
+        }
+        if (preg_match('/```[^\n`]*\r?\n\s*```/', $text)) {
+            return true;
+        }
+        $clean = trim($this->stripLeakedThink($text));
+        if ($clean === '') {
+            return true;
+        }
+        if (preg_match('/^\s*```[A-Za-z0-9_+-]*\s*$/', $clean)) {
+            return true;
+        }
+        return substr_count($clean, '```') % 2 === 1 && (bool)preg_match('/```[A-Za-z0-9_+-]*\s*$/', $clean);
     }
 
     private function claimedSkillWithoutCall(string $text): bool
