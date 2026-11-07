@@ -1,6 +1,0 @@
-<Files "config.php">
-    Require all denied
-</Files>
-<FilesMatch "\.md$">
-    Require all denied
-</FilesMatch>
