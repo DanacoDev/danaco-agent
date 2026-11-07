@@ -26,6 +26,10 @@
     return text;
   }
 
+  function stripChatTags(src) {
+    return String(src || '').replace(/<\/?chat\b[^>]*>/gi, '');
+  }
+
   function stripLeakedThink(src) {
     let text = String(src || '');
     text = text.replace(/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*?<\/(?:think|thinking|reasoning|thought)>/gi, '');
@@ -1369,7 +1373,8 @@
           return 'Error: ' + value;
         },
         shownContent(msg) {
-          const value = String((msg && msg.content) || '');
+          let value = String((msg && msg.content) || '');
+          if (msg && msg.role === 'assistant') value = stripChatTags(value);
           if (!msg || !msg.failed) return value;
           if (value.includes('\n\nError: ')) return value;
           return this.errorText(value);
@@ -1466,7 +1471,7 @@
             this.clearSlowTimer();
             if (this.live && this.liveAgent !== data.agent) this.flushLive();
             this.liveAgent = data.agent || this.liveAgent;
-            this.live += data.text || '';
+            this.live = stripChatTags(this.live + (data.text || ''));
             if (data.text) this.answerStarted = true;
             this.scrollChat();
           } else if (event === 'thinking') {

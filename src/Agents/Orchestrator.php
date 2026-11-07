@@ -611,7 +611,11 @@ TXT;
 
     private function stamped(array $row): string
     {
-        $content = clip_text((string)($row['content'] ?? ''), 8000);
+        $content = (string)($row['content'] ?? '');
+        if (($row['role'] ?? '') === 'assistant') {
+            $content = strip_chat_tags($content);
+        }
+        $content = clip_text($content, 8000);
         if (($row['role'] ?? '') !== 'user' || str_starts_with($content, 'Scheduled task:')) {
             return $content;
         }

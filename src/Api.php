@@ -314,6 +314,9 @@ class Api
                 if ($until > 0 && $id <= $until && !isset($recent[$id])) {
                     continue;
                 }
+                if ($role === 'assistant') {
+                    $row['content'] = trim(strip_chat_tags((string)($row['content'] ?? '')));
+                }
                 $row['detail'] = isset($recent[$id]) ? $this->trimThinking($row['detail'] ?? null) : $this->leanDetail($row['detail'] ?? null);
                 $out[] = $row;
                 continue;

@@ -217,6 +217,8 @@ class ReplyNoiseFilter
 {
     private const THINK = ['think', 'thinking', 'reasoning', 'thought'];
 
+    private const PASS = ['chat'];
+
     private string $pending = '';
 
     private string $mode = '';
@@ -265,31 +267,49 @@ class ReplyNoiseFilter
                     $this->pending = substr($rest, strlen($tag['raw']));
                     continue;
                 }
-                $aside .= $tag['raw'];
+                if ($tag['kind'] !== 'pass') {
+                    $aside .= $tag['raw'];
+                }
                 $this->mode = $tag['kind'];
                 $this->closer = $tag['closer'];
                 $this->pending = substr($rest, strlen($tag['raw']));
                 continue;
             }
             $closeAt = stripos($this->pending, $this->closer);
+            $pass = $this->mode === 'pass';
             if ($closeAt === false) {
                 if (!$end) {
                     $hold = $this->suffixHold($this->pending, $this->closer);
                     $cut = strlen($this->pending) - $hold;
                     if ($cut > 0) {
-                        $aside .= substr($this->pending, 0, $cut);
+                        $chunk = substr($this->pending, 0, $cut);
+                        if ($pass) {
+                            $visible .= $chunk;
+                        } else {
+                            $aside .= $chunk;
+                        }
                         $this->pending = substr($this->pending, $cut);
                     }
                     break;
                 }
-                $aside .= $this->pending;
+                if ($pass) {
+                    $visible .= $this->pending;
+                } else {
+                    $aside .= $this->pending;
+                }
                 $this->pending = '';
                 $this->mode = '';
                 $this->closer = '';
                 break;
             }
-            $aside .= substr($this->pending, 0, $closeAt) . substr($this->pending, $closeAt, strlen($this->closer));
-            $this->pending = substr($this->pending, $closeAt + strlen($this->closer));
+            $chunk = substr($this->pending, 0, $closeAt);
+            $closerLen = strlen($this->closer);
+            if ($pass) {
+                $visible .= $chunk;
+            } else {
+                $aside .= $chunk . substr($this->pending, $closeAt, $closerLen);
+            }
+            $this->pending = substr($this->pending, $closeAt + $closerLen);
             $this->mode = '';
             $this->closer = '';
         }
@@ -312,6 +332,9 @@ class ReplyNoiseFilter
         }
         $name = strtolower($match[1]);
         $raw = $match[0];
+        if (in_array($name, self::PASS, true)) {
+            return ['kind' => 'pass', 'raw' => $raw, 'closer' => '</' . $match[1] . '>'];
+        }
         if (in_array($name, self::THINK, true) || in_array($name, $this->toolNames, true)) {
             return ['kind' => $name, 'raw' => $raw, 'closer' => '</' . $match[1] . '>'];
         }
@@ -555,7 +578,7 @@ class AgentRuntime
                         $replay = 'The previous reply was empty code fences.';
                     }
                 }
-                $messages[] = ['role' => 'assistant', 'content' => trim($replay . ($cutOff ? $tail['text'] : ''))];
+                $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags(trim($replay . ($cutOff ? $tail['text'] : '')))];
                 if ($cutOff) {
                     $prompt = 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.';
                 } elseif ($emptyFences) {
@@ -590,7 +613,7 @@ class AgentRuntime
                     if ($replay === '') {
                         $replay = 'The previous reply was empty.';
                     }
-                    $messages[] = ['role' => 'assistant', 'content' => $replay];
+                    $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($replay)];
                     $messages[] = ['role' => 'user', 'content' => $this->finishSteer($scheduled)];
                     continue;
                 }
@@ -598,7 +621,7 @@ class AgentRuntime
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
                 return $this->finishVisible($visible);
             }
-            $messages[] = ['role' => 'assistant', 'content' => ($raw !== '' ? $raw : $turnText)];
+            $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($raw !== '' ? $raw : $turnText)];
             $delegated = false;
             $consulted = false;
             foreach ($tail['tools'] as $tool) {
@@ -886,7 +909,7 @@ class AgentRuntime
         $tries++;
         $skipCompact = true;
         if ($kept !== '') {
-            $messages[] = ['role' => 'assistant', 'content' => $kept];
+            $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($kept)];
         }
         $cue = 'You wrote the same line more than five times in a row. Stop repeating it. Continue the task from the last useful step. If a tool still needs to run, call it now.';
         if ($line !== '') {
@@ -1006,7 +1029,7 @@ class AgentRuntime
         }
         $text = preg_replace('/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*$/i', '', $text) ?? $text;
         $text = preg_replace('/```[^\n]*\n\s*```/', '', $text) ?? $text;
-        return $text;
+        return strip_chat_tags($text);
     }
 
     private function releaseMarker(OutputLineFilter $markers, ToolStreamParser $parser): string

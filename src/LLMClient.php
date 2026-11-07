@@ -328,7 +328,7 @@ class LLMClient
             $this->markCpu(true);
         }
         $base = rtrim((string)$this->db->getSetting('ollama_url', app_config()['ollama_url']), '/');
-        $predict = 49152;
+        $predict = 65536;
         $predictOverride = (int)$this->db->getSetting('recovery_num_predict', '0');
         if ($predictOverride >= 256) {
             $predict = $predictOverride;

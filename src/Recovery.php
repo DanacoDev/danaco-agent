@@ -135,11 +135,7 @@ class Recovery
 
     private function moreRoom(): void
     {
-        $current = (int)$this->db->getSetting('recovery_num_predict', '0');
-        if ($current < 49152) {
-            $current = 49152;
-        }
-        $this->db->setSetting('recovery_num_predict', (string)min(131072, $current + 49152));
+        $this->db->setSetting('recovery_num_predict', '65536');
     }
 
     private function startOllama(): bool
