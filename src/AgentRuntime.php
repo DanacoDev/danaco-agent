@@ -371,7 +371,7 @@ class AgentRuntime
             $skipCompact = false;
             $this->db->setAgentStatus($agent, 'thinking');
             $emit(['type' => 'status', 'agent' => $agent, 'status' => 'thinking']);
-            $parser = new ToolStreamParser();
+            $parser = new ToolStreamParser($this->toolNames());
             $markers = new OutputLineFilter();
             $noise = new ReplyNoiseFilter($this->toolNames());
             $turnText = '';
