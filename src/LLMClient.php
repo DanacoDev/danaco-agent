@@ -216,8 +216,8 @@ class LLMClient
         $numCtx = $this->hardware->effectiveContext($mode);
         if ($this->db->getSetting('recovery_hint', '0') === '1') {
             $hint = $agent === 'orchestrator'
-                ? 'The reply ran out of room. Try again by splitting the task up and delegating each piece to one subagent. Send that delegate call now.'
-                : 'Continue from the work so far and write the answer now. Keep any thinking short.';
+                ? 'The reply ran out of room while thinking, so this pass has more room. Finish the thought, then write the answer or the tool call.'
+                : 'The reply ran out of room while thinking, so this pass has more room. Finish the thought, then write the answer.';
             $messages[] = ['role' => 'user', 'content' => $hint];
             $this->db->setSetting('recovery_hint', '0');
         }

@@ -30,7 +30,7 @@ class Recovery
             $notes[] = 'Ollama was not running. Started it.';
             $retry = true;
         }
-        if ($this->isOom($error) || ($this->isModelFailure($error) && $this->memoryTight())) {
+        if (!$this->isLength($error) && ($this->isOom($error) || ($this->isModelFailure($error) && $this->memoryTight()))) {
             $freed = $this->unloadModels();
             if ($freed > 0) {
                 $notes[] = 'Freed memory by unloading ' . $freed . ' model' . ($freed === 1 ? '' : 's') . '.';
@@ -42,8 +42,9 @@ class Recovery
             $retry = true;
         }
         if ($this->isLength($error)) {
+            $this->moreRoom();
             $this->db->setSetting('recovery_hint', '1');
-            $notes[] = 'The reply ran out of room. Trying again with a shorter pass.';
+            $notes[] = 'The reply ran out of room while thinking. Trying again with more room.';
             $retry = true;
         }
         if (!$retry && ($this->isMissingBody($error) || $this->isUnreachable($error))) {
@@ -113,6 +114,15 @@ class Recovery
         $next = max(1024, intdiv($current, 2));
         $this->db->setSetting('recovery_num_ctx', (string)$next);
         $this->db->setSetting('recovery_num_predict', (string)min(4096, $next));
+    }
+
+    private function moreRoom(): void
+    {
+        $current = (int)$this->db->getSetting('recovery_num_predict', '0');
+        if ($current < 49152) {
+            $current = 49152;
+        }
+        $this->db->setSetting('recovery_num_predict', (string)min(131072, $current + 49152));
     }
 
     private function startOllama(): bool
