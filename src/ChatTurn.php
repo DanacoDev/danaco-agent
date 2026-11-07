@@ -38,9 +38,9 @@ class ChatTurn
             $emit($event);
         };
         $returned = app_services()['orchestrator']->handle($projectId, $wrapped, $shouldStop);
-        $answer = trim($this->streamed);
+        $answer = trim($returned);
         if ($answer === '') {
-            $answer = trim($returned);
+            $answer = trim($this->streamed);
         }
         return $answer;
     }

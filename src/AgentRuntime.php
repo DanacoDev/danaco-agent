@@ -525,23 +525,38 @@ class AgentRuntime
                 }
             }
             $proseTools = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->announcedToolsWithoutCall($turnText);
-            if (!$tail['tools'] && ($cutOff || $this->llm->incomplete || $proseTools)) {
+            $emptyFences = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && ($this->hollowReply($turnText) || $this->emptyPayloadFences($turnText));
+            if (!$tail['tools'] && ($cutOff || $this->llm->incomplete || $proseTools || $emptyFences)) {
                 if ($retryOpen >= 5) {
+                    if ($emptyFences) {
+                        throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
+                    }
                     throw new RuntimeException($proseTools
                         ? 'The model kept naming tools without calling them.'
                         : 'The tool call was cut off before it finished.');
                 }
                 $retryOpen++;
                 $skipCompact = true;
-                $messages[] = ['role' => 'assistant', 'content' => trim($turnText . ($cutOff ? $tail['text'] : ''))];
+                $replay = $turnText;
+                if ($emptyFences && !$cutOff) {
+                    $replay = trim($this->stripLeakedThink($turnText));
+                    if ($replay === '') {
+                        $replay = 'The previous reply was empty code fences.';
+                    }
+                }
+                $messages[] = ['role' => 'assistant', 'content' => trim($replay . ($cutOff ? $tail['text'] : ''))];
                 if ($cutOff) {
                     $prompt = 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.';
+                } elseif ($emptyFences) {
+                    $prompt = 'Those code fences were empty, so nothing was called or saved. Do not open a markdown code fence. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill, PHP or Python, is write_skill with the full source in args.source. A project file is write_file or wiki_write with the full content.';
                 } elseif ($proseTools) {
-                    $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Emit exactly:\n<<tool>>\n{"name":"tool_name","args":{}}\n<<end>>';
+                    $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Do not open a markdown code fence. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
                     if (preg_match('/\bdelegat/i', $turnText)) {
                         $prompt = 'That delegation was not run. Do not describe it. Emit the <<tool>> JSON block for kanban so the card is in_progress, then the <<tool>> JSON block for delegate. Pass task_id when the card already exists.';
                     } elseif (($xmlTool = $this->fakeXmlToolName($turnText)) !== null) {
-                        $prompt = 'XML tags are not a tool call. Do not write <' . $xmlTool . '>. Emit exactly:\n<<tool>>\n{"name":"' . $xmlTool . '","args":{}}\n<<end>>\nFill args with the real JSON for that tool, then stop.';
+                        $prompt = 'XML tags are not a tool call. Do not write <' . $xmlTool . '>. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"' . $xmlTool . '","args":{}}' . "\n" . '<<end>>' . "\n" . 'Fill args with the real JSON for that tool, then stop.';
+                    } elseif ($this->claimedSkillWithoutCall($turnText)) {
+                        $prompt = 'That did not register a skill. Do not write it into the project and do not open a code fence. Pick PHP or Python yourself. Call write_skill now with the full source, then stop.';
                     } elseif ($this->claimedFileWriteWithoutCall($turnText)) {
                         $prompt = $this->claimedWriteRetryPrompt($turnText);
                     }
@@ -667,6 +682,9 @@ class AgentRuntime
         if ($this->claimedFileWriteWithoutCall($text)) {
             return true;
         }
+        if ($this->claimedSkillWithoutCall($text)) {
+            return true;
+        }
         $found = [];
         foreach ($names as $name) {
             if (preg_match('/(?:^|[^A-Za-z0-9_])' . preg_quote($name, '/') . '(?:[^A-Za-z0-9_]|$)/i', $text)) {
@@ -715,6 +733,25 @@ class AgentRuntime
             return null;
         }
         return strtolower($match[1]);
+    }
+
+    private function hollowReply(string $text): bool
+    {
+        if (trim($text) === '') {
+            return false;
+        }
+        return trim($this->stripLeakedThink($text)) === '';
+    }
+
+    private function emptyPayloadFences(string $text): bool
+    {
+        return (bool)preg_match('/```[^\n`]*\r?\n\s*```/', $text);
+    }
+
+    private function claimedSkillWithoutCall(string $text): bool
+    {
+        return (bool)preg_match('/\b(?:let me|i will|i\'ll|i am going to|i\'m going to|i\'ll proceed|let me proceed)\b[^.\n]{0,200}\b(?:skill|skills|data\/skills)\b/i', $text)
+            && (bool)preg_match('/\b(?:writ|creat|regist|sav)/i', $text);
     }
 
     private function claimedFileWriteWithoutCall(string $text): bool
