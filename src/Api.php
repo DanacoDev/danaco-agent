@@ -549,11 +549,15 @@ class Api
                 $this->sse('error', ['text' => $why]);
             }
         } catch (Throwable $e) {
-            $this->db->failJob($jobId, $e->getMessage(), Heartbeat::MAX_ATTEMPTS);
-            $error = error_text($e->getMessage());
+            $reason = $e->getMessage();
+            $retry = str_contains($reason, 'cut off before it finished') ? 1 : Heartbeat::MAX_ATTEMPTS;
+            $this->db->failJob($jobId, $reason, $retry);
+            $this->db->setAgentStatus('orchestrator', 'error');
+            $error = error_text($reason);
             $text = trim($turn->streamed);
             $text = $text !== '' ? $text . "\n\n" . $error : $error;
             $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
+            $this->sse('status', ['agent' => 'orchestrator', 'status' => 'error']);
             $this->sse('error', ['text' => $error]);
         }
     }

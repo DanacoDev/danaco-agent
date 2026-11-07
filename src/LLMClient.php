@@ -236,17 +236,21 @@ class LLMClient
         if ($predictOverride >= 256) {
             $predict = $predictOverride;
         }
+        $options = [
+            'num_ctx' => $numCtx,
+            'num_predict' => $predict,
+            'use_mmap' => true,
+            'use_mlock' => false,
+        ];
+        if ($mode === 'local') {
+            $options['num_gpu'] = 999;
+        }
         $payload = json_encode([
             'model' => $model,
             'messages' => $messages,
             'stream' => true,
             'keep_alive' => '1h',
-            'options' => [
-                'num_ctx' => $numCtx,
-                'num_predict' => $predict,
-                'use_mmap' => true,
-                'use_mlock' => false,
-            ],
+            'options' => $options,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (!is_string($payload) || $payload === '') {
             throw new LlmException('The model request could not be encoded.', false);
@@ -620,18 +624,22 @@ class LLMClient
             ? (string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model'])
             : (string)$this->db->getSetting('local_model', app_config()['local_model']);
         $base = rtrim((string)$this->db->getSetting('ollama_url', app_config()['ollama_url']), '/');
+        $options = [
+            'num_ctx' => $this->hardware->effectiveContext($mode),
+            'num_predict' => 8,
+            'use_mmap' => true,
+            'use_mlock' => false,
+        ];
+        if ($mode === 'local') {
+            $options['num_gpu'] = 999;
+        }
         $payload = json_encode([
             'model' => $model,
             'messages' => $messages,
             'stream' => false,
             'think' => false,
             'keep_alive' => '1h',
-            'options' => [
-                'num_ctx' => $this->hardware->effectiveContext($mode),
-                'num_predict' => 8,
-                'use_mmap' => true,
-                'use_mlock' => false,
-            ],
+            'options' => $options,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (!is_string($payload) || $payload === '') {
             return null;
