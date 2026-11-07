@@ -32,6 +32,8 @@ class LLMClient
 
     private float $placementNext = 0;
 
+    private array $fitCache = [];
+
     public function __construct(private Database $db, private HardwareMonitor $hardware)
     {
     }
@@ -102,6 +104,35 @@ class LLMClient
     public function modelMatches(string $running, string $wanted): bool
     {
         return $this->sameModel($running, $wanted);
+    }
+
+    public function wholeModelOnGpu(string $model): bool
+    {
+        $key = strtolower(trim($model));
+        if ($key === '') {
+            return false;
+        }
+        if (array_key_exists($key, $this->fitCache)) {
+            return $this->fitCache[$key];
+        }
+        $fits = true;
+        $bytes = $this->modelBytes($model);
+        $gpu = $this->hardware->snapshot()['gpu'] ?? null;
+        $totalMb = is_array($gpu) ? (int)($gpu['total_mb'] ?? 0) : 0;
+        if ($bytes > 0 && $totalMb > 0 && $bytes >= (int)($totalMb * 1048576 * 0.8)) {
+            $fits = false;
+        }
+        $this->fitCache[$key] = $fits;
+        return $fits;
+    }
+
+    public function keepSplit(string $model): void
+    {
+        $key = strtolower(trim($model));
+        if ($key === '') {
+            return;
+        }
+        $this->fitCache[$key] = false;
     }
 
     public function restoreGpu(?callable $onNote = null): void
@@ -177,6 +208,9 @@ class LLMClient
                 throw $e;
             } catch (LlmException $e) {
                 $last = $e;
+                if ($this->isFullGpu($e->getMessage())) {
+                    $this->keepSplit((string)$this->db->getSetting('local_model', app_config()['local_model']));
+                }
                 if ($try >= 3) {
                     break;
                 }
@@ -286,7 +320,7 @@ class LLMClient
             'use_mmap' => true,
             'use_mlock' => false,
         ];
-        if ($mode === 'local') {
+        if ($mode === 'local' && $this->wholeModelOnGpu($model)) {
             $options['num_gpu'] = 999;
         }
         $payload = json_encode([
@@ -504,6 +538,11 @@ class LLMClient
         return (bool)preg_match('/out of memory|cuda|\\boom\\b|requires more system memory|model requires more/i', $text);
     }
 
+    private function isFullGpu(string $text): bool
+    {
+        return (bool)preg_match('/cudaMalloc|unable to allocate CUDA/i', $text);
+    }
+
     private function isRejectedKey(string $text, int $code): bool
     {
         if (preg_match('/invalid[_\s-]?api[_\s-]?key|invalid_key|please provide valid api key/i', $text)) {
@@ -582,12 +621,16 @@ class LLMClient
         if ($this->placement($model) === 'cpu') {
             $this->stopModel($model);
         }
+        $options = ['num_predict' => 1];
+        if ($this->wholeModelOnGpu($model)) {
+            $options['num_gpu'] = 999;
+        }
         $payload = json_encode([
             'model' => $model,
             'prompt' => 'hi',
             'stream' => false,
             'keep_alive' => '1h',
-            'options' => ['num_predict' => 1, 'num_gpu' => 999],
+            'options' => $options,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if (!is_string($payload)) {
             return false;
@@ -660,6 +703,19 @@ class LLMClient
         return $name !== '' && strlen($name) <= 120 && (bool)preg_match('/^[A-Za-z0-9_.:\/-]+$/', $name);
     }
 
+    private function modelBytes(string $model): int
+    {
+        if (!$this->usableModel($model)) {
+            return 0;
+        }
+        $payload = json_encode(['name' => $model]);
+        if (!is_string($payload)) {
+            return 0;
+        }
+        $json = $this->ollamaCall('POST', '/api/show', $payload, 8);
+        return (int)($json['size'] ?? 0);
+    }
+
     private function askYesNo(string $prompt, ?callable $shouldStop): ?string
     {
         $failsafe = $this->usingFailsafe;
@@ -678,7 +734,7 @@ class LLMClient
             'use_mmap' => true,
             'use_mlock' => false,
         ];
-        if ($mode === 'local') {
+        if ($mode === 'local' && $this->wholeModelOnGpu($model)) {
             $options['num_gpu'] = 999;
         }
         $payload = json_encode([

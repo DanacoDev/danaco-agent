@@ -644,7 +644,7 @@ class AgentRuntime
                 $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => $tool['name'], 'text' => $result]);
                 $messages[] = ['role' => 'user', 'content' => "TOOL RESULT {$tool['name']}:\n{$result}"];
                 if ($this->kanbanFollowsDelegate($agent, (string)($tool['name'] ?? ''), $result)) {
-                    $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the kanban and update the matching cards before you reply or delegate again. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has cards. Move finished work to review with a short result. Move the card you are starting to in_progress. You never mark a task done. Do not explain the board workflow in place of listing it and updating the cards.'];
+                    $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the kanban and update the matching cards before you reply or delegate again. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has cards. Move a finished run-once card to review with a short result. Leave a repeating card in in_progress. Move the card you are starting to in_progress. You never mark a task done. Do not explain the board workflow in place of listing it and updating the cards.'];
                 }
             }
             if ($cutOff) {

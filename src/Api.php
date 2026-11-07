@@ -2294,7 +2294,7 @@ class Api
             return $blank;
         }
         $options = ['num_predict' => 1];
-        if ((string)$this->db->getSetting('model_mode', '') === 'local') {
+        if ((string)$this->db->getSetting('model_mode', '') === 'local' && app_services()['llm']->wholeModelOnGpu($model)) {
             $options['num_gpu'] = 999;
         }
         $payload = json_encode([

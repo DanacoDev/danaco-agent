@@ -30,7 +30,10 @@ class Recovery
             $notes[] = 'Ollama was not running. Started it.';
             $retry = true;
         }
-        if (!$this->isLength($error) && ($this->isOom($error) || ($this->isModelFailure($error) && $this->memoryTight()))) {
+        if ($this->isFullGpu($error)) {
+            $notes[] = 'The whole model does not fit on the GPU. Loading what fits and leaving the rest in RAM.';
+            $retry = true;
+        } elseif (!$this->isLength($error) && ($this->isOom($error) || ($this->isModelFailure($error) && $this->memoryTight()))) {
             $freed = $this->unloadModels();
             if ($freed > 0) {
                 $notes[] = 'Freed memory by unloading ' . $freed . ' model' . ($freed === 1 ? '' : 's') . '.';
@@ -65,6 +68,11 @@ class Recovery
     private function isOom(string $error): bool
     {
         return (bool)preg_match('/out of memory|cuda|\\boom\\b|requires more system memory|model requires more/i', $error);
+    }
+
+    private function isFullGpu(string $error): bool
+    {
+        return (bool)preg_match('/cudaMalloc|unable to allocate CUDA/i', $error);
     }
 
     private function isLength(string $error): bool

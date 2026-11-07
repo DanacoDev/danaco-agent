@@ -59,16 +59,7 @@ class Heartbeat
             }
             $this->db->addMessage($projectId, 'assistant', $answer !== '' ? $answer : 'Finished the scheduled task.', 'orchestrator', false, $detail);
             $this->db->finishJob($jobId);
-            $next = $this->nextSchedule((string)($task['recurrence_interval'] ?? 'none'), (string)($task['schedule_time'] ?? ''));
-            $board = new Kanban($this->db);
-            if ($next) {
-                $board->move((int)$task['id'], ['status' => 'in_progress', 'schedule_time' => $next], false);
-            } else {
-                $board->move((int)$task['id'], [
-                    'status' => 'review',
-                    'result' => $answer !== '' ? $answer : 'Finished the scheduled task.',
-                ], false);
-            }
+            $this->settle($task, $answer !== '' ? $answer : 'Finished the scheduled task.');
         } catch (Throwable $e) {
             if ($e instanceof ChatStopped) {
                 $this->db->finishJob($jobId);
@@ -78,11 +69,8 @@ class Heartbeat
             $this->db->logAgent('orchestrator', $projectId, 'error', $e->getMessage());
             $this->db->setAgentStatus('orchestrator', 'error');
             $current = $this->db->job($jobId);
-            if (($current['status'] ?? '') === 'gave_up') {
-                (new Kanban($this->db))->move((int)$task['id'], [
-                    'status' => 'review',
-                    'result' => (string)($current['last_error'] ?? $e->getMessage()),
-                ], false);
+            if ($ownJob && ($current['status'] ?? '') === 'gave_up') {
+                $this->settle($task, (string)($current['last_error'] ?? $e->getMessage()), true);
             }
             if (!$ownJob) {
                 throw $e;
@@ -155,12 +143,28 @@ class Heartbeat
             return;
         }
         $taskId = (int)($job['ref_id'] ?? 0);
-        if ($taskId > 0 && $this->db->task($taskId)) {
-            (new Kanban($this->db))->move($taskId, [
-                'status' => 'review',
-                'result' => (string)($current['last_error'] ?? 'The scheduled task stopped.'),
-            ], false);
+        $task = $taskId > 0 ? $this->db->task($taskId) : null;
+        if ($task) {
+            $this->settle($task, (string)($current['last_error'] ?? 'The scheduled task stopped.'), true);
         }
+    }
+
+    private function settle(array $task, string $result, bool $failed = false): void
+    {
+        $board = new Kanban($this->db);
+        $next = $this->nextSchedule((string)($task['recurrence_interval'] ?? 'none'), (string)($task['schedule_time'] ?? ''));
+        if ($next) {
+            $fields = ['status' => 'in_progress', 'schedule_time' => $next];
+            if ($failed) {
+                $fields['result'] = $result;
+            }
+            $board->move((int)$task['id'], $fields, false);
+            return;
+        }
+        $board->move((int)$task['id'], [
+            'status' => 'review',
+            'result' => $result,
+        ], false);
     }
 
     private function nextSchedule(string $interval, string $from): ?string

@@ -289,7 +289,7 @@ header('X-Danaco: 1');
                   <div class="column-title"><span>{{ column.label }}</span><span class="tag">{{ tasksFor(column.id).length }}</span></div>
                   <p class="hint">{{ column.hint }}</p>
                 </header>
-                <article v-for="task in tasksFor(column.id)" :key="task.id" class="task-card" :draggable="canDrag" @dragstart="onDragStart(task, $event)">
+                <article v-for="task in tasksFor(column.id)" :key="task.id" class="task-card" :draggable="canDrag && !taskRepeats(task)" @dragstart="onDragStart(task, $event)">
                   <h3 class="task-title">{{ task.title }}</h3>
                   <div class="task-tags">
                     <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
@@ -305,7 +305,7 @@ header('X-Danaco: 1');
                   </div>
                   <p class="hint">{{ task.schedule_time || 'immediately' }} · {{ repeatLabel(task.recurrence_interval) }}</p>
                   <p v-if="task.result" class="task-result">{{ task.result }}</p>
-                  <label class="field move-field">Move
+                  <label v-if="!taskRepeats(task)" class="field move-field">Move
                     <select :value="columnStatus(task)" @change="moveTask(task, $event.target.value)">
                       <option v-for="col in columns" :key="col.id" :value="col.id">{{ col.label }}</option>
                     </select>

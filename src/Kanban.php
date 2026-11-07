@@ -117,6 +117,9 @@ class Kanban
 
     public function column(array $task): string
     {
+        if ($this->repeats((string)($task['recurrence_interval'] ?? 'none'))) {
+            return 'in_progress';
+        }
         $status = (string)($task['status'] ?? '');
         if ($status === 'done' || $status === 'review' || $status === 'in_progress') {
             return $status;
@@ -155,6 +158,9 @@ class Kanban
         if (!in_array($status, ['backlog', 'in_progress', 'review', 'done'], true)) {
             $status = 'backlog';
         }
+        if ($this->repeats($recurrence) && in_array($status, ['review', 'done'], true)) {
+            return 'in_progress';
+        }
         if ($status === 'backlog' && $this->isScheduled($schedule, $recurrence)) {
             return 'in_progress';
         }
@@ -182,9 +188,14 @@ class Kanban
         return $at > $now && $at <= $now + self::RESTART_DELAY;
     }
 
+    private function repeats(string $recurrence): bool
+    {
+        return $recurrence !== '' && $recurrence !== 'none';
+    }
+
     private function isScheduled(mixed $schedule, string $recurrence): bool
     {
-        if ($recurrence !== '' && $recurrence !== 'none') {
+        if ($this->repeats($recurrence)) {
             return true;
         }
         return is_string($schedule) && $schedule !== '';

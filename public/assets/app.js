@@ -177,7 +177,7 @@
           columns: [
             { id: 'backlog', label: 'Backlog', hint: 'Agent work, or an action to send later' },
             { id: 'in_progress', label: 'In progress', hint: 'Being worked on, or scheduled' },
-            { id: 'review', label: 'Review', hint: 'Finished and waiting for you' }
+            { id: 'review', label: 'Review', hint: 'Finished run-once tasks waiting for you' }
           ],
           finishedOpen: false,
           taskError: '',
@@ -1548,9 +1548,13 @@
             monthly: 'monthly'
           })[value] || 'run once';
         },
+        taskRepeats(task) {
+          return !!(task.recurrence_interval && task.recurrence_interval !== 'none');
+        },
         columnStatus(task) {
+          if (this.taskRepeats(task)) return 'in_progress';
           if (task.status === 'done' || task.status === 'review' || task.status === 'in_progress') return task.status;
-          if (task.schedule_time || (task.recurrence_interval && task.recurrence_interval !== 'none')) return 'in_progress';
+          if (task.schedule_time) return 'in_progress';
           return 'backlog';
         },
         finishedTasks() {
@@ -1671,7 +1675,7 @@
         async onDrop(status, event) {
           const id = Number(event.dataTransfer.getData('text/plain') || this.dragId);
           const task = this.tasks.find((item) => item.id === id);
-          if (!task || this.columnStatus(task) === status) return;
+          if (!task || this.taskRepeats(task) || this.columnStatus(task) === status) return;
           await this.moveTask(task, status);
         },
         collectOpen(nodes, into) {
