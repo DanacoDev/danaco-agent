@@ -557,11 +557,15 @@ class LLMClient
         if (!$this->usableModel($model)) {
             return;
         }
-        $payload = json_encode(['model' => $model, 'keep_alive' => 0]);
+        $payload = json_encode(['model' => $model, 'keep_alive' => 0, 'prompt' => '', 'stream' => false]);
+        $chat = json_encode(['model' => $model, 'keep_alive' => 0, 'messages' => [], 'stream' => false]);
+        if (is_string($chat)) {
+            $this->ollamaCall('POST', '/api/chat', $chat, 20);
+        }
         if (!is_string($payload)) {
             return;
         }
-        $this->ollamaCall('POST', '/api/generate', $payload, 8);
+        $this->ollamaCall('POST', '/api/generate', $payload, 20);
     }
 
     private function ollamaCall(string $method, string $path, ?string $body, int $timeout): ?array

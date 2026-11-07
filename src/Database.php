@@ -811,6 +811,17 @@ SQL);
         return $this->getSetting($this->chatStopKey($projectId), '0') === '1';
     }
 
+    public function stopAllChats(): void
+    {
+        $ids = [0];
+        foreach ($this->pdo->query('SELECT id FROM projects') as $row) {
+            $ids[] = (int)$row['id'];
+        }
+        foreach ($ids as $id) {
+            $this->setSetting($this->chatStopKey($id), '1');
+        }
+    }
+
     private function chatStopKey(int $projectId): string
     {
         return 'chat_stop_' . max(0, $projectId);

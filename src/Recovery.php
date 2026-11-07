@@ -145,22 +145,65 @@ class Recovery
     private function unloadModels(): int
     {
         $base = $this->ollamaBase();
+        $names = $this->loadedModels($base);
+        if (!$names) {
+            return 0;
+        }
+        $ollama = $this->ollamaBin();
+        foreach ($names as $name) {
+            $chat = json_encode(['model' => $name, 'messages' => [], 'keep_alive' => 0, 'stream' => false]);
+            $generate = json_encode(['model' => $name, 'prompt' => '', 'keep_alive' => 0, 'stream' => false]);
+            if (is_string($chat)) {
+                $this->http('POST', $base . '/api/chat', $chat, 20);
+            }
+            if (is_string($generate)) {
+                $this->http('POST', $base . '/api/generate', $generate, 20);
+            }
+            if ($ollama !== '') {
+                Process::run([$ollama, 'stop', $name], null, null, 30);
+            }
+        }
+        for ($i = 0; $i < 8; $i++) {
+            if (!$this->loadedModels($base)) {
+                break;
+            }
+            usleep(300000);
+        }
+        return count($names);
+    }
+
+    private function loadedModels(string $base): array
+    {
         $raw = $this->http('GET', $base . '/api/ps', null);
         $json = json_decode($raw, true);
         $models = is_array($json['models'] ?? null) ? $json['models'] : [];
-        $count = 0;
+        $names = [];
         foreach ($models as $model) {
+            if (!is_array($model)) {
+                continue;
+            }
             $name = trim((string)($model['name'] ?? $model['model'] ?? ''));
             if ($name === '' || !preg_match('/^[A-Za-z0-9_.:\/-]+$/', $name)) {
                 continue;
             }
-            if (Process::commandExists('ollama')) {
-                Process::run(['ollama', 'stop', $name], null, null, 20);
-            }
-            $this->http('POST', $base . '/api/generate', json_encode(['model' => $name, 'keep_alive' => 0]));
-            $count++;
+            $names[] = $name;
         }
-        return $count;
+        return $names;
+    }
+
+    private function ollamaBin(): string
+    {
+        foreach (['/opt/homebrew/bin/ollama', '/usr/local/bin/ollama', '/usr/bin/ollama'] as $path) {
+            if (is_executable($path)) {
+                return $path;
+            }
+        }
+        if (!Process::commandExists('ollama')) {
+            return '';
+        }
+        $found = Process::run(['/bin/sh', '-c', 'command -v ollama'], null, null, 5);
+        $path = trim($found['stdout']);
+        return $path !== '' && is_executable($path) ? $path : '';
     }
 
     private function ping(string $url): bool
@@ -180,7 +223,7 @@ class Recovery
         return $code >= 200 && $code < 500;
     }
 
-    private function http(string $method, string $url, ?string $body): string
+    private function http(string $method, string $url, ?string $body, int $timeout = 8): string
     {
         $ch = curl_init($url);
         if ($ch === false) {
@@ -191,7 +234,7 @@ class Recovery
             CURLOPT_CUSTOMREQUEST => $method,
             CURLOPT_HTTPHEADER => $headers,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 8,
+            CURLOPT_TIMEOUT => $timeout,
             CURLOPT_CONNECTTIMEOUT => 2,
         ]);
         if ($body !== null) {

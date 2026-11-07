@@ -464,6 +464,9 @@ class Api
     private function chat(): void
     {
         @set_time_limit(0);
+        if ($this->db->getSetting('model_hold', '0') === '1') {
+            $this->db->setSetting('model_hold', '0');
+        }
         $load = $this->modelLoadStatus();
         if (empty($load['ready'])) {
             $this->json(['error' => 'The model is still loading.'], 409);
@@ -1472,7 +1475,10 @@ class Api
 
     private function restartApp(): void
     {
+        $this->db->stopAllChats();
+        usleep(400000);
         (new Recovery($this->db))->releaseMemory();
+        $this->db->setSetting('model_hold', '1');
         Recovery::reset($this->db);
         $this->db->setSetting('cpu_fallback', '0');
         $this->clearModelLoad();
@@ -2146,9 +2152,13 @@ class Api
             }
         }
         if ($running === true) {
+            $this->db->setSetting('model_hold', '0');
             $this->rememberModelWarm($model);
             $this->clearModelLoad();
             return ['ready' => true, 'percent' => 100, 'model' => $model, 'error' => '', 'scratch' => false];
+        }
+        if ($this->db->getSetting('model_hold', '0') === '1') {
+            return ['ready' => false, 'percent' => 0, 'model' => $model, 'error' => '', 'scratch' => false];
         }
         $warm = $this->modelWarm($model);
         $busy = $this->db->modelInUse();
