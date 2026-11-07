@@ -26,14 +26,27 @@
     return text;
   }
 
+  function stripLeakedThink(src) {
+    let text = String(src || '');
+    text = text.replace(/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*?<\/(?:think|thinking|reasoning|thought)>/gi, '');
+    const closer = /<\/(?:think|thinking|reasoning|thought)>/gi;
+    let end = -1;
+    let match;
+    while ((match = closer.exec(text)) !== null) end = match.index + match[0].length;
+    if (end >= 0) text = text.slice(end);
+    text = text.replace(/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*$/i, '');
+    return text;
+  }
+
   function renderMarkdown(src) {
     const fences = [];
     const cites = [];
-    let text = String(src || '')
+    let text = stripLeakedThink(src)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
     text = text.replace(/```([^\n]*)\n([\s\S]*?)```/g, function (_, info, code) {
+      if (!String(code || '').trim()) return '\n';
       const label = String(info || '').trim();
       let button = '';
       const named = label.match(/^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*\.(?:md|txt|csv|json|svg|html|py|php|js|css)$/);
@@ -1135,16 +1148,17 @@
             this.streamError = '';
             await this.refreshStatus();
           } catch (error) {
+            const lost = /load failed|failed to fetch|networkerror|connection dropped/i.test(String(error && error.message || ''));
             if (error.name === 'AbortError') {
               aborted = true;
               if ((this.projectId || 0) === chatProject) this.flushLive();
-            } else if (error.message === 'The connection dropped before the reply finished.' && (this.projectId || 0) === chatProject) {
+            } else if (lost && (this.projectId || 0) === chatProject) {
               this.flushLive();
               this.messages.push({
                 id: 'fail-' + Date.now(),
                 role: 'assistant',
                 agent_name: 'orchestrator',
-                content: 'Error: The connection dropped before the reply finished.',
+                content: 'The connection dropped before the reply finished.',
                 failed: 1
               });
             } else if ((this.projectId || 0) === chatProject) {

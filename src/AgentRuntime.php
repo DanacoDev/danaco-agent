@@ -464,7 +464,7 @@ class AgentRuntime
                     $this->db->logAgent($agent, $projectId, 'thinking', $turnText);
                 }
                 if (!$this->steerAfterRepeat($repeatTries, $messages, $guard->singleCopy($turnText), $guard->repeated, $visible, $emit, $agent, $skipCompact)) {
-                    return trim($visible);
+                    return $this->finishVisible($visible);
                 }
                 continue;
             } catch (ContextFallback $e) {
@@ -513,7 +513,7 @@ class AgentRuntime
             }
             if ($guard->tripped) {
                 if (!$this->steerAfterRepeat($repeatTries, $messages, $guard->singleCopy($turnText), $guard->repeated, $visible, $emit, $agent, $skipCompact)) {
-                    return trim($visible);
+                    return $this->finishVisible($visible);
                 }
                 continue;
             }
@@ -556,7 +556,7 @@ class AgentRuntime
             if (!$tail['tools']) {
                 $this->db->setAgentStatus($agent, 'completed');
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
-                return trim($visible);
+                return $this->finishVisible($visible);
             }
             $messages[] = ['role' => 'assistant', 'content' => ($raw !== '' ? $raw : $turnText)];
             $delegated = false;
@@ -617,7 +617,7 @@ class AgentRuntime
         $emit(['type' => 'token', 'agent' => $agent, 'text' => $note]);
         $this->db->setAgentStatus($agent, 'completed');
         $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
-        return trim($visible);
+        return $this->finishVisible($visible);
     }
 
     private function kanbanFollowsDelegate(string $agent, string $tool, string $result): bool
@@ -807,6 +807,23 @@ class AgentRuntime
         }
         $messages[] = ['role' => 'user', 'content' => $cue];
         return true;
+    }
+
+    private function finishVisible(string $visible): string
+    {
+        return trim($this->stripLeakedThink($visible));
+    }
+
+    private function stripLeakedThink(string $text): string
+    {
+        $text = preg_replace('/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*?<\/(?:think|thinking|reasoning|thought)>/i', '', $text) ?? $text;
+        if (preg_match_all('/<\/(?:think|thinking|reasoning|thought)>/i', $text, $matches, PREG_OFFSET_CAPTURE) && $matches[0] !== []) {
+            $last = $matches[0][count($matches[0]) - 1];
+            $text = substr($text, $last[1] + strlen($last[0]));
+        }
+        $text = preg_replace('/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*$/i', '', $text) ?? $text;
+        $text = preg_replace('/```[^\n]*\n\s*```/', '', $text) ?? $text;
+        return $text;
     }
 
     private function releaseMarker(OutputLineFilter $markers, ToolStreamParser $parser): string
