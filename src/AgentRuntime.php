@@ -700,7 +700,7 @@ class AgentRuntime
     {
         return [
             'delegate', 'consult', 'list_files', 'read_file', 'read_pdf', 'write_file', 'delete_file', 'move_file',
-            'create_pdf', 'run_command', 'kanban', 'create_project', 'wiki_search', 'wiki_read', 'wiki_write',
+            'create_pdf', 'run_command', 'kanban', 'wiki_search', 'wiki_read', 'wiki_write',
             'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'write_skill', 'remember', 'soul', 'send_email',
             'web_search', 'fetch_url', 'browse_url', 'ftp', 'mcp', 'download_large', 'task_breakdown',
             'research_pipeline', 'sqlite_helper', 'code_verifier', 'humanizer', 'write_article', 'make_graphic', 'save_note',

@@ -13,6 +13,7 @@ class SafetyInterceptor
             return $this->writeMachine($relativePath, $content);
         }
         $relativePath = $this->projectPath($projectFolder, $relativePath);
+        $this->rejectProjectSkill($relativePath);
         if (!str_starts_with($relativePath, 'uploads/')) {
             $this->assertMarkdownLocation($relativePath);
         }
@@ -102,6 +103,7 @@ class SafetyInterceptor
         if ($from === $to || (is_dir($this->projectRoot($projectFolder) . '/' . $from) && str_starts_with($to, $from . '/'))) {
             throw new RuntimeException('Cannot move a folder into itself.');
         }
+        $this->rejectProjectSkill($to);
         if ($this->isMarkdown($to)) {
             $this->assertMarkdownLocation($to);
         }
@@ -844,6 +846,18 @@ class SafetyInterceptor
             }
         }
         return $nodes;
+    }
+
+    private function rejectProjectSkill(string $relativePath): void
+    {
+        $path = strtolower(str_replace('\\', '/', $relativePath));
+        if (!preg_match('/\.(php|py)$/', $path)) {
+            return;
+        }
+        if (!preg_match('#(^|/)skills/#', $path)) {
+            return;
+        }
+        throw new RuntimeException('A skill is not a project file. Call write_skill with a .php or .py filename so it is registered in the Skills library. Later runs and scheduled tasks call it by name.');
     }
 
     private function assertMarkdownLocation(string $relativePath): void

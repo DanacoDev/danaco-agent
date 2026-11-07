@@ -124,11 +124,11 @@ class SubagentRunner
             : 'Paths are relative to the project folder.';
         return <<<TXT
 Team. Delegate by the kind of work. Every subagent can use: {$shared}.
-Those tools cover any file in the project, including the wiki. {$scope} A new or replaced skill goes to the coder. You have write_skill when the coder cannot finish it.
+Those tools cover any file in the project, including the wiki. {$scope} A new or replaced skill, PHP or Python, goes to the coder through write_skill. That registers it in the Skills library, outside the project, so later runs and scheduled tasks can call it by name. You have write_skill when the coder cannot finish it. Do not write a skill into the project.
 {$capLine}
 - researcher: find and check facts with web_search, fetch_url, and browse_url, parse documents, then log them with research_pipeline in their own wiki file. Do not put research in the project description.
 - writer: draft long-form text, documentation, and communication copy, and save it in the wiki. An article runs write_article and follows every step, including humanizer and a spelling pass. Other prose runs humanizer. A figure, icon, or infographic runs make_graphic, then the file is written and its path comes back. A PDF is the writer's job too. Delegate the brief and the file name. The writer calls create_pdf, and only the file path comes back, so a long document does not fill this chat. Do not give a PDF to the coder.
-- coder: write and debug software, run code_verifier on each changed file, use download_large for a download over 100 MB, and create a reusable PHP skill with write_skill. Skills are not project files. A page icon or graphic runs make_graphic before it is drawn.
+- coder: write and debug software, run code_verifier on each changed file, use download_large for a download over 100 MB, and register a reusable PHP or Python skill with write_skill. That puts it in the Skills library. A file in the project is not a skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
 - marketer: campaigns, press copy, brand, and visual direction. An icon or infographic runs make_graphic.
 The Consultant always exists. When it is available it can use the same project file tools. It has no write_skill. It is paid and only for a hard multi-step problem.
@@ -142,7 +142,7 @@ TXT;
             '- read_file: args path. Any file in this project, including the wiki.',
             '- read_pdf: args path. Reads the text of a PDF in this project.',
             '- create_pdf: args path, text. Writes a PDF in this project. path ends in .pdf and is not in wiki/. Headings and asterisks are typeset for you. An existing file is kept, and the new one is saved as the next free name, such as document2.pdf. Cite the path the tool wrote, alone on a line. Do not repeat the document.',
-            '- write_file: args path, content. Creates or overwrites a file in this project. Markdown belongs in wiki/.',
+            '- write_file: args path, content. Creates or overwrites a file in this project. Markdown belongs in wiki/. A skill is not a project file. The coder uses write_skill.',
             '- delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.',
             '- move_file: args from, to. Moves a file or folder to another path in this project.',
             '- list_files: args path, optional',
@@ -153,7 +153,7 @@ TXT;
             '- wiki_write: args content, append, and optional name. name is a markdown filename in wiki/. Omit it only to update the general description: what the project is, contributors, credentials, and main goals. Pass a new name for research, findings, and specific data.',
         ];
         if ($agent === 'coder') {
-            $toolLines[] = '- write_skill: args name, description, filename, source. filename is a lowercase .php file. source is PHP that reads JSON from stdin. Saves to data/skills/, not the project. Cannot replace a built-in skill. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not end the file with a closing PHP tag.';
+            $toolLines[] = '- write_skill: args name, description, filename, source. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. Cannot replace a built-in skill. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there.';
         }
         $toolLines = array_merge($toolLines, $this->capabilities->descriptions($projectId));
         $toolLines[] = "Skills, one line each:\n" . $this->skills->summariesForPrompt();
@@ -325,7 +325,7 @@ TXT;
                 } catch (InvalidArgumentException | RuntimeException $e) {
                     return $e->getMessage();
                 }
-                return 'Saved skill ' . $skill['name'] . ' to data/skills/' . $skill['script_path'] . '. Syntax check passed.';
+                return 'Registered skill ' . $skill['name'] . ' (' . $skill['script_path'] . ') in the Skills library. It is listed on the Skills page and can be called by name, including from a scheduled task. Syntax check passed.';
             };
         }
         foreach ($this->capabilities->handlers($projectFolder, $projectId) as $name => $handler) {

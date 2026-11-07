@@ -433,7 +433,7 @@ TXT;
             $context = <<<TXT
 This is General chat. There is no project tag.
 Answer the user directly. Do not invent a project tag.
-Create a project only when the user asks for one.
+The user creates projects manually from the menu. You cannot create one. If the user asks, tell them to do it from the menu.
 TXT;
         } else {
             $folder = $project['folder_name'];
@@ -469,7 +469,7 @@ TXT;
 - list_files: args path, optional. Lists this project's files.
 - read_file: args path. Any file in this project, including the wiki.
 - read_pdf: args path. Reads the text of a PDF in this project.
-- write_file: args path, content. Creates or overwrites a file in this project. Markdown belongs in wiki/.
+- write_file: args path, content. Creates or overwrites a file in this project. Markdown belongs in wiki/. A skill is not a project file. Use write_skill.
 - delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.
 - move_file: args from, to. Moves a file or folder inside this project.
 A PDF is not written in this chat. Delegate it to the writer with the file name and the brief. The coder does not make PDFs.
@@ -532,11 +532,10 @@ Tools:
   delete: id. Removes that card from the board. Use it when a card is wrong, stale, or the user asks you to remove it.
   backlog = later agent work with no schedule. in_progress = work happening now, or a card with a time or a repeat. review = finished and waiting for the user; include result. You cannot set done.
   Cards are for an agent, or a reminder that will send something or take an action. Not a static todo for the user.
-  After the user has chosen now or scheduled, every future event needs its own card. A scheduled card needs schedule_time. Saying you will do it later does not schedule it. Split several events into separate cards. When the work repeats, set recurrence and have the coder write a skill for the repeated steps when that is possible. Name that skill in the card description.
+  After the user has chosen now or scheduled, every future event needs its own card. A scheduled card needs schedule_time. Saying you will do it later does not schedule it. Split several events into separate cards. When the work repeats, set recurrence and have the coder register a PHP or Python skill with write_skill for the repeated steps when that is possible. Name that skill in the card description. A file in the project is not a skill.
   A result is assigned to the subagent who produces it. Planning with the user is assigned to orchestrator.
   Do not move a mission you are still planning to in_progress. Move a task to in_progress when the user chose now and you start it, or when a scheduled card is due, and to review when you finish. Do not leave finished work in backlog. Do not delegate new cards in the planning turn unless the user chose now.
   After every delegated job, list the board and update the matching cards before you reply or delegate again, even when this chat does not mention any tasks. A cleared context still has cards. Do not explain the workflow in place of updating them.
-- create_project: args name, folder, purpose, type
 - wiki_search: args query
 - wiki_read: args name. Reads one project wiki file. Omit name to read wiki/<folder>_desc.md, which is only the general description. General chat has no project wiki.
 - wiki_write: args name, content, append. Writes wiki/<name>.md in the current project. Omit name only to edit the general description: what the project is, contributors, credentials, and main goals. Pass name for research, findings, and specific data. Read the file first when you are changing it. Use append to add to what is already there. When the chat has reached conclusions, update the matching wiki file in this same turn.
@@ -544,7 +543,7 @@ Tools:
 - list_vault: no args. Backups and trash. Read or restore only. Never delete them.
 - read_vault: args kind (backup or trash), stored_as
 - restore_file: args kind, stored_as
-- write_skill: args name, description, filename, source. filename is a lowercase .php file. source is PHP that reads JSON from stdin. Saves to data/skills/, not the project. Cannot replace a built-in skill. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not end the file with a closing PHP tag. Delegate this to the coder. Call it yourself when the coder cannot finish.
+- write_skill: args name, description, filename, source. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. Cannot replace a built-in skill. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there. Delegate this to the coder. Call it yourself when the coder cannot finish.
 - soul: args action (add or remove), text. Optional persona line only: how you speak, present yourself, or a standing always/never habit. soul.md starts empty; add a line only when the user wants lasting persona behaviour. Never store project facts or subject matter here. General chat has no soul file. Open a project first.
 
 Skills, one line each:
@@ -677,7 +676,7 @@ TXT;
         $tools = [
             'delegate' => function (array $args) use ($folder, $emit, $projectId, $shouldStop, &$createdTaskIds): string {
                 if ($folder === '') {
-                    return 'General chat has no project. Create a project before delegating.';
+                    return 'General chat has no project. Tell the user to create a project manually from the menu before delegating.';
                 }
                 $agent = strtolower(trim((string)($args['agent'] ?? '')));
                 $instruction = trim((string)($args['instruction'] ?? ''));
@@ -856,14 +855,7 @@ TXT;
                 return $result;
             },
             'create_project' => function (array $args): string {
-                $created = Projects::create(
-                    $this->db,
-                    (string)($args['name'] ?? ''),
-                    (string)($args['folder'] ?? ''),
-                    (string)($args['purpose'] ?? ''),
-                    (string)($args['type'] ?? '')
-                );
-                return 'Created project ' . $created['folder_name'];
+                return 'You cannot create a project. Tell the user to create it manually from the menu.';
             },
             'wiki_search' => function (array $args) use ($folder): string {
                 return $this->memory->search((string)($args['query'] ?? ''), $folder !== '' ? $folder : null);
@@ -934,7 +926,7 @@ TXT;
                 } catch (InvalidArgumentException | RuntimeException $e) {
                     return $e->getMessage();
                 }
-                return 'Saved skill ' . $skill['name'] . ' to data/skills/' . $skill['script_path'] . '. Syntax check passed.';
+                return 'Registered skill ' . $skill['name'] . ' (' . $skill['script_path'] . ') in the Skills library. It is listed on the Skills page and can be called by name, including from a scheduled task. Syntax check passed.';
             },
             'send_email' => function (array $args) use ($projectId, $emit, $shouldStop): string {
                 $to = trim((string)($args['to'] ?? ''));
