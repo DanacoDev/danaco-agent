@@ -232,6 +232,8 @@
           settings: {},
           hardware: null,
           setupMessage: '',
+          restarting: false,
+          restartError: '',
           providerTestBusy: false,
           providerTestMessage: '',
           providerTestError: false,
@@ -390,6 +392,11 @@
           if (this.waitPhase === 'compressing') why = 'compressing context';
           else if (this.awaitingModel || (this.modelLoad && this.modelLoad.ready === false && !this.modelLoad.error)) why = 'loading model';
           return why ? 'Taking longer than expected (' + why + ')' : 'Taking longer than expected';
+        },
+        showCpu() {
+          const settings = this.settings || {};
+          if (settings.model_mode === 'cpu_failsafe') return true;
+          return settings.cpu_fallback === '1';
         },
         fileKind() {
           if (this.fileIsDir) return 'dir';
@@ -850,11 +857,16 @@
         toggleLog(id) {
           this.openLogs = Object.assign({}, this.openLogs, { [id]: !this.openLogs[id] });
         },
-        agentLabel(name) {
-          if (name === 'orchestrator') return 'Main agent';
-          const text = String(name || '');
-          if (!text) return '';
-          return text.charAt(0).toUpperCase() + text.slice(1);
+        agentLabel(name, markCpu) {
+          let label = '';
+          if (name === 'orchestrator' || name === 'assistant') label = 'Main agent';
+          else {
+            const text = String(name || '');
+            if (!text) return '';
+            label = text.charAt(0).toUpperCase() + text.slice(1);
+          }
+          if (markCpu && (name === 'orchestrator' || name === 'assistant')) return label + ' (CPU)';
+          return label;
         },
         queueChatSearch(scrollFirst) {
           clearTimeout(this._chatSearchTimer);
@@ -1486,6 +1498,9 @@
           } else if (event === 'error') {
             this.streamEnded = true;
             this.streamError = data.text || 'The model failed.';
+          } else if (event === 'cpu') {
+            if (!this.settings) this.settings = {};
+            this.settings.cpu_fallback = data.cpu ? '1' : '0';
           } else if (event === 'status' && data.agent) {
             const found = this.agents.find((agent) => agent.name === data.agent);
             if (found) {
@@ -2305,6 +2320,19 @@
           }
           location.reload();
         },
+        async restartApp() {
+          if (this.restarting) return;
+          if (!window.confirm('Restart the application? Loaded models are cleared from memory and the current reply stops.')) return;
+          this.restartError = '';
+          this.restarting = true;
+          try {
+            await this.api('/api/setup/restart', { method: 'POST', body: {} });
+            this.waitForRestart();
+          } catch (error) {
+            this.restartError = error.message;
+            this.restarting = false;
+          }
+        },
         async saveSetup() {
           this.setupMessage = '';
           const body = {
@@ -2733,15 +2761,20 @@
         thinking: { type: Array, default: function () { return []; } },
         tools: { type: Array, default: function () { return []; } },
         open: { type: Object, default: function () { return {}; } },
-        prefix: { type: String, default: '' }
+        prefix: { type: String, default: '' },
+        cpu: { type: Boolean, default: false }
       },
       emits: ['toggle'],
       methods: {
         label(name) {
-          if (name === 'orchestrator') return 'Main agent';
-          const text = String(name || '');
-          if (!text) return 'Agent';
-          return text.charAt(0).toUpperCase() + text.slice(1);
+          let label = 'Agent';
+          if (name === 'orchestrator') label = 'Main agent';
+          else {
+            const text = String(name || '');
+            if (text) label = text.charAt(0).toUpperCase() + text.slice(1);
+          }
+          if (this.cpu && name === 'orchestrator') return label + ' (CPU)';
+          return label;
         },
         body(tool) {
           let text = 'Arguments\n' + JSON.stringify(tool.args || {}, null, 2);

@@ -689,7 +689,8 @@ class ProjectBackup
                 (string)($skill['name'] ?? ''),
                 (string)($skill['description'] ?? ''),
                 !empty($skill['is_active']),
-                'user'
+                'user',
+                true
             );
             $restored++;
         }

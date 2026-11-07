@@ -124,14 +124,14 @@ class SubagentRunner
             : 'Paths are relative to the project folder.';
         return <<<TXT
 Team. Delegate by the kind of work. Every subagent can use: {$shared}.
-Those tools cover any file in the project, including the wiki. {$scope} A new or replaced skill, PHP or Python, goes to the coder through write_skill. That registers it in the Skills library, outside the project, so later runs and scheduled tasks can call it by name. You have write_skill when the coder cannot finish it. Do not write a skill into the project.
+Those tools cover any file in the project, including the wiki. {$scope} A new or replaced skill, PHP or Python, goes to the coder through write_skill. That registers it in the Skills library, outside the project, so later runs and scheduled tasks can call it by name. You have write_skill when the coder cannot finish it. test_skill runs a skill and returns the exit code, stdout, and stderr. You have that too. Do not write a skill into the project.
 {$capLine}
 - researcher: find and check facts with web_search, fetch_url, and browse_url, parse documents, then log them with research_pipeline in their own wiki file. Do not put research in the project description.
 - writer: draft long-form text, documentation, and communication copy, and save it in the wiki. An article runs write_article and follows every step, including humanizer and a spelling pass. Other prose runs humanizer. A figure, icon, or infographic runs make_graphic, then the file is written and its path comes back. A PDF is the writer's job too. Delegate the brief and the file name. The writer calls create_pdf, and only the file path comes back, so a long document does not fill this chat. Do not give a PDF to the coder.
-- coder: write and debug software, run code_verifier on each changed file, use download_large for a download over 100 MB, and register a reusable PHP or Python skill with write_skill. That puts it in the Skills library. A file in the project is not a skill. A page icon or graphic runs make_graphic before it is drawn.
+- coder: write and debug software, run code_verifier on each changed file, use download_large for a download over 100 MB, and register a reusable PHP or Python skill with write_skill, then test_skill and read the exit code and output. That puts it in the Skills library. A file in the project is not a skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
 - marketer: campaigns, press copy, brand, and visual direction. An icon or infographic runs make_graphic.
-The Consultant always exists. When it is available it can use the same project file tools. It has no write_skill. It is paid and only for a hard multi-step problem.
+The Consultant always exists. When it is available it can use the same project file tools. It has no write_skill or test_skill. It is paid and only for a hard multi-step problem.
 {$skillLine}
 TXT;
     }
@@ -153,7 +153,8 @@ TXT;
             '- wiki_write: args content, append, and optional name. name is a markdown filename in wiki/. Omit it only to update the general description: what the project is, contributors, credentials, and main goals. Pass a new name for research, findings, and specific data.',
         ];
         if ($agent === 'coder') {
-            $toolLines[] = '- write_skill: args name, description, filename, source. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. Cannot replace a built-in skill. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there.';
+            $toolLines[] = '- write_skill: args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there.';
+            $toolLines[] = '- test_skill: args name, input. Runs that skill in this project and returns the exit code, stdout, and stderr. name is the skill. input is the JSON object it reads on stdin. The skill really runs, so files it writes stay. It also runs a skill that is turned off. Call it after write_skill. A skill registered in this run is not callable by its own name until a later run. Do not finish while the test result is wrong.';
         }
         $toolLines = array_merge($toolLines, $this->capabilities->descriptions($projectId));
         $toolLines[] = "Skills, one line each:\n" . $this->skills->summariesForPrompt();
@@ -313,6 +314,8 @@ TXT;
             $tools['write_skill'] = function (array $args): string {
                 $name = (string)($args['name'] ?? '');
                 $filename = (string)($args['filename'] ?? ($name !== '' ? $name . '.php' : ''));
+                $overwrite = in_array(strtolower(trim((string)($args['overwrite'] ?? ''))), ['1', 'true', 'yes'], true);
+                $before = $this->db->skillByName($name);
                 try {
                     $skill = $this->skills->saveSource(
                         $filename,
@@ -320,12 +323,17 @@ TXT;
                         $name,
                         (string)($args['description'] ?? ''),
                         true,
-                        'coder'
+                        'coder',
+                        $overwrite
                     );
                 } catch (InvalidArgumentException | RuntimeException $e) {
                     return $e->getMessage();
                 }
-                return 'Registered skill ' . $skill['name'] . ' (' . $skill['script_path'] . ') in the Skills library. It is listed on the Skills page and can be called by name, including from a scheduled task. Syntax check passed.';
+                $verb = $before ? 'Replaced' : 'Registered';
+                return $verb . ' skill ' . $skill['name'] . ' (' . $skill['script_path'] . ') in the Skills library. It is listed on the Skills page and can be called by name, including from a scheduled task. Syntax check passed. Call test_skill with name ' . $skill['name'] . ' and input set to the JSON that skill reads. Check the exit code, stdout, and stderr. This run cannot call the skill by its own name yet.';
+            };
+            $tools['test_skill'] = function (array $args) use ($projectFolder): string {
+                return $this->skills->testCall($args, $projectFolder);
             };
         }
         foreach ($this->capabilities->handlers($projectFolder, $projectId) as $name => $handler) {

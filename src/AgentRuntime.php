@@ -369,6 +369,11 @@ class AgentRuntime
                 }
             }
             $skipCompact = false;
+            $this->llm->restoreGpu(function (string $text) use ($emit, $projectId, $agent): void {
+                $this->db->addMessage($projectId ?? 0, 'notice', $text, $agent);
+                $emit(['type' => 'notice', 'text' => $text]);
+            });
+            $emit(['type' => 'cpu', 'cpu' => $this->llm->onCpu()]);
             $this->scrubAssistantFences($messages);
             $this->db->setAgentStatus($agent, 'thinking');
             $emit(['type' => 'status', 'agent' => $agent, 'status' => 'thinking']);
@@ -470,6 +475,7 @@ class AgentRuntime
                 continue;
             } catch (ContextFallback $e) {
                 $flushThinking(true);
+                $emit(['type' => 'cpu', 'cpu' => true]);
                 $this->flushRecoveries($emit, $projectId, $agent);
                 if ($fallbackTries >= 1) {
                     $this->db->setAgentStatus($agent, 'error');
@@ -720,7 +726,7 @@ class AgentRuntime
         return [
             'delegate', 'consult', 'list_files', 'read_file', 'read_pdf', 'write_file', 'delete_file', 'move_file',
             'create_pdf', 'run_command', 'kanban', 'wiki_search', 'wiki_read', 'wiki_write',
-            'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'write_skill', 'remember', 'soul', 'send_email',
+            'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'write_skill', 'test_skill', 'remember', 'soul', 'send_email',
             'web_search', 'fetch_url', 'browse_url', 'ftp', 'mcp', 'download_large', 'task_breakdown',
             'research_pipeline', 'sqlite_helper', 'code_verifier', 'humanizer', 'write_article', 'make_graphic', 'save_note',
             'news_fetcher', 'atr_stop_loss',

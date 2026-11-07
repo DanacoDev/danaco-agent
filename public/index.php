@@ -213,20 +213,20 @@ header('X-Danaco: 1');
                 <template v-for="msg in messages" :key="msg.id">
                 <p v-if="msg.role==='notice'" class="context-note">{{ msg.content }}</p>
                 <article v-else class="bubble" :class="msg.role">
-                  <div v-if="msg.role==='tool'" class="tool-line">{{ agentLabel(msg.agent_name) }} · {{ msg.content }}</div>
+                  <div v-if="msg.role==='tool'" class="tool-line">{{ agentLabel(msg.agent_name, showCpu) }} · {{ msg.content }}</div>
                   <template v-else>
                     <div v-if="msg.role!=='user'" class="who">
-                      <span>{{ agentLabel(msg.agent_name || msg.role) }}</span>
+                      <span>{{ agentLabel(msg.agent_name || msg.role, showCpu) }}</span>
                       <button v-if="msg.failed" class="retry-link" type="button" :disabled="sending || chatLocked" @click="retryMessage(msg)">Retry</button>
                     </div>
-                    <activity-trace v-if="msg.detail" :thinking="msg.detail.thinking || []" :tools="msg.detail.tools || []" :open="traceOpen" :prefix="'m' + msg.id + '-'" @toggle="toggleTrace"></activity-trace>
+                    <activity-trace v-if="msg.detail" :thinking="msg.detail.thinking || []" :tools="msg.detail.tools || []" :open="traceOpen" :cpu="showCpu" :prefix="'m' + msg.id + '-'" @toggle="toggleTrace"></activity-trace>
                     <div v-if="shownContent(msg)" class="md" v-html="md(shownContent(msg))"></div>
                   </template>
                 </article>
                 </template>
                 <article v-if="sending || awaitingModel || live || liveDetail.thinking.length || liveDetail.tools.length" class="bubble assistant">
-                  <div class="who">{{ agentLabel(liveAgent) }}</div>
-                  <activity-trace :thinking="liveDetail.thinking" :tools="liveDetail.tools" :open="traceOpen" prefix="live-" @toggle="toggleTrace"></activity-trace>
+                  <div class="who">{{ agentLabel(liveAgent, showCpu) }}</div>
+                  <activity-trace :thinking="liveDetail.thinking" :tools="liveDetail.tools" :open="traceOpen" :cpu="showCpu" prefix="live-" @toggle="toggleTrace"></activity-trace>
                   <div v-if="live" class="md" v-html="md(live)"></div>
                   <div v-if="streamError && !live && !liveDetail.thinking.length && !liveDetail.tools.length" class="form-error">{{ errorText(streamError) }}</div>
                   <div v-if="thinkingSpinner || (sending && (answerStarted || toolPending))" class="thinking-row">
@@ -723,7 +723,9 @@ header('X-Danaco: 1');
                   <h3>System health</h3>
                   <p class="hint">Current resource usage</p>
                 </div>
+                <button class="retry-link health-restart" type="button" :disabled="restarting" @click="restartApp">{{ restarting ? 'Restarting…' : 'Restart application' }}</button>
               </div>
+              <p v-if="restartError" class="form-error">{{ restartError }}</p>
               <div class="health-bars">
                 <div v-for="bar in healthBars" :key="bar.label" class="health-card">
                   <div class="health-card-top"><span>{{ bar.label }}</span><strong>{{ bar.text }}</strong></div>

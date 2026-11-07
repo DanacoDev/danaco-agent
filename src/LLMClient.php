@@ -24,12 +24,69 @@ class LLMClient
 
     public bool $usingFailsafe = false;
 
+    private float $gpuRestoreNotBefore = 0;
+
+    private bool $gpuMissNoted = false;
+
     public function __construct(private Database $db, private HardwareMonitor $hardware)
     {
     }
 
+    public function onCpu(): bool
+    {
+        if ($this->usingFailsafe) {
+            return true;
+        }
+        return (string)$this->db->getSetting('model_mode', 'cpu_failsafe') === 'cpu_failsafe';
+    }
+
+    public function restoreGpu(?callable $onNote = null): void
+    {
+        $mode = (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
+        if ($mode !== 'local') {
+            return;
+        }
+        $fallback = $this->usingFailsafe || $this->db->getSetting('cpu_fallback', '0') === '1';
+        if (!$fallback) {
+            return;
+        }
+        $model = trim((string)$this->db->getSetting('local_model', app_config()['local_model']));
+        if (!$this->usableModel($model)) {
+            return;
+        }
+        if ($this->modelOnGpu($model)) {
+            $this->leaveFailsafe();
+            $this->sayGpu($onNote, 'The GPU model is loaded. Continuing with it.');
+            return;
+        }
+        if (microtime(true) < $this->gpuRestoreNotBefore) {
+            return;
+        }
+        $this->gpuRestoreNotBefore = microtime(true) + 180;
+        $this->sayGpu($onNote, 'Loading the GPU model again.');
+        if (!$this->loadOntoGpu($model)) {
+            $failsafeModel = trim((string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model']));
+            if (!$this->sameModel($failsafeModel, $model)) {
+                $this->stopModel($model);
+            }
+            if (!$this->gpuMissNoted) {
+                $this->gpuMissNoted = true;
+                $this->sayGpu($onNote, 'The GPU model is still on the CPU. Continuing with the CPU failsafe.');
+            }
+            return;
+        }
+        $this->leaveFailsafe();
+        $this->gpuMissNoted = false;
+        $failsafe = trim((string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model']));
+        if (!$this->sameModel($failsafe, $model)) {
+            $this->stopModel($failsafe);
+        }
+        $this->sayGpu($onNote, 'The GPU model is loaded. Continuing with it.');
+    }
+
     public function stream(array $messages, callable $onToken, ?callable $shouldStop = null, ?callable $onThinking = null, bool $cloud = false, string $agent = ''): string
     {
+        $this->restoreGpu();
         $last = null;
         for ($try = 1; $try <= 3; $try++) {
             if ($shouldStop && $shouldStop()) {
@@ -57,6 +114,7 @@ class LLMClient
         }
         if ($last && $this->shouldStepDown($last->getMessage(), $cloud)) {
             $this->usingFailsafe = true;
+            $this->db->setSetting('cpu_fallback', '1');
             $this->recoveries[] = 'The model connection was lost. Continuing with the CPU failsafe.';
             throw new ContextFallback($last->getMessage());
         }
@@ -347,5 +405,115 @@ class LLMClient
             return true;
         }
         return $code === 401;
+    }
+
+    private function leaveFailsafe(): void
+    {
+        $this->usingFailsafe = false;
+        $this->db->setSetting('cpu_fallback', '0');
+    }
+
+    private function sayGpu(?callable $onNote, string $text): void
+    {
+        if ($onNote) {
+            $onNote($text);
+            return;
+        }
+        $this->recoveries[] = $text;
+    }
+
+    private function modelOnGpu(string $model): bool
+    {
+        $json = $this->ollamaCall('GET', '/api/ps', null, 4);
+        if ($json === null) {
+            return false;
+        }
+        foreach ($json['models'] ?? [] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $name = (string)($row['name'] ?? $row['model'] ?? '');
+            if (!$this->sameModel($name, $model)) {
+                continue;
+            }
+            return (int)($row['size_vram'] ?? 0) > 0;
+        }
+        return false;
+    }
+
+    private function loadOntoGpu(string $model): bool
+    {
+        $payload = json_encode([
+            'model' => $model,
+            'prompt' => 'hi',
+            'stream' => false,
+            'keep_alive' => '1h',
+            'options' => ['num_predict' => 1],
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (!is_string($payload)) {
+            return false;
+        }
+        $this->ollamaCall('POST', '/api/generate', $payload, 300);
+        return $this->modelOnGpu($model);
+    }
+
+    private function stopModel(string $model): void
+    {
+        if (!$this->usableModel($model)) {
+            return;
+        }
+        $payload = json_encode(['model' => $model, 'keep_alive' => 0]);
+        if (!is_string($payload)) {
+            return;
+        }
+        $this->ollamaCall('POST', '/api/generate', $payload, 8);
+    }
+
+    private function ollamaCall(string $method, string $path, ?string $body, int $timeout): ?array
+    {
+        $base = rtrim((string)$this->db->getSetting('ollama_url', app_config()['ollama_url']), '/');
+        if (!preg_match('#^https?://\S+$#', $base)) {
+            return null;
+        }
+        $ch = curl_init($base . $path);
+        if ($ch === false) {
+            return null;
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Expect:'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => $timeout,
+            CURLOPT_CONNECTTIMEOUT => 3,
+        ]);
+        if ($body !== null) {
+            curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+        }
+        $raw = curl_exec($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        unset($ch);
+        if (!is_string($raw) || $raw === '' || $code >= 400) {
+            return null;
+        }
+        $json = json_decode($raw, true);
+        return is_array($json) ? $json : null;
+    }
+
+    private function sameModel(string $running, string $wanted): bool
+    {
+        $running = strtolower(trim($running));
+        $wanted = strtolower(trim($wanted));
+        if (str_ends_with($running, ':latest')) {
+            $running = substr($running, 0, -strlen(':latest'));
+        }
+        if (str_ends_with($wanted, ':latest')) {
+            $wanted = substr($wanted, 0, -strlen(':latest'));
+        }
+        return $running !== '' && $running === $wanted;
+    }
+
+    private function usableModel(string $name): bool
+    {
+        return $name !== '' && strlen($name) <= 120 && (bool)preg_match('/^[A-Za-z0-9_.:\/-]+$/', $name);
     }
 }

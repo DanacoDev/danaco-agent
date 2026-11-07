@@ -455,6 +455,7 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 .hint-list li { margin: 0 0 6px; }
 .health-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .health-head h3 { margin: 0; }
+.health-restart { margin-top: 2px; white-space: nowrap; }
 .health-bars { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
 .health-card {
   background: #101014; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px 14px;

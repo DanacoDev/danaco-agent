@@ -82,6 +82,7 @@ class Api
         $router->add('POST', '#^/api/skills/(?P<id>\d+)/test$#', $this->guard(fn(array $args) => $this->testSkill((int)$args['id'])));
         $router->add('GET', '#^/api/setup$#', $this->guard(fn() => $this->setup()));
         $router->add('GET', '#^/api/setup/health$#', $this->guard(fn() => $this->systemHealth()));
+        $router->add('POST', '#^/api/setup/restart$#', $this->guard(fn() => $this->restartApp()));
         $router->add('POST', '#^/api/setup$#', $this->guard(fn() => $this->saveSetup()));
         $router->add('POST', '#^/api/setup/provider-test$#', $this->guard(fn() => $this->testProvider()));
         $router->add('GET', '#^/api/setup/update$#', $this->guard(fn() => $this->updateStatus()));
@@ -1379,7 +1380,8 @@ class Api
                 (string)($body['name'] ?? ''),
                 (string)($body['description'] ?? ''),
                 !array_key_exists('is_active', $body) || !empty($body['is_active']),
-                'user'
+                'user',
+                true
             );
         } catch (InvalidArgumentException | RuntimeException $e) {
             $this->json(['error' => $e->getMessage()], 422);
@@ -1462,6 +1464,64 @@ class Api
     private function systemHealth(): void
     {
         $this->json(app_services()['hardware']->resourceUsage());
+    }
+
+    private function restartApp(): void
+    {
+        (new Recovery($this->db))->releaseMemory();
+        Recovery::reset($this->db);
+        $this->db->setSetting('cpu_fallback', '0');
+        $this->clearModelLoad();
+        $warm = app_config()['data_dir'] . '/model-warm.json';
+        if (is_file($warm)) {
+            file_put_contents($warm, '');
+        }
+        $this->db->finishRunningJobs();
+        foreach (array_keys(Database::idleStatus()) as $name) {
+            $this->db->setAgentStatus($name, 'idle');
+        }
+        $this->db->unlock('subagent_lock');
+        $this->db->unlock('consultant_lock');
+        $this->scheduleRestart();
+        $this->json(['ok' => true]);
+    }
+
+    private function scheduleRestart(): void
+    {
+        $root = dirname(__DIR__);
+        $mode = '';
+        $modeFile = $root . '/data/service.mode';
+        if (is_file($modeFile)) {
+            $mode = trim((string)file_get_contents($modeFile));
+        }
+        $inner = 'sleep 1; ' . $this->restartLine($root, $mode);
+        $command = 'perl -MPOSIX -e ' . escapeshellarg('fork and exit; POSIX::setsid(); exec @ARGV or die $!')
+            . ' /bin/sh -c ' . escapeshellarg($inner)
+            . ' >> ' . escapeshellarg($root . '/data/restart.log') . ' 2>&1 &';
+        exec($command);
+    }
+
+    private function restartLine(string $root, string $mode): string
+    {
+        $rootQ = escapeshellarg($root);
+        $kick = '';
+        if ($mode === 'launchdaemon') {
+            $kick = 'sudo -n launchctl kickstart -k system/com.danaco.webui';
+        } elseif ($mode === 'launchagent') {
+            $kick = 'launchctl kickstart -k gui/$(id -u)/com.danaco.webui';
+        } elseif ($mode === 'systemd') {
+            $kick = 'sudo -n systemctl restart danaco.service';
+        } elseif ($mode === 'systemd-user') {
+            $kick = 'systemctl --user restart danaco.service';
+        }
+        $manual = 'if [ -f ' . $rootQ . '/data/server.pid ]; then kill "$(cat ' . $rootQ . '/data/server.pid)" 2>/dev/null || true; fi; '
+            . 'if [ -f ' . $rootQ . '/data/tick.pid ]; then kill "$(cat ' . $rootQ . '/data/tick.pid)" 2>/dev/null || true; fi; '
+            . 'for pid in $(pgrep -f ' . escapeshellarg($root . '/bin/run-agent.sh') . ' || true); do if [ "$pid" != "$$" ]; then kill "$pid" 2>/dev/null || true; fi; done; '
+            . 'sleep 1; nohup /bin/bash ' . $rootQ . '/bin/run-agent.sh >> ' . $rootQ . '/data/service.log 2>&1 &';
+        if ($kick === '') {
+            return $manual;
+        }
+        return 'if ! ' . $kick . '; then ' . $manual . '; fi';
     }
 
     private function testProvider(): void
@@ -1729,7 +1789,11 @@ class Api
                 $this->json(['error' => 'Unknown model mode.'], 422);
                 return;
             }
+            $previous = (string)$this->db->getSetting('model_mode', '');
             $this->db->setSetting('model_mode', $mode);
+            if ($mode !== $previous && $mode !== 'cpu_failsafe') {
+                $this->db->setSetting('cpu_fallback', '0');
+            }
         }
         if (array_key_exists('cloud_api_use', $body)) {
             $use = (string)$body['cloud_api_use'];

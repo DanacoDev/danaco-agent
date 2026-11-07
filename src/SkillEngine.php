@@ -84,7 +84,40 @@ class SkillEngine
         ];
     }
 
-    public function saveSource(string $filename, string $source, string $name, string $description, bool $active, string $createdBy = 'user'): array
+    public function testCall(array $call, string $projectFolder): string
+    {
+        $name = strtolower(trim((string)($call['name'] ?? $call['skill'] ?? '')));
+        if (!preg_match('/^[a-z][a-z0-9_-]{0,40}$/', $name)) {
+            return 'Name the skill to test. name is the skill in the Skills library.';
+        }
+        $skill = $this->db->skillByName($name);
+        if (!$skill) {
+            $this->sync();
+            $skill = $this->db->skillByName($name);
+        }
+        if (!$skill) {
+            return 'No skill named ' . $name . '. Register it with write_skill, then test it again.';
+        }
+        if ($projectFolder === '') {
+            return 'Open a project before testing a skill. The skill runs in that project folder.';
+        }
+        try {
+            $result = $this->run($name, $this->testInput($call), $projectFolder, true);
+        } catch (Throwable $e) {
+            return 'Skill ' . $name . ' did not run. ' . $e->getMessage();
+        }
+        $stdout = $result['stdout'] !== '' ? $result['stdout'] : '(empty)';
+        $text = 'Tested ' . $name . ".\nexit " . $result['exit_code'] . "\nstdout:\n" . $stdout;
+        if ($result['stderr'] !== '') {
+            $text .= "\nstderr:\n" . $result['stderr'];
+        }
+        if (!(int)$skill['is_active']) {
+            $text .= "\nThis skill is turned off, so a later call by name will not run it until it is enabled.";
+        }
+        return $text;
+    }
+
+    public function saveSource(string $filename, string $source, string $name, string $description, bool $active, string $createdBy = 'user', bool $overwrite = false): array
     {
         if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,40}\.(php|py)$/', $filename)) {
             throw new InvalidArgumentException('Skill filename must be a lowercase .php or .py file.');
@@ -97,6 +130,19 @@ class SkillEngine
         }
         $description = trim($description) !== '' ? trim($description) : 'No description.';
         $this->assertEditable($name, $filename);
+        $existing = $this->db->skillByName($name);
+        if ($existing && !$overwrite) {
+            throw new RuntimeException($this->existsMessage($existing));
+        }
+        foreach ($this->db->skills() as $skill) {
+            if (basename((string)($skill['script_path'] ?? '')) !== $filename) {
+                continue;
+            }
+            if ((string)($skill['name'] ?? '') === $name) {
+                continue;
+            }
+            throw new RuntimeException($filename . ' already belongs to skill ' . $skill['name'] . '. It was not changed. Use another filename, or call write_skill with the name ' . $skill['name'] . ' and overwrite true to replace that skill.');
+        }
         if (!preg_match('/---\s*\n.*?name:.*?description:.*?\n(?:#\s*)?---/s', $source)) {
             $header = "---\nname: {$name}\ndescription: {$description}\n---\n";
             if (str_ends_with($filename, '.php')) {
@@ -121,7 +167,17 @@ class SkillEngine
             $this->restoreSkillFile($path, $hadFile ? $previous : null);
             throw $e;
         }
-        return $this->db->saveSkill($name, $this->oneLine($description), $filename, $active, $createdBy);
+        $saved = $this->db->saveSkill($name, $this->oneLine($description), $filename, $active, $createdBy);
+        if ($existing) {
+            $previousFile = basename((string)($existing['script_path'] ?? ''));
+            if ($previousFile !== '' && $previousFile !== $filename) {
+                $old = $this->dataDir . '/skills/' . $previousFile;
+                if (is_file($old)) {
+                    unlink($old);
+                }
+            }
+        }
+        return $saved;
     }
 
     public function deleteOwned(int $id): void
@@ -163,6 +219,27 @@ class SkillEngine
             }
         }
         return ['name' => $name, 'description' => $description];
+    }
+
+    private function testInput(array $call): array
+    {
+        if (array_key_exists('input', $call)) {
+            return $this->testObject($call['input']);
+        }
+        if (array_key_exists('args', $call)) {
+            return $this->testObject($call['args']);
+        }
+        unset($call['name'], $call['skill']);
+        return $call;
+    }
+
+    private function testObject(mixed $value): array
+    {
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            return is_array($decoded) ? $decoded : [];
+        }
+        return is_array($value) ? $value : [];
     }
 
     private function withSource(array $skills): array
@@ -270,13 +347,21 @@ class SkillEngine
     {
         $existing = $this->db->skillByName($name);
         if ($existing && (string)($existing['created_by'] ?? '') === 'system') {
-            throw new RuntimeException('Built-in skills can only be turned on or off.');
+            throw new RuntimeException('Skill ' . $name . ' is built in and cannot be replaced. It can only be turned on or off.');
         }
         foreach ($this->db->skills() as $skill) {
             if ((string)($skill['created_by'] ?? '') === 'system' && basename((string)$skill['script_path']) === $filename) {
-                throw new RuntimeException('Built-in skills can only be turned on or off.');
+                throw new RuntimeException('Skill ' . $skill['name'] . ' is built in and cannot be replaced. It can only be turned on or off.');
             }
         }
+    }
+
+    private function existsMessage(array $skill): string
+    {
+        $name = (string)($skill['name'] ?? '');
+        $file = basename((string)($skill['script_path'] ?? ''));
+        $description = $this->oneLine((string)($skill['description'] ?? ''));
+        return 'Skill ' . $name . ' already exists (' . $file . '): ' . $description . ' It was not changed. Pass overwrite true to replace it. A built-in skill cannot be replaced.';
     }
 
     private function scriptFile(string $scriptPath): string

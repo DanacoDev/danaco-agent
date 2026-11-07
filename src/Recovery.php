@@ -13,6 +13,11 @@ class Recovery
         $db->setSetting('recovery_hint', '0');
     }
 
+    public function releaseMemory(): int
+    {
+        return $this->unloadModels();
+    }
+
     public function repair(string $error): array
     {
         $error = trim($error);

@@ -543,7 +543,8 @@ Tools:
 - list_vault: no args. Backups and trash. Read or restore only. Never delete them.
 - read_vault: args kind (backup or trash), stored_as
 - restore_file: args kind, stored_as
-- write_skill: args name, description, filename, source. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. Cannot replace a built-in skill. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there. Delegate this to the coder. Call it yourself when the coder cannot finish.
+- write_skill: args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there. Delegate this to the coder. Call it yourself when the coder cannot finish.
+- test_skill: args name, input. Runs that skill in this project and returns the exit code, stdout, and stderr. name is the skill. input is the JSON object it reads on stdin. The skill really runs, so files it writes stay. It also runs a skill that is turned off. Use it to check a skill, including one just registered with write_skill. A skill registered in this run is not callable by its own name until a later run. Delegate the test to the coder. Call it yourself when the coder cannot finish. Open a project first.
 - soul: args action (add or remove), text. Optional persona line only: how you speak, present yourself, or a standing always/never habit. soul.md starts empty; add a line only when the user wants lasting persona behaviour. Never store project facts or subject matter here. General chat has no soul file. Open a project first.
 
 Skills, one line each:
@@ -914,6 +915,8 @@ TXT;
             'write_skill' => function (array $args): string {
                 $name = (string)($args['name'] ?? '');
                 $filename = (string)($args['filename'] ?? ($name !== '' ? $name . '.php' : ''));
+                $overwrite = in_array(strtolower(trim((string)($args['overwrite'] ?? ''))), ['1', 'true', 'yes'], true);
+                $before = $this->db->skillByName($name);
                 try {
                     $skill = $this->skills->saveSource(
                         $filename,
@@ -921,12 +924,17 @@ TXT;
                         $name,
                         (string)($args['description'] ?? ''),
                         true,
-                        'orchestrator'
+                        'orchestrator',
+                        $overwrite
                     );
                 } catch (InvalidArgumentException | RuntimeException $e) {
                     return $e->getMessage();
                 }
-                return 'Registered skill ' . $skill['name'] . ' (' . $skill['script_path'] . ') in the Skills library. It is listed on the Skills page and can be called by name, including from a scheduled task. Syntax check passed.';
+                $verb = $before ? 'Replaced' : 'Registered';
+                return $verb . ' skill ' . $skill['name'] . ' (' . $skill['script_path'] . ') in the Skills library. It is listed on the Skills page and can be called by name, including from a scheduled task. Syntax check passed. Call test_skill with name ' . $skill['name'] . ' and input set to the JSON that skill reads. Check the exit code, stdout, and stderr. This run cannot call the skill by its own name yet.';
+            },
+            'test_skill' => function (array $args) use ($folder): string {
+                return $this->skills->testCall($args, $folder);
             },
             'send_email' => function (array $args) use ($projectId, $emit, $shouldStop): string {
                 $to = trim((string)($args['to'] ?? ''));

@@ -570,6 +570,11 @@ SQL);
         $this->pdo->prepare("UPDATE jobs SET status = 'done', last_error = NULL, updated_at = datetime('now') WHERE id = ?")->execute([$id]);
     }
 
+    public function finishRunningJobs(): void
+    {
+        $this->pdo->exec("UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE status = 'running'");
+    }
+
     public function bumpJob(int $id): void
     {
         $this->pdo->prepare("UPDATE jobs SET attempts = attempts + 1, status = 'running', updated_at = datetime('now') WHERE id = ?")->execute([$id]);
