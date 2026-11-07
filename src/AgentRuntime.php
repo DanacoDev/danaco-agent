@@ -357,6 +357,7 @@ class AgentRuntime
         $retryOpen = 0;
         $repeatTries = 0;
         $fallbackTries = 0;
+        $finishChecks = 0;
         $skipCompact = false;
         for ($turn = 0; $turn < $maxTurns; $turn++) {
             if ($shouldStop && $shouldStop()) {
@@ -579,6 +580,20 @@ class AgentRuntime
             }
             $retryOpen = 0;
             if (!$tail['tools']) {
+                if ($agent === 'orchestrator' && $finishChecks < 2 && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop)) {
+                    $finishChecks++;
+                    $skipCompact = true;
+                    $replay = trim($turnText);
+                    if ($replay === '') {
+                        $replay = trim($visible);
+                    }
+                    if ($replay === '') {
+                        $replay = 'The previous reply was empty.';
+                    }
+                    $messages[] = ['role' => 'assistant', 'content' => $replay];
+                    $messages[] = ['role' => 'user', 'content' => $this->finishSteer($scheduled)];
+                    continue;
+                }
                 $this->db->setAgentStatus($agent, 'completed');
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
                 return $this->finishVisible($visible);
@@ -879,6 +894,102 @@ class AgentRuntime
         }
         $messages[] = ['role' => 'user', 'content' => $cue];
         return true;
+    }
+
+    private function finishCheckSaysContinue(array $messages, string $reply, bool $scheduled, ?callable $shouldStop): bool
+    {
+        if ($shouldStop && $shouldStop()) {
+            throw new ChatStopped('Stopped.');
+        }
+        $verdict = $this->llm->yesNo($this->finishCheckPrompt($messages, $reply, $scheduled), $shouldStop);
+        if ($shouldStop && $shouldStop()) {
+            throw new ChatStopped('Stopped.');
+        }
+        return $verdict === false;
+    }
+
+    private function finishCheckPrompt(array $messages, string $reply, bool $scheduled): string
+    {
+        $request = clip_text(trim($this->latestUserRequest($messages)), 1500);
+        $tools = $this->recentToolResults($messages);
+        $reply = clip_text(trim($reply), 1500);
+        if ($scheduled) {
+            $question = 'This is a scheduled task and nobody is here to answer. Is that task finished? Answer yes or no. yes only if the task is finished. A question to the user is no.';
+        } else {
+            $question = 'Is the job finished, or is the agent only waiting for the user? Answer yes or no. yes = the requested work is done, or the agent asked the user a real question, or it is waiting for the user to choose, including now versus scheduled. no = work is still unfinished. The last tool failed and was not fixed, or the reply describes a next step it did not take.';
+        }
+        return $question . "\n\nUser request:\n" . ($request !== '' ? $request : '(none)')
+            . "\n\nRecent tool results:\n" . ($tools !== '' ? $tools : '(none)')
+            . "\n\nAgent reply:\n" . ($reply !== '' ? $reply : '(empty)')
+            . "\n\nAnswer yes or no.";
+    }
+
+    private function latestUserRequest(array $messages): string
+    {
+        for ($i = count($messages) - 1; $i >= 0; $i--) {
+            $message = $messages[$i];
+            if (!is_array($message) || ($message['role'] ?? '') !== 'user') {
+                continue;
+            }
+            $content = ltrim((string)($message['content'] ?? ''));
+            if ($content === '' || str_starts_with($content, 'TOOL RESULT ') || $this->isRuntimeSteer($content)) {
+                continue;
+            }
+            return $content;
+        }
+        return '';
+    }
+
+    private function recentToolResults(array $messages): string
+    {
+        $found = [];
+        foreach ($messages as $message) {
+            if (!is_array($message) || ($message['role'] ?? '') !== 'user') {
+                continue;
+            }
+            $content = (string)($message['content'] ?? '');
+            if (!str_starts_with($content, 'TOOL RESULT ')) {
+                continue;
+            }
+            $found[] = $content;
+        }
+        $lines = [];
+        foreach (array_slice($found, -3) as $content) {
+            $lines[] = clip_text($content, 600);
+        }
+        return implode("\n\n", $lines);
+    }
+
+    private function isRuntimeSteer(string $content): bool
+    {
+        foreach ([
+            'Your last tool call was cut off',
+            'That reply was an empty code fence',
+            'That was not a tool call',
+            'That delegation was not run',
+            'XML tags are not a tool call',
+            'That did not register a skill',
+            'The reply stopped before the work finished',
+            'The delegated job just finished',
+            'You described a wiki or file write',
+            'You wrote the same line',
+            'You wrote this line more than five times',
+            'The job is not finished',
+            'The scheduled task is not finished',
+        ] as $prefix) {
+            if (str_starts_with($content, $prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function finishSteer(bool $scheduled): string
+    {
+        if ($scheduled) {
+            return 'The scheduled task is not finished. Nobody is here to answer. If the last tool failed, fix that call and run it again. Choose the sensible option and finish the task. Call the tool that is still needed. Do not only describe it.';
+        }
+        return 'The job is not finished. You stopped before the work was done. If the last tool failed, fix that call and run it again. If you described a next step, do it now with a real tool call. Do not only describe it.';
     }
 
     private function finishVisible(string $visible): string

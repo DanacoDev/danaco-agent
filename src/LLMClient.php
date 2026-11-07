@@ -154,6 +154,22 @@ class LLMClient
         throw $last ?? new LlmException('The model failed.', false);
     }
 
+    public function yesNo(string $prompt, ?callable $shouldStop = null): ?bool
+    {
+        try {
+            if ($shouldStop && $shouldStop()) {
+                return null;
+            }
+        } catch (Throwable $e) {
+            return null;
+        }
+        $text = $this->askYesNo($prompt, $shouldStop);
+        if ($text === null) {
+            return null;
+        }
+        return $this->readYesNo($text);
+    }
+
     private function shouldStepDown(string $error, bool $cloud): bool
     {
         if ($this->usingFailsafe) {
@@ -590,5 +606,129 @@ class LLMClient
     private function usableModel(string $name): bool
     {
         return $name !== '' && strlen($name) <= 120 && (bool)preg_match('/^[A-Za-z0-9_.:\/-]+$/', $name);
+    }
+
+    private function askYesNo(string $prompt, ?callable $shouldStop): ?string
+    {
+        $failsafe = $this->usingFailsafe;
+        $mode = $failsafe ? 'cpu_failsafe' : (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
+        $messages = [['role' => 'user', 'content' => $prompt]];
+        if (!$failsafe && $mode === 'cloud') {
+            return $this->askYesNoCloud($messages, $shouldStop);
+        }
+        $model = $mode === 'cpu_failsafe'
+            ? (string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model'])
+            : (string)$this->db->getSetting('local_model', app_config()['local_model']);
+        $base = rtrim((string)$this->db->getSetting('ollama_url', app_config()['ollama_url']), '/');
+        $payload = json_encode([
+            'model' => $model,
+            'messages' => $messages,
+            'stream' => false,
+            'think' => false,
+            'keep_alive' => '1h',
+            'options' => [
+                'num_ctx' => $this->hardware->effectiveContext($mode),
+                'num_predict' => 8,
+                'use_mmap' => true,
+                'use_mlock' => false,
+            ],
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        if (!is_string($payload) || $payload === '') {
+            return null;
+        }
+        $raw = $this->postJson($base . '/api/chat', $payload, [], $shouldStop);
+        if ($raw === null) {
+            return null;
+        }
+        $json = json_decode($raw, true);
+        if (!is_array($json)) {
+            return null;
+        }
+        $message = is_array($json['message'] ?? null) ? $json['message'] : [];
+        $content = trim((string)($message['content'] ?? ''));
+        return $content !== '' ? $content : null;
+    }
+
+    private function askYesNoCloud(array $messages, ?callable $shouldStop): ?string
+    {
+        $key = trim((string)$this->db->getSetting('cloud_api_key', ''));
+        $base = rtrim((string)$this->db->getSetting('cloud_base_url', app_config()['cloud_base_url']), '/');
+        $model = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
+        if ($key === '') {
+            return null;
+        }
+        $payload = json_encode([
+            'model' => $model,
+            'messages' => $messages,
+            'stream' => false,
+            'max_tokens' => 8,
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        if (!is_string($payload) || $payload === '') {
+            return null;
+        }
+        $raw = $this->postJson($base . '/chat/completions', $payload, [
+            'Authorization: Bearer ' . $key,
+        ], $shouldStop);
+        if ($raw === null) {
+            return null;
+        }
+        $json = json_decode($raw, true);
+        if (!is_array($json)) {
+            return null;
+        }
+        $content = trim((string)($json['choices'][0]['message']['content'] ?? ''));
+        return $content !== '' ? $content : null;
+    }
+
+    private function postJson(string $url, string $payload, array $headers, ?callable $shouldStop): ?string
+    {
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return null;
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER => array_merge([
+                'Content-Type: application/json',
+                'Expect:',
+            ], $headers),
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 45,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_NOPROGRESS => false,
+            CURLOPT_PROGRESSFUNCTION => function ($resource, $downloadTotal, $downloaded, $uploadTotal, $uploaded) use ($shouldStop): int {
+                try {
+                    return ($shouldStop && $shouldStop()) ? 1 : 0;
+                } catch (Throwable $e) {
+                    return 1;
+                }
+            },
+        ]);
+        $raw = curl_exec($ch);
+        $errno = curl_errno($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        unset($ch);
+        if (!is_string($raw) || $raw === '' || $errno !== 0 || $code >= 400) {
+            return null;
+        }
+        return $raw;
+    }
+
+    private function readYesNo(string $text): ?bool
+    {
+        $text = trim($text);
+        $text = preg_replace('/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*?<\/(?:think|thinking|reasoning|thought)>/i', '', $text) ?? $text;
+        $text = strtolower(trim($text));
+        $yes = preg_match_all('/\byes\b/', $text);
+        $no = preg_match_all('/\bno\b/', $text);
+        if ($yes > 0 && $no === 0) {
+            return true;
+        }
+        if ($no > 0 && $yes === 0) {
+            return false;
+        }
+        return null;
     }
 }
