@@ -857,6 +857,20 @@
         toggleLog(id) {
           this.openLogs = Object.assign({}, this.openLogs, { [id]: !this.openLogs[id] });
         },
+        scheduledText(msg) {
+          if (!msg) return '';
+          const text = String(msg.content || '').trim();
+          if (msg.agent_name === 'task' || text.startsWith('Scheduled task:')) return text;
+          if (!text.startsWith('{')) return '';
+          try {
+            const data = JSON.parse(text);
+            const inner = String(data && data.content || '').trim();
+            if (inner.startsWith('Scheduled task:')) return inner;
+          } catch (error) {
+            return '';
+          }
+          return '';
+        },
         agentLabel(name, markCpu) {
           let label = '';
           if (name === 'orchestrator' || name === 'assistant') label = 'Main agent';
@@ -1081,7 +1095,7 @@
           const index = this.messages.findIndex((item) => item.id === msg.id);
           let user = null;
           for (let i = index - 1; i >= 0; i--) {
-            if (this.messages[i].role === 'user') {
+            if (this.messages[i].role === 'user' && !this.scheduledText(this.messages[i])) {
               user = this.messages[i];
               break;
             }
@@ -1099,7 +1113,7 @@
             this.retryMessage(failed);
             return;
           }
-          const users = this.messages.filter((msg) => msg.role === 'user');
+          const users = this.messages.filter((msg) => msg.role === 'user' && !this.scheduledText(msg));
           const user = users[users.length - 1];
           if (!user || this.sending || this.chatLocked) return;
           this.streamError = '';
@@ -2588,6 +2602,9 @@
         async refreshModelLoad(quiet) {
           try {
             this.modelLoad = await this.api('/api/model/load', { quiet: !!quiet });
+            if (this.modelLoad && typeof this.modelLoad.cpu === 'boolean' && this.settings && this.settings.model_mode !== 'cpu_failsafe') {
+              this.settings.cpu_fallback = this.modelLoad.cpu ? '1' : '0';
+            }
             if (this.modelLoad && (this.modelLoad.ready === true || this.modelLoad.error)) {
               this.awaitingModel = false;
               this.slowReply = false;

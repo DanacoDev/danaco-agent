@@ -369,6 +369,9 @@ class AgentRuntime
                 }
             }
             $skipCompact = false;
+            $this->llm->onCpuChange = function (bool $cpu) use ($emit): void {
+                $emit(['type' => 'cpu', 'cpu' => $cpu]);
+            };
             $this->llm->restoreGpu(function (string $text) use ($emit, $projectId, $agent): void {
                 $this->db->addMessage($projectId ?? 0, 'notice', $text, $agent);
                 $emit(['type' => 'notice', 'text' => $text]);

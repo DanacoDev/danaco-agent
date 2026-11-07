@@ -28,16 +28,39 @@ class LLMClient
 
     private bool $gpuMissNoted = false;
 
+    private int $placementTries = 0;
+
+    private float $placementNext = 0;
+
     public function __construct(private Database $db, private HardwareMonitor $hardware)
     {
     }
+
+    public ?\Closure $onCpuChange = null;
 
     public function onCpu(): bool
     {
         if ($this->usingFailsafe) {
             return true;
         }
-        return (string)$this->db->getSetting('model_mode', 'cpu_failsafe') === 'cpu_failsafe';
+        if ((string)$this->db->getSetting('model_mode', 'cpu_failsafe') === 'cpu_failsafe') {
+            return true;
+        }
+        return $this->db->getSetting('cpu_fallback', '0') === '1';
+    }
+
+    public function placement(string $model): string
+    {
+        $row = $this->modelRow($model);
+        if ($row === null) {
+            return 'absent';
+        }
+        return (int)($row['size_vram'] ?? 0) > 0 ? 'gpu' : 'cpu';
+    }
+
+    public function releaseModel(string $model): void
+    {
+        $this->stopModel($model);
     }
 
     public function restoreGpu(?callable $onNote = null): void
@@ -46,18 +69,23 @@ class LLMClient
         if ($mode !== 'local') {
             return;
         }
-        $fallback = $this->usingFailsafe || $this->db->getSetting('cpu_fallback', '0') === '1';
-        if (!$fallback) {
-            return;
-        }
         $model = trim((string)$this->db->getSetting('local_model', app_config()['local_model']));
         if (!$this->usableModel($model)) {
             return;
         }
-        if ($this->modelOnGpu($model)) {
-            $this->leaveFailsafe();
-            $this->sayGpu($onNote, 'The GPU model is loaded. Continuing with it.');
+        $place = $this->placement($model);
+        if ($place === 'gpu') {
+            if ($this->usingFailsafe || $this->db->getSetting('cpu_fallback', '0') === '1') {
+                $this->leaveFailsafe();
+                $this->sayGpu($onNote, 'The GPU model is loaded. Continuing with it.');
+            }
             return;
+        }
+        if ($place !== 'cpu' && !$this->usingFailsafe && $this->db->getSetting('cpu_fallback', '0') !== '1') {
+            return;
+        }
+        if ($place === 'cpu') {
+            $this->markCpu(true);
         }
         if (microtime(true) < $this->gpuRestoreNotBefore) {
             return;
@@ -65,13 +93,18 @@ class LLMClient
         $this->gpuRestoreNotBefore = microtime(true) + 180;
         $this->sayGpu($onNote, 'Loading the GPU model again.');
         if (!$this->loadOntoGpu($model)) {
-            $failsafeModel = trim((string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model']));
-            if (!$this->sameModel($failsafeModel, $model)) {
-                $this->stopModel($model);
+            $this->markCpu(true);
+            if ($this->usingFailsafe) {
+                $failsafeModel = trim((string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model']));
+                if (!$this->sameModel($failsafeModel, $model)) {
+                    $this->stopModel($model);
+                }
             }
             if (!$this->gpuMissNoted) {
                 $this->gpuMissNoted = true;
-                $this->sayGpu($onNote, 'The GPU model is still on the CPU. Continuing with the CPU failsafe.');
+                $this->sayGpu($onNote, $this->usingFailsafe
+                    ? 'The GPU model is still on the CPU. Continuing with the CPU failsafe.'
+                    : 'The local model is running on the CPU.');
             }
             return;
         }
@@ -178,6 +211,9 @@ class LLMClient
         $model = $mode === 'cpu_failsafe'
             ? (string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model'])
             : (string)$this->db->getSetting('local_model', app_config()['local_model']);
+        if ($mode !== 'cpu_failsafe' && $this->placement($model) === 'cpu') {
+            $this->markCpu(true);
+        }
         $base = rtrim((string)$this->db->getSetting('ollama_url', app_config()['ollama_url']), '/');
         $predict = 49152;
         $predictOverride = (int)$this->db->getSetting('recovery_num_predict', '0');
@@ -231,6 +267,8 @@ class LLMClient
         $doneReason = '';
         $thinking = '';
         $toolNames = [];
+        $this->placementTries = 0;
+        $this->placementNext = 0;
         $ch = curl_init($url);
         if ($ch === false) {
             throw new LlmException('Could not start the model request.');
@@ -247,8 +285,11 @@ class LLMClient
             CURLOPT_TIMEOUT => 0,
             CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_NOPROGRESS => false,
-            CURLOPT_PROGRESSFUNCTION => function ($resource, $downloadTotal, $downloaded, $uploadTotal, $uploaded) use ($shouldStop): int {
+            CURLOPT_PROGRESSFUNCTION => function ($resource, $downloadTotal, $downloaded, $uploadTotal, $uploaded) use ($shouldStop, $ollama, $model): int {
                 try {
+                    if ($ollama) {
+                        $this->watchPlacement($model);
+                    }
                     return ($shouldStop && $shouldStop()) ? 1 : 0;
                 } catch (ChatStopped $e) {
                     return 1;
@@ -410,7 +451,34 @@ class LLMClient
     private function leaveFailsafe(): void
     {
         $this->usingFailsafe = false;
-        $this->db->setSetting('cpu_fallback', '0');
+        $this->markCpu(false);
+    }
+
+    private function markCpu(bool $cpu): void
+    {
+        $this->db->setSetting('cpu_fallback', $cpu ? '1' : '0');
+        if ($this->onCpuChange) {
+            ($this->onCpuChange)($cpu || $this->usingFailsafe);
+        }
+    }
+
+    private function watchPlacement(string $model): void
+    {
+        if ($this->placementTries >= 3 || microtime(true) < $this->placementNext) {
+            return;
+        }
+        $this->placementTries++;
+        $this->placementNext = microtime(true) + 3;
+        $place = $this->placement($model);
+        if ($place === 'absent') {
+            return;
+        }
+        $this->placementTries = 3;
+        if ($place === 'gpu' && !$this->usingFailsafe) {
+            $this->leaveFailsafe();
+            return;
+        }
+        $this->markCpu(true);
     }
 
     private function sayGpu(?callable $onNote, string $text): void
@@ -424,31 +492,38 @@ class LLMClient
 
     private function modelOnGpu(string $model): bool
     {
-        $json = $this->ollamaCall('GET', '/api/ps', null, 4);
+        return $this->placement($model) === 'gpu';
+    }
+
+    private function modelRow(string $model): ?array
+    {
+        $json = $this->ollamaCall('GET', '/api/ps', null, 2);
         if ($json === null) {
-            return false;
+            return null;
         }
         foreach ($json['models'] ?? [] as $row) {
             if (!is_array($row)) {
                 continue;
             }
             $name = (string)($row['name'] ?? $row['model'] ?? '');
-            if (!$this->sameModel($name, $model)) {
-                continue;
+            if ($this->sameModel($name, $model)) {
+                return $row;
             }
-            return (int)($row['size_vram'] ?? 0) > 0;
         }
-        return false;
+        return null;
     }
 
     private function loadOntoGpu(string $model): bool
     {
+        if ($this->placement($model) === 'cpu') {
+            $this->stopModel($model);
+        }
         $payload = json_encode([
             'model' => $model,
             'prompt' => 'hi',
             'stream' => false,
             'keep_alive' => '1h',
-            'options' => ['num_predict' => 1],
+            'options' => ['num_predict' => 1, 'num_gpu' => 999],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if (!is_string($payload)) {
             return false;

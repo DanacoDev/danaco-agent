@@ -2101,7 +2101,10 @@ class Api
 
     private function modelLoad(): void
     {
-        $this->json($this->modelLoadStatus());
+        $status = $this->modelLoadStatus();
+        $mode = (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
+        $status['cpu'] = $mode === 'cpu_failsafe' || $this->db->getSetting('cpu_fallback', '0') === '1';
+        $this->json($status);
     }
 
     private function modelLoadStatus(): array
@@ -2124,6 +2127,20 @@ class Api
             return ['ready' => false, 'percent' => 0, 'model' => '', 'error' => 'No local model is selected.', 'scratch' => true];
         }
         $running = $this->ollamaModelRunning($model);
+        if ($running === true && $mode === 'local') {
+            $place = app_services()['llm']->placement($model);
+            if ($place === 'gpu') {
+                $this->db->setSetting('cpu_fallback', '0');
+            } elseif ($place === 'cpu') {
+                $this->db->setSetting('cpu_fallback', '1');
+                $tried = (int)$this->db->getSetting('gpu_reload_at', '0');
+                if (!$this->db->modelInUse() && time() - $tried >= 180) {
+                    $this->db->setSetting('gpu_reload_at', (string)time());
+                    app_services()['llm']->releaseModel($model);
+                    $running = false;
+                }
+            }
+        }
         if ($running === true) {
             $this->rememberModelWarm($model);
             $this->clearModelLoad();
@@ -2232,12 +2249,16 @@ class Api
             $blank['error'] = 'Could not start loading the model.';
             return $blank;
         }
+        $options = ['num_predict' => 1];
+        if ((string)$this->db->getSetting('model_mode', '') === 'local') {
+            $options['num_gpu'] = 999;
+        }
         $payload = json_encode([
             'model' => $model,
             'prompt' => 'hi',
             'stream' => true,
             'keep_alive' => '1h',
-            'options' => ['num_predict' => 1],
+            'options' => $options,
         ]);
         $log = app_config()['data_dir'] . '/model-load.log';
         $cmd = 'curl -sN --max-time 1800 -H ' . escapeshellarg('Content-Type: application/json')

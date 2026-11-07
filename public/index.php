@@ -212,6 +212,7 @@ header('X-Danaco: 1');
               <div ref="transcript" class="transcript" :style="{ fontSize: chatFontPx + 'px' }" @scroll="onTranscriptScroll" @click="onTranscriptClick">
                 <template v-for="msg in messages" :key="msg.id">
                 <p v-if="msg.role==='notice'" class="context-note">{{ msg.content }}</p>
+                <p v-else-if="scheduledText(msg)" class="context-note">{{ scheduledText(msg) }}</p>
                 <article v-else class="bubble" :class="msg.role">
                   <div v-if="msg.role==='tool'" class="tool-line">{{ agentLabel(msg.agent_name, showCpu) }} · {{ msg.content }}</div>
                   <template v-else>

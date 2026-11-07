@@ -42,7 +42,7 @@ class Heartbeat
             ], (int)$task['id']);
             $this->db->updateTask((int)$task['id'], ['status' => 'in_progress']);
             $message = "Scheduled task: {$task['title']}\n\n" . (string)($task['description'] ?? '');
-            $this->db->addMessage($projectId, 'user', $message, 'human');
+            $this->db->addMessage($projectId, 'user', $message, 'task');
         } else {
             $this->db->deleteLatestFailed($projectId);
         }
