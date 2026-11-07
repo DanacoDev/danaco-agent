@@ -469,9 +469,9 @@ TXT;
 - list_files: args path, optional. Lists this project's files.
 - read_file: args path. Any file in this project, including the wiki.
 - read_pdf: args path. Reads the text of a PDF in this project.
-- write_file: args path, content. Creates or overwrites a file in this project. Markdown belongs in wiki/. A skill is not a project file. Use write_skill.
+- write_file: args path, content. Creates or overwrites a file in this project. It can create folders in the path. Markdown belongs in wiki/. A skill is not a project file. Use write_skill.
 - delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.
-- move_file: args from, to. Moves a file or folder inside this project.
+- move_file: args from, to. Moves a file or folder inside this project. It can create folders in the path.
 A PDF is not written in this chat. Delegate it to the writer with the file name and the brief. The coder does not make PDFs.
 
 TXT;
@@ -483,9 +483,9 @@ TXT;
 - list_files: args path. A full path, such as /Users/name. Lists that folder.
 - read_file: args path. A full path to a file.
 - read_pdf: args path. A full path to a PDF.
-- write_file: args path, content. A full path. Creates or overwrites that file.
+- write_file: args path, content. A full path. Creates or overwrites that file. It can create folders in the path.
 - delete_file: args path. A full path. Moves that file or folder to the trash.
-- move_file: args from, to. Both full paths.
+- move_file: args from, to. Both full paths. It can create folders in the path.
 - run_command: args command. May use sudo.
 
 TXT;

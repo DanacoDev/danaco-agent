@@ -59,7 +59,7 @@ RULES:
 4. When the work reaches conclusions, write or edit the matching wiki file before you finish. Update that file again if later conclusions change it.
 5. For an article, guide, or other piece the user will read, run write_article before you draft. Follow its five steps in order and save the wiki file after each one. Do not present the article until the spelling pass is saved.
 6. For other user-facing prose, run humanizer before you finish. Pass text, or path when the draft is already a file. Pass voice or voice_path when the user gave a sample of their writing. Rewrite from that checklist, then save.
-7. When the task is a PDF, call create_pdf with the finished text. Reply with the path the tool wrote, alone on a line. If it kept the old file and saved a new copy, say so. Do not repeat the document.
+7. When the task is a PDF, call create_pdf with the finished text. Put the file in docs/ unless another folder was requested. Reply with the path the tool wrote, alone on a line. If it kept the old file and saved a new copy, say so. Do not repeat the document.
 8. When the piece needs a figure, icon, or infographic, run make_graphic before you draw. Pass kind, subject, and path. Write the file, then cite that path alone on a line.
 TXT;
 

@@ -141,10 +141,10 @@ TXT;
         $toolLines = [
             '- read_file: args path. Any file in this project, including the wiki.',
             '- read_pdf: args path. Reads the text of a PDF in this project.',
-            '- create_pdf: args path, text. Writes a PDF in this project. path ends in .pdf and is not in wiki/. Headings and asterisks are typeset for you. An existing file is kept, and the new one is saved as the next free name, such as document2.pdf. Cite the path the tool wrote, alone on a line. Do not repeat the document.',
-            '- write_file: args path, content. Creates or overwrites a file in this project. Markdown belongs in wiki/. A skill is not a project file. The coder uses write_skill.',
+            '- create_pdf: args path, text. Writes a PDF in this project. Put the file in docs/ unless another folder was requested. path ends in .pdf and is not in wiki/. Headings and asterisks are typeset for you. An existing file is kept, and the new one is saved as the next free name, such as document2.pdf. Cite the path the tool wrote, alone on a line. Do not repeat the document.',
+            '- write_file: args path, content. Creates or overwrites a file in this project. It can create folders in the path. Markdown belongs in wiki/. A skill is not a project file. The coder uses write_skill.',
             '- delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.',
-            '- move_file: args from, to. Moves a file or folder to another path in this project.',
+            '- move_file: args from, to. Moves a file or folder to another path in this project. It can create folders in the path.',
             '- list_files: args path, optional',
             '- list_vault: no args. Backups and trash you can read or restore.',
             '- read_vault: args kind (backup or trash), stored_as',
