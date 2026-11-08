@@ -22,6 +22,10 @@ class LLMClient
 
     public bool $incomplete = false;
 
+    public bool $ranOut = false;
+
+    public bool $brief = false;
+
     public bool $usingFailsafe = false;
 
     private float $gpuRestoreNotBefore = 0;
@@ -33,6 +37,8 @@ class LLMClient
     private float $placementNext = 0;
 
     private array $fitCache = [];
+
+    private bool $omitThink = false;
 
     public function __construct(private Database $db, private HardwareMonitor $hardware)
     {
@@ -341,17 +347,21 @@ class LLMClient
     private function attempt(array $messages, callable $onToken, ?callable $shouldStop, ?callable $onThinking = null, bool $cloud = false, string $agent = '', bool $failsafe = false): string
     {
         $this->incomplete = false;
+        $this->ranOut = false;
+        $brief = $this->brief;
+        $this->brief = false;
         $mode = $failsafe ? 'cpu_failsafe' : (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
         $numCtx = $this->hardware->effectiveContext($mode);
-        if ($this->db->getSetting('recovery_hint', '0') === '1') {
+        if (!$brief && $this->db->getSetting('recovery_hint', '0') === '1') {
             $hint = $agent === 'orchestrator'
-                ? 'The reply ran out of room while thinking, so this pass has more room. Finish the thought, then write the answer or the tool call.'
-                : 'The reply ran out of room while thinking, so this pass has more room. Finish the thought, then write the answer.';
+                ? 'The reply ran out of room while thinking. Keep this reply short. Do not restate the plan. Split the remaining work into smaller tasks and delegate the next one. One tool call, then stop.'
+                : 'The reply ran out of room while thinking. Keep this reply short. Do one small step and call the tool. Then stop.';
             $messages[] = ['role' => 'user', 'content' => $hint];
             $this->db->setSetting('recovery_hint', '0');
+            $brief = true;
         }
         if (!$failsafe && ($cloud || $mode === 'cloud')) {
-            return $this->streamOpenAi($messages, $onToken, $shouldStop, $onThinking);
+            return $this->streamOpenAi($messages, $onToken, $shouldStop, $onThinking, $brief);
         }
         $model = $mode === 'cpu_failsafe'
             ? (string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model'])
@@ -361,9 +371,13 @@ class LLMClient
         }
         $base = rtrim((string)$this->db->getSetting('ollama_url', app_config()['ollama_url']), '/');
         $predict = 65536;
-        $predictOverride = (int)$this->db->getSetting('recovery_num_predict', '0');
-        if ($predictOverride >= 256) {
-            $predict = $predictOverride;
+        if ($brief) {
+            $predict = 4096;
+        } else {
+            $predictOverride = (int)$this->db->getSetting('recovery_num_predict', '0');
+            if ($predictOverride >= 256) {
+                $predict = $predictOverride;
+            }
         }
         $options = [
             'num_ctx' => $numCtx,
@@ -374,20 +388,33 @@ class LLMClient
         if ($mode === 'local' && $this->wholeModelOnGpu($model)) {
             $options['num_gpu'] = 999;
         }
-        $payload = json_encode([
+        $body = [
             'model' => $model,
             'messages' => $messages,
             'stream' => true,
             'keep_alive' => '1h',
             'options' => $options,
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        ];
+        if ($brief && !$this->omitThink) {
+            $body['think'] = false;
+        }
+        $payload = json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (!is_string($payload) || $payload === '') {
             throw new LlmException('The model request could not be encoded.', false);
         }
-        return $this->curlStream($base . '/api/chat', $payload, [], $onToken, true, $base, $model, $shouldStop, $onThinking);
+        try {
+            return $this->curlStream($base . '/api/chat', $payload, [], $onToken, true, $base, $model, $shouldStop, $onThinking);
+        } catch (LlmException $e) {
+            if (array_key_exists('think', $body) && $body['think'] === false && str_contains(strtolower($e->getMessage()), 'think')) {
+                $this->omitThink = true;
+                $this->brief = true;
+                return $this->attempt($messages, $onToken, $shouldStop, $onThinking, $cloud, $agent, $failsafe);
+            }
+            throw $e;
+        }
     }
 
-    private function streamOpenAi(array $messages, callable $onToken, ?callable $shouldStop, ?callable $onThinking = null): string
+    private function streamOpenAi(array $messages, callable $onToken, ?callable $shouldStop, ?callable $onThinking = null, bool $brief = false): string
     {
         $key = trim((string)$this->db->getSetting('cloud_api_key', ''));
         $base = rtrim((string)$this->db->getSetting('cloud_base_url', app_config()['cloud_base_url']), '/');
@@ -395,11 +422,15 @@ class LLMClient
         if ($key === '') {
             throw new LlmException('Cloud model mode needs an API key in Setup.');
         }
-        $payload = json_encode([
+        $request = [
             'model' => $model,
             'messages' => $messages,
             'stream' => true,
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        ];
+        if ($brief) {
+            $request['max_tokens'] = 4096;
+        }
+        $payload = json_encode($request, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (!is_string($payload) || $payload === '') {
             throw new LlmException('The model request could not be encoded.', false);
         }
@@ -478,8 +509,12 @@ class LLMClient
                     if (isset($json['error'])) {
                         $errorBody .= is_string($json['error']) ? $json['error'] : json_encode($json['error']);
                     }
-                    if (isset($json['done_reason']) && is_string($json['done_reason'])) {
+                    if (isset($json['done_reason']) && is_string($json['done_reason']) && $json['done_reason'] !== '') {
                         $doneReason = $json['done_reason'];
+                    }
+                    $finish = $json['choices'][0]['finish_reason'] ?? null;
+                    if (is_string($finish) && $finish !== '') {
+                        $doneReason = $finish;
                     }
                     $message = is_array($json['message'] ?? null) ? $json['message'] : [];
                     $thought = (string)($message['thinking'] ?? $message['reasoning'] ?? '');
@@ -563,6 +598,11 @@ class LLMClient
             throw new LlmException('Model ' . $model . ' failed: ' . $detail, $retryable);
         }
         if (trim($full) === '') {
+            if ($doneReason === 'length') {
+                $this->incomplete = true;
+                $this->ranOut = true;
+                return '';
+            }
             throw new LlmException($this->emptyAnswer($model, $doneReason, $thinking, $toolNames), false);
         }
         if ($doneReason === 'length') {

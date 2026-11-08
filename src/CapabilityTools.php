@@ -601,7 +601,7 @@ class CapabilityTools
 
     private function fetchUrl(string $url): string
     {
-        $url = trim($url);
+        $url = $this->normalizeUrl($url);
         $parts = parse_url($url);
         $scheme = strtolower((string)($parts['scheme'] ?? ''));
         $host = (string)($parts['host'] ?? '');
@@ -624,11 +624,19 @@ class CapabilityTools
         if ($this->db->getSetting('headless_browser', '0') !== '1') {
             return 'The headless browser is off, so that page cannot be opened.';
         }
+        $url = $this->normalizeUrl($url);
         $html = Sight::page($url);
         if ($html === '' || !str_contains($html, '<')) {
             return $html !== '' ? $html : 'The page returned nothing.';
         }
         return $this->pageText($html, $url, true);
+    }
+
+    private function normalizeUrl(string $url): string
+    {
+        $url = trim($url);
+        $url = str_replace('\\/', '/', $url);
+        return str_replace('\\', '', $url);
     }
 
     private function pageText(string $html, string $pageUrl, bool $rendered = false): string

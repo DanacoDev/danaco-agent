@@ -561,7 +561,8 @@ class AgentRuntime
             $proseTools = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->announcedToolsWithoutCall($turnText);
             $emptyFences = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->emptyPayloadFences($turnText);
             if (!$tail['tools'] && ($cutOff || $this->llm->incomplete || $proseTools || $emptyFences)) {
-                if ($retryOpen >= 5) {
+                $ranOut = $this->llm->ranOut;
+                if ($retryOpen >= 5 && !$ranOut) {
                     if ($emptyFences) {
                         throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
                     }
@@ -569,9 +570,14 @@ class AgentRuntime
                         ? 'The model kept naming tools without calling them.'
                         : 'The tool call was cut off before it finished.');
                 }
-                $retryOpen++;
+                if (!$ranOut) {
+                    $retryOpen++;
+                }
                 $skipCompact = true;
                 $replay = $turnText;
+                if ($ranOut && trim($replay) === '') {
+                    $replay = 'The previous reply used the whole output limit while thinking and wrote nothing.';
+                }
                 if ($emptyFences && !$cutOff) {
                     $replay = trim($this->stripLeakedThink($turnText));
                     if ($replay === '' || preg_match('/^\s*```[A-Za-z0-9_+-]*\s*$/', $replay)) {
@@ -594,11 +600,20 @@ class AgentRuntime
                     } elseif ($this->claimedFileWriteWithoutCall($turnText)) {
                         $prompt = $this->claimedWriteRetryPrompt($turnText);
                     }
+                } elseif ($ranOut) {
+                    $prompt = $agent === 'orchestrator'
+                        ? 'That reply used the whole output limit while thinking and wrote nothing. Keep this reply short. Do not restate the plan. Split the remaining work into smaller tasks and delegate the next one. One tool call, then stop.'
+                        : 'That reply used the whole output limit while thinking and wrote nothing. Keep this reply short. Do one small step and call the tool. Then stop.';
+                    $this->llm->brief = true;
+                    $note = 'The reply ran out of room while thinking. Continuing with a shorter step.';
+                    $this->db->addMessage($projectId ?? 0, 'notice', $note, $agent);
+                    $emit(['type' => 'notice', 'text' => $note]);
                 } else {
                     $prompt = 'The reply stopped before the work finished. Continue that same task. If a tool still needs to run, call it now.';
                 }
                 $messages[] = ['role' => 'user', 'content' => $prompt];
                 $this->llm->incomplete = false;
+                $this->llm->ranOut = false;
                 continue;
             }
             $retryOpen = 0;
@@ -651,7 +666,7 @@ class AgentRuntime
                 $this->db->setAgentStatus($agent, 'executing_tool');
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'executing_tool']);
                 $emit(['type' => 'tool_call', 'agent' => $agent, 'name' => $tool['name'], 'args' => $tool['args']]);
-                $this->db->logAgent($agent, $projectId, 'tool_call', $tool['name'] . ' ' . json_encode($tool['args'], JSON_UNESCAPED_UNICODE));
+                $this->db->logAgent($agent, $projectId, 'tool_call', $tool['name'] . ' ' . json_encode($tool['args'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
                 try {
                     if (!isset($toolHandlers[$tool['name']])) {
                         $result = agent_error($agent, 'Unknown tool: ' . $tool['name']);
@@ -993,6 +1008,7 @@ class AgentRuntime
             'XML tags are not a tool call',
             'That did not register a skill',
             'The reply stopped before the work finished',
+            'That reply used the whole output limit',
             'The delegated job just finished',
             'You described a wiki or file write',
             'You wrote the same line',

@@ -47,7 +47,7 @@ class Recovery
         if ($this->isLength($error)) {
             $this->moreRoom();
             $this->db->setSetting('recovery_hint', '1');
-            $notes[] = 'The reply ran out of room while thinking. Trying again with more room.';
+            $notes[] = 'The reply ran out of room while thinking. Trying again with a shorter step.';
             $retry = true;
         }
         if ($this->stoppedWhileThinking($error)) {
