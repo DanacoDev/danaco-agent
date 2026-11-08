@@ -29,10 +29,36 @@ class Projects
         return $folder . '_desc.md';
     }
 
+    public static function folderFromName(string $name): string
+    {
+        $folder = strtolower(trim($name));
+        $folder = preg_replace('/[^a-z0-9]+/', '-', $folder) ?? '';
+        $folder = trim($folder, '-');
+        if (strlen($folder) > 64) {
+            $folder = rtrim(substr($folder, 0, 64), '-');
+        }
+        return self::sanitizeFolder($folder);
+    }
+
+    public static function renameLine(array $project): string
+    {
+        $from = trim((string)($project['former_name'] ?? ''));
+        $to = trim((string)($project['name'] ?? ''));
+        if ($from === '' || $to === '' || $from === $to) {
+            return '';
+        }
+        $folder = trim((string)($project['folder_name'] ?? ''));
+        $line = 'This project was renamed from ' . $from . ' to ' . $to . '.';
+        if ($folder !== '') {
+            $line .= ' The folder is ' . $folder . ' and the description file is wiki/' . self::descFile($folder) . '.';
+        }
+        return $line . ' Do not use the old name.';
+    }
+
     public static function wikiRelative(string $folder, string $name): string
     {
         $name = basename(str_replace('\\', '/', trim($name)));
-        if ($name === '') {
+        if ($name === '' || preg_match('/_desc\.md$/i', $name)) {
             $name = self::descFile($folder);
         }
         if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md$/', $name)) {
@@ -248,6 +274,149 @@ class Projects
         } catch (Throwable $e) {
         }
         return $project;
+    }
+
+    public static function rename(Database $db, int $id, string $name): ?array
+    {
+        $name = trim($name);
+        if ($name === '' || strlen($name) > 120) {
+            throw new InvalidArgumentException('Project name is required.');
+        }
+        $project = $db->project($id);
+        if (!$project) {
+            return null;
+        }
+        $oldName = (string)$project['name'];
+        $oldFolder = (string)$project['folder_name'];
+        $newFolder = self::folderFromName($name);
+        $moved = false;
+        if ($newFolder !== $oldFolder) {
+            $other = $db->projectByFolder($newFolder);
+            if ($other && (int)$other['id'] !== $id) {
+                throw new InvalidArgumentException('A project with that folder already exists.');
+            }
+            $from = self::root($oldFolder);
+            $to = self::root($newFolder);
+            if (!is_dir($from)) {
+                $newFolder = $oldFolder;
+            } elseif (file_exists($to)) {
+                throw new InvalidArgumentException('A project with that folder already exists.');
+            } elseif (!rename($from, $to)) {
+                throw new RuntimeException('Could not rename the project folder.');
+            } else {
+                $moved = true;
+                try {
+                    self::renameDescFile($newFolder, $oldFolder);
+                } catch (Throwable $e) {
+                    self::rollbackMove($oldFolder, $newFolder);
+                    throw $e;
+                }
+            }
+        }
+        $former = null;
+        if ($name !== $oldName) {
+            $former = $oldName;
+        } elseif ($moved) {
+            $heading = self::descTitle($newFolder);
+            if ($heading !== '' && strcasecmp($heading, $name) !== 0) {
+                $former = $heading;
+            }
+        }
+        try {
+            $updated = $db->renameProject($id, $name, $moved ? $newFolder : null, $former);
+        } catch (PDOException $e) {
+            self::rollbackMove($oldFolder, $newFolder);
+            throw new RuntimeException('Could not rename the project.');
+        }
+        if (!$updated) {
+            self::rollbackMove($oldFolder, $newFolder);
+            return null;
+        }
+        self::retitleDesc($updated['folder_name'], $name, [$oldName, (string)$former, $oldFolder, ucfirst($oldFolder)]);
+        if ($moved) {
+            self::removeIndex($oldFolder);
+        }
+        self::syncIndexName($updated);
+        try {
+            app_services()['memory']->reindex();
+        } catch (Throwable $e) {
+        }
+        return $updated;
+    }
+
+    private static function renameDescFile(string $folder, string $oldFolder): void
+    {
+        if ($oldFolder === $folder) {
+            return;
+        }
+        $wiki = self::root($folder) . '/wiki';
+        $from = $wiki . '/' . $oldFolder . '_desc.md';
+        $to = $wiki . '/' . self::descFile($folder);
+        if (!is_file($from) || is_file($to)) {
+            return;
+        }
+        if (!rename($from, $to)) {
+            throw new RuntimeException('Could not rename the project description.');
+        }
+    }
+
+    private static function rollbackMove(string $oldFolder, string $newFolder): void
+    {
+        if ($oldFolder === $newFolder) {
+            return;
+        }
+        $from = self::root($newFolder);
+        $to = self::root($oldFolder);
+        if (!is_dir($from) || file_exists($to)) {
+            return;
+        }
+        $wiki = $from . '/wiki';
+        $descFrom = $wiki . '/' . self::descFile($newFolder);
+        $descTo = $wiki . '/' . $oldFolder . '_desc.md';
+        if (is_file($descFrom) && !is_file($descTo)) {
+            @rename($descFrom, $descTo);
+        }
+        @rename($from, $to);
+    }
+
+    private static function descTitle(string $folder): string
+    {
+        $path = self::root($folder) . '/wiki/' . self::descFile($folder);
+        if (!is_file($path)) {
+            return '';
+        }
+        $text = (string)file_get_contents($path);
+        $parts = preg_split('/\R/', $text, 2);
+        $line = trim((string)(is_array($parts) ? $parts[0] : ''));
+        if (!str_starts_with($line, '# ')) {
+            return '';
+        }
+        $title = trim(substr($line, 2));
+        if ($title === '' || strcasecmp($title, 'Project wiki') === 0) {
+            return '';
+        }
+        return $title;
+    }
+
+    private static function retitleDesc(string $folder, string $newName, array $previous): void
+    {
+        $path = self::root($folder) . '/wiki/' . self::descFile($folder);
+        if (!is_file($path)) {
+            return;
+        }
+        $text = (string)file_get_contents($path);
+        foreach ($previous as $old) {
+            $old = trim((string)$old);
+            if ($old === '' || $old === $newName) {
+                continue;
+            }
+            $heading = '# ' . $old;
+            if ($text !== $heading && !str_starts_with($text, $heading . "\n") && !str_starts_with($text, $heading . "\r\n")) {
+                continue;
+            }
+            file_put_contents($path, '# ' . $newName . substr($text, strlen($heading)));
+            return;
+        }
     }
 
     public static function appendIndex(array $project): void

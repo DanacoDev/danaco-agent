@@ -12,7 +12,7 @@ class SafetyInterceptor
         if ($this->machinePath($relativePath)) {
             return $this->writeMachine($relativePath, $content);
         }
-        $relativePath = $this->projectPath($projectFolder, $relativePath);
+        $relativePath = $this->descriptionPath($projectFolder, $this->projectPath($projectFolder, $relativePath));
         $this->rejectProjectSkill($relativePath);
         if (!str_starts_with($relativePath, 'uploads/')) {
             $this->assertMarkdownLocation($relativePath);
@@ -138,7 +138,7 @@ class SafetyInterceptor
             }
             return $this->readText($target, $max);
         }
-        $relativePath = $this->projectPath($projectFolder, $relativePath);
+        $relativePath = $this->descriptionPath($projectFolder, $this->projectPath($projectFolder, $relativePath));
         $target = $this->resolveInside($this->projectRoot($projectFolder), $relativePath, false);
         if (!is_file($target)) {
             throw new RuntimeException('File not found.');
@@ -881,6 +881,15 @@ class SafetyInterceptor
             app_services()['memory']->reindex();
         } catch (Throwable $e) {
         }
+    }
+
+    private function descriptionPath(string $projectFolder, string $relativePath): string
+    {
+        $leaf = basename(str_replace('\\', '/', $relativePath));
+        if (!preg_match('/_desc\.md$/i', $leaf)) {
+            return $relativePath;
+        }
+        return Projects::wikiRelative($projectFolder, $leaf);
     }
 
     private function projectPath(string $projectFolder, string $relativePath): string

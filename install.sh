@@ -140,6 +140,11 @@ bash "$ROOT/bin/ensure-php.sh" || deps=$?
 if [[ "$deps" -ne 0 && "$deps" -ne 10 ]]; then
   exit 1
 fi
+cdeps=0
+bash "$ROOT/bin/ensure-chromium.sh" || cdeps=$?
+if [[ "$cdeps" -ne 0 && "$cdeps" -ne 10 ]]; then
+  exit 1
+fi
 
 echo
 echo "Hardware"

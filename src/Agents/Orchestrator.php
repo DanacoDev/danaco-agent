@@ -437,11 +437,15 @@ The user creates projects manually from the menu. You cannot create one. If the 
 TXT;
         } else {
             $folder = $project['folder_name'];
+            $rename = Projects::renameLine($project);
+            if ($rename !== '') {
+                $rename .= "\n";
+            }
             $context = <<<TXT
 Assigned project folder: {$folder}
 Assigned project name: {$project['name']}
-Store project markdown only in {$folder}/wiki/. The description file is wiki/{$folder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file in that folder, such as wiki/research.md, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file and not on the kanban.
-When you create or cite a file, put its path alone on a line, such as wiki/notes.md or report.pdf. The chat adds a download button at the top right of that line.
+{$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/{$folder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file in that folder, such as wiki/research.md, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file and not on the kanban.
+When you create or cite a file, put its path alone on a line, such as wiki/notes.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat.
 When this chat settles conclusions, decisions, or facts worth keeping, read the matching wiki file and then write or edit it with wiki_write before you finish. Keep doing this as the chat continues and those conclusions change. Do not wait for the end of a long task, and do not leave the record only in the chat.
 Tag every delegation exactly as project: {$folder}
 TXT;
@@ -469,6 +473,8 @@ TXT;
 - list_files: args path, optional. Lists this project's files.
 - read_file: args path. Any file in this project, including the wiki.
 - read_pdf: args path. Reads the text of a PDF in this project.
+- read_image: args path, optional question. Looks at a png, jpg, gif, or webp in this project. The GPU model can see the picture, including text in it. Use it for a screenshot, scan, photo, or upload. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.
+- screenshot: args path or url, optional save, width, height. Takes a picture of a page in this project or a public page. path is an html, htm, or php file, or a folder with an index page. url is a public http or https address. Saves a png under screenshots/ unless save is set. Cite that path alone on a line so the user sees the picture. Call read_image on it when you need to see what is wrong.
 - write_file: args path, content. Creates or overwrites a file in this project. It can create folders in the path. Markdown belongs in wiki/. A skill is not a project file. Use write_skill.
 - delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.
 - move_file: args from, to. Moves a file or folder inside this project. It can create folders in the path.
@@ -483,6 +489,7 @@ TXT;
 - list_files: args path. A full path, such as /Users/name. Lists that folder.
 - read_file: args path. A full path to a file.
 - read_pdf: args path. A full path to a PDF.
+- read_image: args path, optional question. A full path to a png, jpg, gif, or webp. The GPU model can see the picture, including text in it.
 - write_file: args path, content. A full path. Creates or overwrites that file. It can create folders in the path.
 - delete_file: args path. A full path. Moves that file or folder to the trash.
 - move_file: args from, to. Both full paths. It can create folders in the path.
@@ -674,19 +681,45 @@ TXT;
         return $result;
     }
 
+    private function acceptsProjectTag(string $tagged, string $folder, string $name, string $former, int $projectId): bool
+    {
+        if ($tagged === '' || strcasecmp($tagged, $folder) === 0) {
+            return true;
+        }
+        foreach ([$name, $former] as $label) {
+            if ($label !== '' && strcasecmp($tagged, $label) === 0) {
+                return true;
+            }
+        }
+        try {
+            if ($name !== '' && strcasecmp($tagged, Projects::folderFromName($name)) === 0) {
+                return true;
+            }
+            if ($former !== '' && strcasecmp($tagged, Projects::folderFromName($former)) === 0) {
+                return true;
+            }
+        } catch (InvalidArgumentException $e) {
+        }
+        $other = $this->db->projectByFolder(strtolower($tagged));
+        return !$other || (int)$other['id'] === $projectId;
+    }
+
     private function tools(?array $project, callable $emit, int $projectId, ?callable $shouldStop): array
     {
         $folder = is_array($project) ? (string)$project['folder_name'] : '';
+        $projectName = is_array($project) ? trim((string)($project['name'] ?? '')) : '';
+        $formerName = is_array($project) ? trim((string)($project['former_name'] ?? '')) : '';
+        $shownProject = $projectName !== '' ? $projectName : $folder;
         $createdTaskIds = [];
         $tools = [
-            'delegate' => function (array $args) use ($folder, $emit, $projectId, $shouldStop, &$createdTaskIds): string {
+            'delegate' => function (array $args) use ($folder, $projectName, $formerName, $shownProject, $emit, $projectId, $shouldStop, &$createdTaskIds): string {
                 if ($folder === '') {
                     return 'General chat has no project. Tell the user to create a project manually from the menu before delegating.';
                 }
                 $agent = strtolower(trim((string)($args['agent'] ?? '')));
                 $instruction = trim((string)($args['instruction'] ?? ''));
                 $tagged = trim((string)($args['project'] ?? $folder));
-                if ($tagged !== $folder) {
+                if (!$this->acceptsProjectTag($tagged, $folder, $projectName, $formerName, $projectId)) {
                     return 'Delegation rejected. The project tag must be project: ' . $folder;
                 }
                 if (!in_array($agent, ['researcher', 'writer', 'coder', 'analyst', 'marketer'], true)) {
@@ -701,7 +734,7 @@ TXT;
                 } catch (Throwable $e) {
                     $note = '';
                 }
-                $emit(['type' => 'delegation', 'agent' => $agent, 'project' => $folder, 'text' => $instruction]);
+                $emit(['type' => 'delegation', 'agent' => $agent, 'project' => $shownProject, 'text' => $instruction]);
                 $jobId = $this->db->startJob('subagent', $projectId > 0 ? $projectId : null, [
                     'agent' => $agent,
                     'folder' => $folder,
@@ -734,7 +767,7 @@ TXT;
                     return $notice . $note;
                 }
             },
-            'consult' => function (array $args) use ($folder, $emit, $projectId, $shouldStop): string {
+            'consult' => function (array $args) use ($folder, $shownProject, $emit, $projectId, $shouldStop): string {
                 if (!$this->db->consultantActive()) {
                     $reason = (string)($this->db->consultantState()['reason'] ?? '');
                     if ($reason === 'no_key') {
@@ -746,7 +779,7 @@ TXT;
                 if ($instruction === '') {
                     return 'The Consultant needs an assignment.';
                 }
-                $emit(['type' => 'delegation', 'agent' => 'consultant', 'project' => $folder !== '' ? $folder : 'general', 'text' => $instruction]);
+                $emit(['type' => 'delegation', 'agent' => 'consultant', 'project' => $shownProject !== '' ? $shownProject : 'general', 'text' => $instruction]);
                 try {
                     return $this->subagents->consult($folder, $instruction, $emit, $projectId, $shouldStop);
                 } catch (ChatStopped $e) {
@@ -792,6 +825,20 @@ TXT;
                     return $blocked;
                 }
                 return PdfFile::readProject(new SafetyInterceptor(app_config()['data_dir']), $folder, $path);
+            },
+            'read_image' => function (array $args) use ($folder, $shouldStop): string {
+                $path = (string)($args['path'] ?? '');
+                $blocked = $this->needsProject($folder, $path, 'Open a project before looking at an image.');
+                if ($blocked !== null) {
+                    return $blocked;
+                }
+                return Sight::look(new SafetyInterceptor(app_config()['data_dir']), $folder, $path, (string)($args['question'] ?? ''), $shouldStop);
+            },
+            'screenshot' => function (array $args) use ($folder, $shouldStop): string {
+                if ($folder === '') {
+                    return 'Open a project before taking a screenshot.';
+                }
+                return Sight::shot(new SafetyInterceptor(app_config()['data_dir']), $folder, $args, $shouldStop);
             },
             'create_pdf' => function (array $args) use ($folder): string {
                 if ($folder === '') {
@@ -1130,7 +1177,7 @@ TXT;
         return match ($tool) {
             'web_search' => '- web_search: args query. You know this tool. It searches the web. Only the researcher can call it. Delegate the search to the researcher. Do not call it yourself, and do not say you cannot look something up.',
             'fetch_url' => '- fetch_url: args url. You know this tool. It opens a public web page. Only the researcher can call it. Delegate the visit to the researcher. Do not say you cannot visit a website.',
-            'browse_url' => '- browse_url: args url. You know this tool. It opens a public web page, the same as fetch_url. Only the researcher can call it. Delegate the visit to the researcher.',
+            'browse_url' => '- browse_url: args url. You know this tool. It opens a public page in the headless browser, so scripts on the page run. Only the researcher can call it. Delegate the visit to the researcher.',
             default => '',
         };
     }

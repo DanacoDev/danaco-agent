@@ -75,6 +75,7 @@ RULES:
 6. Run code_verifier on each file you write or edit, and do not finish while it reports a syntax error.
 7. For a download over 100 MB, run download_large with url and path. It resumes in the background so the chat is not held up. Call it again to check progress, and pass sha256 when the source published one.
 8. When a page needs an icon, diagram, or simple graphic, run make_graphic before you draw it. Pass kind, subject, and path. Write one svg the page uses.
+9. To see how a page looks, call screenshot, then read_image. Cite the png path alone on a line so the user sees the picture.
 TXT;
 
     public const ANALYST = <<<'TXT'

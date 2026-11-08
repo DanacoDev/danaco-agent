@@ -19,7 +19,7 @@
 
   function citedPath(line) {
     const text = String(line || '').trim().replace(/^`([^`]+)`$/, '$1');
-    if (!/^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*\.(?:md|pdf|txt|csv|json|svg|html|png|jpe?g|py|php|js|css)$/.test(text)) {
+    if (!/^(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*\.(?:md|pdf|txt|csv|json|svg|html|png|jpe?g|gif|webp|py|php|js|css)$/.test(text)) {
       return '';
     }
     if (text.indexOf('..') !== -1) return '';
@@ -42,7 +42,17 @@
     return text;
   }
 
-  function renderMarkdown(src) {
+  function citeHtml(path, folder) {
+    const button = downloadButton('data-download="' + path + '"');
+    const name = '<span class="file-cite-name">' + path + '</span>';
+    if (fileKindOf(path) === 'image' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(folder || ''))) {
+      const src = '/api/workspace/raw?scope=project&amp;folder=' + encodeURIComponent(folder) + '&amp;path=' + encodeURIComponent(path);
+      return '<div class="file-cite file-cite-image">' + button + '<img class="file-cite-shot" alt="" src="' + src + '">' + name + '</div>';
+    }
+    return '<div class="file-cite">' + button + name + '</div>';
+  }
+
+  function renderMarkdown(src, folder) {
     const fences = [];
     const cites = [];
     let text = stripLeakedThink(src)
@@ -66,7 +76,7 @@
     text = text.split('\n').map(function (line) {
       const path = citedPath(line);
       if (!path) return line;
-      cites.push('<div class="file-cite">' + downloadButton('data-download="' + path + '"') + '<span class="file-cite-name">' + path + '</span></div>');
+      cites.push(citeHtml(path, folder));
       return '@@CITE' + (cites.length - 1) + '@@';
     }).join('\n');
     text = text.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
@@ -484,7 +494,10 @@
         }
       },
       methods: {
-        md: renderMarkdown,
+        md(src) {
+          const project = this.currentProject;
+          return renderMarkdown(src, project && project.folder_name ? project.folder_name : '');
+        },
         syncHash() {
           let id = (location.hash || '#chat').replace('#', '');
           if (id === 'tools') {
@@ -695,15 +708,29 @@
         async renameProject() {
           if (!this.projectEdit || this.projectFolderChoice) return;
           this.projectEditError = '';
+          const previous = this.projectEdit;
           try {
             const data = await this.api('/api/projects/' + this.projectEdit.id + '/rename', {
               method: 'POST',
               body: { name: this.projectEditName }
             });
-            const index = this.projects.findIndex((item) => item.id === data.project.id);
-            if (index >= 0) this.projects.splice(index, 1, data.project);
+            const next = data.project;
+            const index = this.projects.findIndex((item) => item.id === next.id);
+            if (index >= 0) this.projects.splice(index, 1, next);
             this.projects.sort((a, b) => a.name.localeCompare(b.name));
+            if (previous && next && this.fileScope === 'project' && this.fileFolder === previous.folder_name && next.folder_name && next.folder_name !== previous.folder_name) {
+              const oldDesc = previous.folder_name + '_desc.md';
+              const newDesc = next.folder_name + '_desc.md';
+              if (this.fileName === oldDesc) this.fileName = newDesc;
+              if (this.fileRel === 'wiki/' + oldDesc) this.fileRel = 'wiki/' + newDesc;
+              if (typeof this.filePath === 'string' && this.filePath.indexOf(previous.folder_name + '/') === 0) {
+                this.filePath = next.folder_name + this.filePath.slice(previous.folder_name.length);
+                this.filePath = this.filePath.replace('wiki/' + oldDesc, 'wiki/' + newDesc);
+              }
+              this.fileFolder = next.folder_name;
+            }
             this.closeProjectEdit();
+            await this.loadTree();
           } catch (error) {
             this.projectEditError = error.message;
           }

@@ -125,6 +125,10 @@ SQL);
         if (!in_array('finished_at', $taskColumns, true)) {
             $this->pdo->exec('ALTER TABLE tasks ADD COLUMN finished_at DATETIME');
         }
+        $projectColumns = array_column($this->pdo->query('PRAGMA table_info(projects)')->fetchAll(), 'name');
+        if (!in_array('former_name', $projectColumns, true)) {
+            $this->pdo->exec('ALTER TABLE projects ADD COLUMN former_name TEXT');
+        }
         $this->pdo->exec("UPDATE tasks SET status = 'in_progress' WHERE schedule_time IS NOT NULL AND status IN ('todo', 'backlog')");
         $this->pdo->exec("UPDATE tasks SET status = 'in_progress' WHERE recurrence_interval IS NOT NULL AND recurrence_interval NOT IN ('', 'none') AND status IN ('review', 'done')");
         $this->pdo->exec(<<<'SQL'
@@ -268,7 +272,7 @@ SQL);
         }
         if ($this->getSetting('tools_noted') !== '1') {
             if ($this->getSetting('headless_browser', '0') === '1') {
-                $memory->remember('browser', 'Headless browser is on. It can read public pages.');
+                $memory->remember('browser', 'Headless browser is on. browse_url opens a public page and runs its scripts.');
             }
             if ($this->getSetting('web_search', '0') === '1') {
                 $memory->remember('search', 'Web search is on for the researcher. The main agent delegates web research.');
@@ -369,7 +373,7 @@ SQL);
         return $this->project((int)$this->pdo->lastInsertId());
     }
 
-    public function renameProject(int $id, string $name): ?array
+    public function renameProject(int $id, string $name, ?string $folder = null, ?string $formerName = null): ?array
     {
         $name = trim($name);
         if ($name === '' || strlen($name) > 120) {
@@ -378,8 +382,18 @@ SQL);
         if (!$this->project($id)) {
             return null;
         }
-        $stmt = $this->pdo->prepare('UPDATE projects SET name = ? WHERE id = ?');
-        $stmt->execute([$name, $id]);
+        $sets = ['name = ?'];
+        $values = [$name];
+        if ($folder !== null) {
+            $sets[] = 'folder_name = ?';
+            $values[] = $folder;
+        }
+        if ($formerName !== null) {
+            $sets[] = 'former_name = ?';
+            $values[] = $formerName;
+        }
+        $values[] = $id;
+        $this->pdo->prepare('UPDATE projects SET ' . implode(', ', $sets) . ' WHERE id = ?')->execute($values);
         return $this->project($id);
     }
 

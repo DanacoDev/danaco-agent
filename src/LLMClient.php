@@ -267,6 +267,38 @@ class LLMClient
         return $this->readYesNo($text);
     }
 
+    public function seeImage(string $question, string $bytes, ?callable $shouldStop = null): string
+    {
+        if ($question === '') {
+            $question = 'Describe what is visible. Transcribe the text. Note the layout, and point out anything that looks broken, overlapping, cut off, or unfinished.';
+        }
+        $question = clip_text($question, 1000);
+        if ($bytes === '' || strlen($bytes) > 4 * 1024 * 1024) {
+            return 'That image is empty or larger than 4 MB, so it cannot be looked at.';
+        }
+        $mime = $this->imageMime($bytes);
+        if ($mime === '') {
+            return 'That file is not a png, jpg, gif, or webp.';
+        }
+        try {
+            if ($shouldStop && $shouldStop()) {
+                return 'Stopped.';
+            }
+        } catch (Throwable $e) {
+            return 'Stopped.';
+        }
+        $failsafe = $this->usingFailsafe;
+        $mode = $failsafe ? 'cpu_failsafe' : (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
+        if ($failsafe || $mode === 'cpu_failsafe') {
+            return 'The CPU failsafe model cannot see images. read_image needs the GPU model, which can look at png, jpg, gif, and webp.';
+        }
+        $b64 = base64_encode($bytes);
+        if ($mode === 'cloud') {
+            return $this->seeImageCloud($question, $mime, $b64, $shouldStop);
+        }
+        return $this->seeImageLocal($question, $b64, $mode, $shouldStop);
+    }
+
     private function shouldStepDown(string $error, bool $cloud): bool
     {
         if ($this->usingFailsafe) {
@@ -876,6 +908,165 @@ class LLMClient
             return null;
         }
         return $raw;
+    }
+
+    private function seeImageLocal(string $question, string $b64, string $mode, ?callable $shouldStop): string
+    {
+        $model = (string)$this->db->getSetting('local_model', app_config()['local_model']);
+        $base = rtrim((string)$this->db->getSetting('ollama_url', app_config()['ollama_url']), '/');
+        $options = [
+            'num_ctx' => $this->hardware->effectiveContext($mode),
+            'num_predict' => 900,
+            'use_mmap' => true,
+            'use_mlock' => false,
+        ];
+        if ($mode === 'local' && $this->wholeModelOnGpu($model)) {
+            $options['num_gpu'] = 999;
+        }
+        $body = [
+            'model' => $model,
+            'messages' => [[
+                'role' => 'user',
+                'content' => $question,
+                'images' => [$b64],
+            ]],
+            'stream' => false,
+            'think' => false,
+            'keep_alive' => '1h',
+            'options' => $options,
+        ];
+        $response = $this->postImage($base . '/api/chat', $body, [], $shouldStop);
+        if (is_array($response) && $response['code'] >= 400 && str_contains(strtolower($response['body']), 'think')) {
+            unset($body['think']);
+            $response = $this->postImage($base . '/api/chat', $body, [], $shouldStop);
+        }
+        return $this->imageAnswer($response, false);
+    }
+
+    private function seeImageCloud(string $question, string $mime, string $b64, ?callable $shouldStop): string
+    {
+        $key = trim((string)$this->db->getSetting('cloud_api_key', ''));
+        $base = rtrim((string)$this->db->getSetting('cloud_base_url', app_config()['cloud_base_url']), '/');
+        $model = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
+        if ($key === '') {
+            return 'Cloud model mode needs an API key in Setup.';
+        }
+        $response = $this->postImage($base . '/chat/completions', [
+            'model' => $model,
+            'messages' => [[
+                'role' => 'user',
+                'content' => [
+                    ['type' => 'text', 'text' => $question],
+                    ['type' => 'image_url', 'image_url' => ['url' => 'data:' . $mime . ';base64,' . $b64]],
+                ],
+            ]],
+            'stream' => false,
+            'max_tokens' => 900,
+        ], ['Authorization: Bearer ' . $key], $shouldStop);
+        return $this->imageAnswer($response, true);
+    }
+
+    private function postImage(string $url, array $body, array $headers, ?callable $shouldStop): ?array
+    {
+        $payload = json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        if (!is_string($payload) || $payload === '') {
+            return ['code' => 0, 'body' => ''];
+        }
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return null;
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER => array_merge([
+                'Content-Type: application/json',
+                'Expect:',
+            ], $headers),
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 120,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_NOPROGRESS => false,
+            CURLOPT_PROGRESSFUNCTION => function ($resource, $downloadTotal, $downloaded, $uploadTotal, $uploaded) use ($shouldStop): int {
+                try {
+                    return ($shouldStop && $shouldStop()) ? 1 : 0;
+                } catch (Throwable $e) {
+                    return 1;
+                }
+            },
+        ]);
+        $raw = curl_exec($ch);
+        $errno = curl_errno($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        unset($ch);
+        if ($errno !== 0 || !is_string($raw)) {
+            return null;
+        }
+        return ['code' => $code, 'body' => $raw];
+    }
+
+    private function imageAnswer(?array $response, bool $cloud): string
+    {
+        if ($response === null) {
+            return 'The model did not answer after looking at the image.';
+        }
+        $json = json_decode($response['body'], true);
+        if ($response['code'] >= 400 || $response['code'] === 0) {
+            $error = '';
+            if (is_array($json)) {
+                $err = $json['error'] ?? '';
+                if (is_array($err)) {
+                    $error = trim((string)($err['message'] ?? ''));
+                } else {
+                    $error = trim((string)$err);
+                }
+            }
+            if ($error === '') {
+                $error = 'The model could not look at that image.';
+            }
+            if (!$cloud && preg_match('/image|vision|multimodal/i', $error)) {
+                return 'This model cannot see images. read_image works with the GPU model when that model can see, such as qwen3.6. ' . $error;
+            }
+            return $error;
+        }
+        if (!is_array($json)) {
+            return 'The model did not answer after looking at the image.';
+        }
+        if ($cloud) {
+            $content = $this->visibleText((string)($json['choices'][0]['message']['content'] ?? ''));
+        } else {
+            $message = is_array($json['message'] ?? null) ? $json['message'] : [];
+            $content = $this->visibleText((string)($message['content'] ?? ''));
+        }
+        if ($content === '') {
+            return 'The model looked at the image but returned nothing.';
+        }
+        return clip_text($content, 4000);
+    }
+
+    private function imageMime(string $bytes): string
+    {
+        if (str_starts_with($bytes, "\x89PNG\r\n\x1a\n")) {
+            return 'image/png';
+        }
+        if (str_starts_with($bytes, "\xFF\xD8\xFF")) {
+            return 'image/jpeg';
+        }
+        if (str_starts_with($bytes, 'GIF87a') || str_starts_with($bytes, 'GIF89a')) {
+            return 'image/gif';
+        }
+        if (strlen($bytes) >= 12 && str_starts_with($bytes, 'RIFF') && substr($bytes, 8, 4) === 'WEBP') {
+            return 'image/webp';
+        }
+        return '';
+    }
+
+    private function visibleText(string $text): string
+    {
+        $text = preg_replace('/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*?<\/(?:think|thinking|reasoning|thought)>/i', '', $text) ?? $text;
+        $text = preg_replace('/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*$/i', '', $text) ?? $text;
+        return trim($text);
     }
 
     private function readYesNo(string $text): ?bool

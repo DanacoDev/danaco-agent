@@ -505,6 +505,11 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 }
 .file-cite-name { display: block; word-break: break-all; }
 .file-cite-dl { position: absolute; top: 4px; right: 4px; }
+.file-cite-shot {
+  display: block; width: 100%; max-height: 70vh; object-fit: contain; object-position: left top;
+  margin: 0 0 8px; border-radius: 8px; background: #0e0e12;
+}
+.file-cite-image .file-cite-dl { background: #0e0e12; }
 .file-cite.missing { padding-right: 12px; }
 .file-cite-missing { display: block; margin-top: 4px; color: var(--muted); font-size: 0.85em; }
 .md-file { margin: 0.45em 0; }

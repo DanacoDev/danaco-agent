@@ -13,7 +13,7 @@ class CapabilityTools
         $handlers = [];
         $handlers['web_search'] = fn(array $args): string => $this->webSearch((string)($args['query'] ?? ''));
         $handlers['fetch_url'] = fn(array $args): string => $this->fetchUrl((string)($args['url'] ?? ''));
-        $handlers['browse_url'] = fn(array $args): string => $this->fetchUrl((string)($args['url'] ?? ''));
+        $handlers['browse_url'] = fn(array $args): string => $this->browseUrl((string)($args['url'] ?? ''));
         $handlers['run_command'] = fn(array $args): string => $this->runCommand((string)($args['command'] ?? ''), $projectFolder, $allowInstall);
         if ($projectId > 0 && $this->db->emailAccounts($projectId)) {
             $handlers['send_email'] = fn(array $args): string => $this->sendForProject($projectId, $args);
@@ -31,7 +31,7 @@ class CapabilityTools
         $lines = [];
         $lines[] = '- web_search: args query. One idea, as in a normal search box: two to four plain words. Every word must match, so extra words and synonyms make it miss. Quotes are only for one exact title of several words, plus at most one plain word. Do not quote a single word, do not stack quoted phrases, and do not use OR, AND, NOT, or parentheses to join alternatives. Search the other wording on its own. site:example.com is the only operator. Returns a title, link, and snippet. Then read a result with fetch_url. If this tool rejects the query, rewrite it the way the message says and call once more.';
         $lines[] = '- fetch_url: args url. Reads a public page and lists links on it. Open those links to keep crawling.';
-        $lines[] = '- browse_url: args url. Same page text and links as fetch_url. JavaScript on the page is not run.';
+        $lines[] = '- browse_url: args url. Opens a public page in the headless browser so scripts run, then returns the text and links. Use it when fetch_url shows an empty or unfinished page.';
         $lines[] = $this->db->fullSystemControl()
             ? '- run_command: args command. May use sudo. Starts in the project folder when there is one. A path that starts with / is anywhere on this computer. Do not install software. Only the main agent can install a dependency, and the user is asked first.'
             : '- run_command: args command. Runs inside the project folder. Do not install software. Only the main agent can install a dependency, and the user is asked first.';
@@ -619,7 +619,19 @@ class CapabilityTools
         return $this->pageText($body, $final !== '' ? $final : $url);
     }
 
-    private function pageText(string $html, string $pageUrl): string
+    private function browseUrl(string $url): string
+    {
+        if ($this->db->getSetting('headless_browser', '0') !== '1') {
+            return 'The headless browser is off, so that page cannot be opened.';
+        }
+        $html = Sight::page($url);
+        if ($html === '' || !str_contains($html, '<')) {
+            return $html !== '' ? $html : 'The page returned nothing.';
+        }
+        return $this->pageText($html, $url, true);
+    }
+
+    private function pageText(string $html, string $pageUrl, bool $rendered = false): string
     {
         $html = $this->normalizeCharset($html);
         $links = $this->pageLinks($html, $pageUrl);
@@ -630,7 +642,9 @@ class CapabilityTools
         $text = preg_replace("/\n[ \t]+/", "\n", $text) ?? $text;
         $text = preg_replace("/\n{3,}/", "\n\n", $text) ?? $text;
         $text = trim($text);
-        $parts = ['Text and links from the page. JavaScript on the page is not run.'];
+        $parts = [$rendered
+            ? 'Text and links from the page after the headless browser ran its scripts.'
+            : 'Text and links from the page. JavaScript on the page is not run.'];
         if ($links) {
             $parts[] = "Links:\n" . implode("\n", $links);
         }

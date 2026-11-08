@@ -187,16 +187,18 @@ class Api
     private function renameProject(int $id): void
     {
         try {
-            $project = $this->db->renameProject($id, (string)($this->input()['name'] ?? ''));
+            $project = Projects::rename($this->db, $id, (string)($this->input()['name'] ?? ''));
         } catch (InvalidArgumentException $e) {
             $this->json(['error' => $e->getMessage()], 422);
+            return;
+        } catch (RuntimeException $e) {
+            $this->json(['error' => $e->getMessage()], 500);
             return;
         }
         if (!$project) {
             $this->json(['error' => 'Project not found.'], 404);
             return;
         }
-        Projects::syncIndexName($project);
         $this->json(['project' => $project]);
     }
 
@@ -833,6 +835,8 @@ class Api
             'png' => 'image/png',
             'jpg' => 'image/jpeg',
             'jpeg' => 'image/jpeg',
+            'gif' => 'image/gif',
+            'webp' => 'image/webp',
         ];
         header('Content-Type: ' . ($types[$ext] ?? 'application/octet-stream'));
         header('Content-Disposition: attachment; filename="' . $name . '"');

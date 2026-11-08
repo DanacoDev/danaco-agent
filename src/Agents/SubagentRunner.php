@@ -84,7 +84,7 @@ class SubagentRunner
 
     public function teamBrief(int $projectId): string
     {
-        $names = ['list_files', 'read_file', 'read_pdf', 'create_pdf', 'write_file', 'delete_file', 'move_file', 'wiki_search', 'wiki_write', 'list_vault', 'read_vault', 'restore_file'];
+        $names = ['list_files', 'read_file', 'read_image', 'read_pdf', 'screenshot', 'create_pdf', 'write_file', 'delete_file', 'move_file', 'wiki_search', 'wiki_write', 'list_vault', 'read_vault', 'restore_file'];
         $own = [];
         $research = [];
         $teamCaps = [];
@@ -141,6 +141,8 @@ TXT;
         $toolLines = [
             '- read_file: args path. Any file in this project, including the wiki.',
             '- read_pdf: args path. Reads the text of a PDF in this project.',
+            '- read_image: args path, optional question. Looks at a png, jpg, gif, or webp in this project. The GPU model can see the picture, including text in it. Use it for a screenshot, scan, photo, or upload. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.',
+            '- screenshot: args path or url, optional save, width, height. Takes a picture of a page in this project or a public page. path is an html, htm, or php file, or a folder with an index page. url is a public http or https address. Saves a png under screenshots/ unless save is set. Cite that path alone on a line so the user sees the picture. Call read_image on it when you need to see what is wrong.',
             '- create_pdf: args path, text. Writes a PDF in this project. Put the file in docs/ unless another folder was requested. path ends in .pdf and is not in wiki/. Headings and asterisks are typeset for you. An existing file is kept, and the new one is saved as the next free name, such as document2.pdf. Cite the path the tool wrote, alone on a line. Do not repeat the document.',
             '- write_file: args path, content. Creates or overwrites a file in this project. It can create folders in the path. Markdown belongs in wiki/. A skill is not a project file. The coder uses write_skill.',
             '- delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.',
@@ -158,9 +160,21 @@ TXT;
         }
         $toolLines = array_merge($toolLines, $this->capabilities->descriptions($projectId));
         $toolLines[] = "Skills, one line each:\n" . $this->skills->summariesForPrompt();
+        $identity = 'Assigned project folder: ' . $projectFolder;
+        $named = $projectFolder !== '' ? $this->db->projectByFolder($projectFolder) : null;
+        if (is_array($named)) {
+            $title = trim((string)($named['name'] ?? ''));
+            if ($title !== '') {
+                $identity .= "\nAssigned project name: " . $title;
+            }
+            $rename = Projects::renameLine($named);
+            if ($rename !== '') {
+                $identity .= "\n" . $rename;
+            }
+        }
         $rules = <<<TXT
-Assigned project folder: {$projectFolder}
-Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/{$projectFolder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file and not on the kanban. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish, and update it again if later conclusions change it. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/notes.md or report.pdf. The chat adds a download button at the top right of that line. A download over 100 MB uses download_large so the chat is not held up. Do not edit soul.md. Only the main agent changes how to act in this project.
+{$identity}
+Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/{$projectFolder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file and not on the kanban. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish, and update it again if later conclusions change it. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/notes.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up. Do not edit soul.md. Only the main agent changes how to act in this project.
 
 Do not install software or dependencies. If something is missing, say what it is and stop. The main agent asks the user and installs it.
 
@@ -254,6 +268,12 @@ TXT;
             },
             'read_pdf' => function (array $args) use ($projectFolder): string {
                 return PdfFile::readProject($this->safety, $projectFolder, (string)($args['path'] ?? ''));
+            },
+            'read_image' => function (array $args) use ($projectFolder, $shouldStop): string {
+                return Sight::look($this->safety, $projectFolder, (string)($args['path'] ?? ''), (string)($args['question'] ?? ''), $shouldStop);
+            },
+            'screenshot' => function (array $args) use ($projectFolder, $shouldStop): string {
+                return Sight::shot($this->safety, $projectFolder, $args, $shouldStop);
             },
             'create_pdf' => function (array $args) use ($projectFolder): string {
                 return PdfFile::writeProject($this->safety, $projectFolder, (string)($args['path'] ?? ''), (string)($args['text'] ?? ''));
