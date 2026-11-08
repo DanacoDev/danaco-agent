@@ -215,18 +215,14 @@ class SafetyInterceptor
             if ($real === false) {
                 continue;
             }
-            $name = trim((string)($project['name'] ?? ''));
-            if ($name === '') {
-                $name = $folder;
-            }
             $nodes[] = [
-                'name' => $name,
+                'name' => $folder,
                 'path' => '',
                 'type' => 'dir',
                 'scope' => 'project',
                 'folder' => $folder,
-                'place' => $name,
-                'children' => $this->tag($this->walk($real, $real, 0), 'project', $folder, $name),
+                'place' => $folder,
+                'children' => $this->tag($this->walk($real, $real, 0), 'project', $folder, $folder),
             ];
         }
         return $nodes;
@@ -445,12 +441,11 @@ class SafetyInterceptor
             if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $folder)) {
                 continue;
             }
-            $name = trim((string)($project['name'] ?? ''));
             $roots[] = [
                 'root' => Projects::root($folder),
                 'scope' => 'project',
                 'folder' => $folder,
-                'place' => $name !== '' ? $name : $folder,
+                'place' => $folder,
             ];
         }
         $hits = [];
