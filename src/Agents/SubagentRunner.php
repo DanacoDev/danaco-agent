@@ -140,8 +140,8 @@ TXT;
     {
         $toolLines = [
             '- read_file: args path. Any file in this project, including the wiki.',
-            '- read_pdf: args path. Reads the text of a PDF in this project.',
-            '- read_image: args path, optional question. Looks at a png, jpg, gif, or webp in this project. The GPU model can see the picture, including text in it. Use it for a screenshot, scan, photo, or upload. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.',
+            '- read_pdf: args path, optional question. Reads the text of a PDF in this project. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay. Do not ask the user to type the page out.',
+            '- read_image: args path, optional question. Looks at a png, jpg, gif, or webp in this project. The GPU model can see the picture, including text in it. Use it for a screenshot, photo, or image upload. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.',
             '- screenshot: args path or url, optional save, width, height. Takes a picture of a page in this project or a public page. path is an html, htm, or php file, or a folder with an index page. url is a public http or https address. Saves a png under screenshots/ unless save is set. Cite that path alone on a line so the user sees the picture. Call read_image on it when you need to see what is wrong.',
             '- create_pdf: args path, text. Writes a PDF in this project. Put the file in docs/ unless another folder was requested. path ends in .pdf and is not in wiki/. Headings and asterisks are typeset for you. An existing file is kept, and the new one is saved as the next free name, such as document2.pdf. Cite the path the tool wrote, alone on a line. Do not repeat the document.',
             '- write_file: args path, content. Creates or overwrites a file in this project. It can create folders in the path. Markdown belongs in wiki/. A skill is not a project file. The coder uses write_skill.',
@@ -266,8 +266,8 @@ TXT;
             'read_file' => function (array $args) use ($projectFolder): string {
                 return $this->safety->readFile($projectFolder, (string)($args['path'] ?? ''));
             },
-            'read_pdf' => function (array $args) use ($projectFolder): string {
-                return PdfFile::readProject($this->safety, $projectFolder, (string)($args['path'] ?? ''));
+            'read_pdf' => function (array $args) use ($projectFolder, $shouldStop): string {
+                return PdfFile::readProject($this->safety, $projectFolder, (string)($args['path'] ?? ''), (string)($args['question'] ?? ''), $shouldStop);
             },
             'read_image' => function (array $args) use ($projectFolder, $shouldStop): string {
                 return Sight::look($this->safety, $projectFolder, (string)($args['path'] ?? ''), (string)($args['question'] ?? ''), $shouldStop);

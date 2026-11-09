@@ -8,6 +8,9 @@ class Sight
         if ($path === '') {
             return 'Name the image path.';
         }
+        if (preg_match('/\.pdf$/i', $path)) {
+            return PdfFile::readProject($safety, $folder, $path, $question, $shouldStop);
+        }
         if (!preg_match('/\.(?:png|jpe?g|gif|webp)$/i', $path)) {
             if (preg_match('/\.svg$/i', $path)) {
                 return 'An svg is text. Use read_file.';

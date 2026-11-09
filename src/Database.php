@@ -486,6 +486,17 @@ SQL);
         return true;
     }
 
+    public function deleteFinishedTasks(int $projectId): int
+    {
+        if ($projectId <= 0) {
+            return 0;
+        }
+        $this->pdo->prepare("DELETE FROM jobs WHERE kind = 'task' AND ref_id IN (SELECT id FROM tasks WHERE project_id = ? AND status = 'done')")->execute([$projectId]);
+        $stmt = $this->pdo->prepare("DELETE FROM tasks WHERE project_id = ? AND status = 'done'");
+        $stmt->execute([$projectId]);
+        return $stmt->rowCount();
+    }
+
     public function dueTasks(): array
     {
         $stmt = $this->pdo->prepare("SELECT * FROM tasks WHERE project_id IS NOT NULL AND status IN ('todo', 'backlog', 'in_progress') AND id NOT IN (SELECT ref_id FROM jobs WHERE kind = 'task' AND status IN ('running', 'error') AND ref_id IS NOT NULL) AND ((schedule_time IS NOT NULL AND schedule_time <= ?) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') NOT IN ('', 'none')) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') IN ('', 'none') AND project_id NOT IN (SELECT project_id FROM jobs WHERE project_id IS NOT NULL AND kind IN ('chat', 'subagent') AND updated_at >= datetime('now', '-5 minutes')))) ORDER BY schedule_time");

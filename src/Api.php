@@ -22,6 +22,7 @@ class Api
         $router->add('POST', '#^/api/tasks$#', $this->guard(fn() => $this->createTask()));
         $router->add('PATCH', '#^/api/tasks/(?P<id>\d+)$#', $this->guard(fn(array $args) => $this->updateTask((int)$args['id'])));
         $router->add('POST', '#^/api/tasks/(?P<id>\d+)/delete$#', $this->guard(fn(array $args) => $this->deleteTask((int)$args['id'])));
+        $router->add('POST', '#^/api/tasks/finished/clear$#', $this->guard(fn() => $this->clearFinishedTasks()));
         $router->add('GET', '#^/api/messages$#', $this->guard(fn() => $this->messages()));
         $router->add('POST', '#^/api/messages$#', $this->guard(fn() => $this->saveMessage()));
         $router->add('POST', '#^/api/context/compress$#', $this->guard(fn() => $this->compressContext()));
@@ -279,6 +280,16 @@ class Api
             return;
         }
         $this->json(['ok' => true]);
+    }
+
+    private function clearFinishedTasks(): void
+    {
+        $projectId = (int)($this->input()['project_id'] ?? 0);
+        if ($projectId <= 0 || !$this->db->project($projectId)) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return;
+        }
+        $this->json(['ok' => true, 'removed' => $this->db->deleteFinishedTasks($projectId)]);
     }
 
     private function presentMessages(int $projectId, array $rows): array

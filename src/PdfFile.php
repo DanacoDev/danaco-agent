@@ -2,17 +2,33 @@
 
 class PdfFile
 {
-    public static function readProject(SafetyInterceptor $safety, string $folder, string $path): string
+    public static function readProject(SafetyInterceptor $safety, string $folder, string $path, string $question = '', ?callable $shouldStop = null): string
     {
         $file = $safety->readBytes($folder, $path, 8 * 1024 * 1024);
         if (!str_ends_with(strtolower($file['path']), '.pdf')) {
             throw new RuntimeException('Name a .pdf file.');
         }
         $text = self::extract($file['bytes']);
-        if ($text === '') {
-            return 'No text could be read from this PDF.';
+        if (self::thin($text)) {
+            $poppler = self::popplerText($file['bytes']);
+            if (!self::thin($poppler)) {
+                $text = $poppler;
+            }
         }
-        return clip_text($text, 20000);
+        if (!self::thin($text)) {
+            return clip_text($text, 20000);
+        }
+        $seen = self::look($file['bytes'], $question, $shouldStop);
+        if ($seen !== '') {
+            if (trim($text) !== '') {
+                return "Text already in the file:\n" . clip_text($text, 4000) . "\n\nRead from the page images:\n" . $seen;
+            }
+            return $seen;
+        }
+        if (trim($text) !== '') {
+            return clip_text($text, 20000);
+        }
+        return 'No text could be read from this PDF, and the pages could not be opened as images. A scan needs poppler-utils (pdftoppm).';
     }
 
     public static function writeProject(SafetyInterceptor $safety, string $folder, string $path, string $text): string
@@ -417,5 +433,147 @@ class PdfFile
         }
         $converted = @iconv('Windows-1252', 'UTF-8//IGNORE', $text);
         return is_string($converted) ? $converted : $text;
+    }
+
+    private static function thin(string $text): bool
+    {
+        $letters = preg_replace('/[^\p{L}\p{N}]+/u', '', $text) ?? '';
+        return strlen($letters) < 40;
+    }
+
+    private static function popplerText(string $pdf): string
+    {
+        $bin = self::bin('pdftotext');
+        if ($bin === '') {
+            return '';
+        }
+        $dir = self::workDir();
+        if ($dir === '') {
+            return '';
+        }
+        $file = $dir . '/file.pdf';
+        file_put_contents($file, $pdf);
+        try {
+            $run = Process::run([$bin, '-layout', '-enc', 'UTF-8', $file, '-'], $dir, null, 20);
+        } finally {
+            self::removeDir($dir);
+        }
+        return trim((string)($run['stdout'] ?? ''));
+    }
+
+    private static function look(string $pdf, string $question, ?callable $shouldStop): string
+    {
+        $images = self::pageImages($pdf);
+        if ($images === []) {
+            return '';
+        }
+        $question = trim($question);
+        if ($question === '') {
+            $question = 'Transcribe this document page. Keep the amounts, totals, dates, names, and what each charge is for.';
+        }
+        $llm = app_services()['llm'];
+        $parts = [];
+        $count = count($images);
+        foreach ($images as $i => $bytes) {
+            $ask = $count > 1 ? 'Page ' . ($i + 1) . ' of ' . $count . '. ' . $question : $question;
+            $seen = $llm->seeImage($ask, $bytes, $shouldStop);
+            if (str_starts_with($seen, 'The CPU failsafe') || str_starts_with($seen, 'This model cannot see') || str_starts_with($seen, 'Stopped.')) {
+                return $seen;
+            }
+            $parts[] = $count > 1 ? 'Page ' . ($i + 1) . ":\n" . $seen : $seen;
+        }
+        $text = trim(implode("\n\n", $parts));
+        if ($count === 3) {
+            $text .= "\n\nThese are the first three pages.";
+        }
+        return trim($text);
+    }
+
+    private static function pageImages(string $pdf): array
+    {
+        $dir = self::workDir();
+        if ($dir === '') {
+            return [];
+        }
+        $file = $dir . '/file.pdf';
+        file_put_contents($file, $pdf);
+        try {
+            $pdftoppm = self::bin('pdftoppm');
+            if ($pdftoppm !== '') {
+                Process::run([$pdftoppm, '-png', '-r', '120', '-f', '1', '-l', '3', '-scale-to', '1600', $file, $dir . '/page'], $dir, null, 30);
+            } else {
+                $cairo = self::bin('pdftocairo');
+                if ($cairo !== '') {
+                    Process::run([$cairo, '-png', '-r', '120', '-f', '1', '-l', '3', '-scale-to', '1600', $file, $dir . '/page'], $dir, null, 30);
+                } else {
+                    $gs = self::bin('gs');
+                    if ($gs !== '') {
+                        Process::run([$gs, '-q', '-dSAFER', '-dBATCH', '-dNOPAUSE', '-sDEVICE=png16m', '-r120', '-dFirstPage=1', '-dLastPage=3', '-sOutputFile=' . $dir . '/page-%d.png', $file], $dir, null, 30);
+                    } elseif (PHP_OS_FAMILY === 'Darwin' && is_executable('/usr/bin/qlmanage')) {
+                        Process::run(['/usr/bin/qlmanage', '-t', '-s', '1600', '-o', $dir, $file], $dir, null, 20);
+                    }
+                }
+            }
+            $paths = glob($dir . '/*.png') ?: [];
+            sort($paths, SORT_NATURAL);
+            $images = [];
+            foreach (array_slice($paths, 0, 3) as $path) {
+                $bytes = file_get_contents($path);
+                if (is_string($bytes) && str_starts_with($bytes, "\x89PNG") && strlen($bytes) <= 4 * 1024 * 1024) {
+                    $images[] = $bytes;
+                }
+            }
+            return $images;
+        } finally {
+            self::removeDir($dir);
+        }
+    }
+
+    private static function bin(string $name): string
+    {
+        if (!preg_match('/^[a-z0-9]+$/', $name)) {
+            return '';
+        }
+        $which = Process::run(['/bin/sh', '-c', 'command -v ' . $name], null, null, 5);
+        $path = trim($which['stdout']);
+        if ($which['code'] === 0 && $path !== '' && !str_contains($path, "\n") && is_executable($path)) {
+            return $path;
+        }
+        foreach (['/usr/bin/' . $name, '/usr/local/bin/' . $name, '/opt/homebrew/bin/' . $name] as $fixed) {
+            if (is_executable($fixed)) {
+                return $fixed;
+            }
+        }
+        return '';
+    }
+
+    private static function workDir(): string
+    {
+        $dir = sys_get_temp_dir() . '/danaco-pdf-' . bin2hex(random_bytes(4));
+        if (!mkdir($dir, 0700, true) && !is_dir($dir)) {
+            return '';
+        }
+        return $dir;
+    }
+
+    private static function removeDir(string $dir): void
+    {
+        $temp = realpath(sys_get_temp_dir());
+        $real = realpath($dir);
+        if ($temp === false || $real === false || $real === $temp || !str_starts_with($real, $temp . '/')) {
+            return;
+        }
+        foreach (scandir($real) ?: [] as $name) {
+            if ($name === '.' || $name === '..') {
+                continue;
+            }
+            $full = $real . '/' . $name;
+            if (is_dir($full) && !is_link($full)) {
+                self::removeDir($full);
+            } else {
+                @unlink($full);
+            }
+        }
+        @rmdir($real);
     }
 }

@@ -349,7 +349,10 @@ header('X-Danaco: 1');
             <section class="task-archive">
               <header>
                 <h3>Finished</h3>
-                <button v-if="finishedTasks().length > 4" class="btn btn-ghost" type="button" @click="finishedOpen = !finishedOpen">{{ finishedOpen ? 'Show less' : 'Show all' }}</button>
+                <div class="archive-actions">
+                  <button v-if="finishedTasks().length" class="btn btn-ghost" type="button" @click="clearFinishedTasks">Clear all</button>
+                  <button v-if="finishedTasks().length > 4" class="btn btn-ghost" type="button" @click="finishedOpen = !finishedOpen">{{ finishedOpen ? 'Show less' : 'Show all' }}</button>
+                </div>
               </header>
               <div v-if="finishedVisible().length" class="archive-row">
                 <article v-for="task in finishedVisible()" :key="'done'+task.id" class="task-card">

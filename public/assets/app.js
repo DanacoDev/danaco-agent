@@ -932,12 +932,37 @@
           }
           return '';
         },
+        scheduledCard(title, text) {
+          const name = String(title || '').trim();
+          if (!name) return null;
+          const projectId = Number(this.projectId) || 0;
+          const body = String(text || '').split('\n').slice(1).join('\n').trim();
+          const matches = (this.tasks || []).filter((task) => {
+            if (String(task.title || '').trim() !== name) return false;
+            return !projectId || Number(task.project_id) === projectId;
+          });
+          if (!matches.length) return null;
+          matches.sort((a, b) => {
+            const aBody = body && String(a.description || '').trim() === body ? 1 : 0;
+            const bBody = body && String(b.description || '').trim() === body ? 1 : 0;
+            if (aBody !== bBody) return bBody - aBody;
+            const aRun = a.status === 'in_progress' ? 1 : 0;
+            const bRun = b.status === 'in_progress' ? 1 : 0;
+            if (aRun !== bRun) return bRun - aRun;
+            return b.id - a.id;
+          });
+          return matches[0];
+        },
         scheduledText(msg) {
           const text = this.scheduledRaw(msg);
           if (!text) return '';
           const first = text.split('\n')[0].replace(/^Scheduled task:\s*/, '').trim();
           const numbered = first.match(/^#(\d+)\s+(.+)$/);
-          const card = numbered ? ('#' + numbered[1] + ' ' + numbered[2]) : first;
+          let card = numbered ? ('#' + numbered[1] + ' ' + numbered[2]) : first;
+          if (!numbered) {
+            const task = this.scheduledCard(first, text);
+            if (task) card = '#' + task.id + ' ' + (task.title || first);
+          }
           return 'Scheduled task started in the background, which might slow this chat down\n' + card;
         },
         agentLabel(name, markCpu) {
@@ -1038,6 +1063,7 @@
         async reloadMessages() {
           const data = await this.api('/api/messages?project_id=' + (this.projectId || 0));
           this.messages = Array.isArray(data.messages) ? data.messages : [];
+          if (this.messages.some((msg) => this.scheduledRaw(msg))) await this.reloadTasks();
           if (data.context) this.context = { used: Number(data.context.used) || 0, total: Number(data.context.total) || 0 };
           const pending = this.projectOpener;
           if (pending && pending.projectId === (this.projectId || 0) && !this.messages.length) {
@@ -1739,6 +1765,15 @@
           await this.api('/api/tasks/' + task.id + '/delete', { method: 'POST', body: {} });
           this.tasks = this.tasks.filter((item) => item.id !== task.id);
           if (this.openTask === task.id) this.openTask = null;
+        },
+        async clearFinishedTasks() {
+          const finished = this.finishedTasks();
+          if (!finished.length || !window.confirm('Delete all finished tasks?')) return;
+          await this.api('/api/tasks/finished/clear', { method: 'POST', body: { project_id: this.projectId } });
+          const ids = {};
+          finished.forEach((task) => { ids[task.id] = true; });
+          this.tasks = this.tasks.filter((item) => !ids[item.id]);
+          if (ids[this.openTask]) this.openTask = null;
         },
         onDragStart(task, event) {
           this.dragId = task.id;

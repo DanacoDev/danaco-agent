@@ -496,8 +496,8 @@ TXT;
             $fileTools = <<<TXT
 - list_files: args path, optional. Lists this project's files.
 - read_file: args path. Any file in this project, including the wiki.
-- read_pdf: args path. Reads the text of a PDF in this project.
-- read_image: args path, optional question. Looks at a png, jpg, gif, or webp in this project. The GPU model can see the picture, including text in it. Use it for a screenshot, scan, photo, or upload. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.
+- read_pdf: args path, optional question. Reads the text of a PDF in this project. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay. Do not ask the user to type the page out.
+- read_image: args path, optional question. Looks at a png, jpg, gif, or webp in this project. The GPU model can see the picture, including text in it. Use it for a screenshot, photo, or image upload. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.
 - screenshot: args path or url, optional save, width, height. Takes a picture of a page in this project or a public page. path is an html, htm, or php file, or a folder with an index page. url is a public http or https address. Saves a png under screenshots/ unless save is set. Cite that path alone on a line so the user sees the picture. Call read_image on it when you need to see what is wrong.
 - write_file: args path, content. Creates or overwrites a file in this project. It can create folders in the path. Markdown belongs in wiki/. A skill is not a project file. Use write_skill.
 - delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.
@@ -512,8 +512,8 @@ TXT;
             $fileTools = <<<TXT
 - list_files: args path. A full path, such as /Users/name. Lists that folder.
 - read_file: args path. A full path to a file.
-- read_pdf: args path. A full path to a PDF.
-- read_image: args path, optional question. A full path to a png, jpg, gif, or webp. The GPU model can see the picture, including text in it.
+- read_pdf: args path, optional question. A full path to a PDF. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay.
+- read_image: args path, optional question. A full path to a png, jpg, gif, or webp. The GPU model can see the picture, including text in it. A scanned PDF is read_pdf.
 - write_file: args path, content. A full path. Creates or overwrites that file. It can create folders in the path.
 - delete_file: args path. A full path. Moves that file or folder to the trash.
 - move_file: args from, to. Both full paths. It can create folders in the path.
@@ -866,13 +866,13 @@ TXT;
                 $this->clearDescReread($projectId, $folder, $path);
                 return (new SafetyInterceptor(app_config()['data_dir']))->readFile($folder, $path);
             },
-            'read_pdf' => function (array $args) use ($folder): string {
+            'read_pdf' => function (array $args) use ($folder, $shouldStop): string {
                 $path = (string)($args['path'] ?? '');
                 $blocked = $this->needsProject($folder, $path, 'Open a project before reading a PDF.');
                 if ($blocked !== null) {
                     return $blocked;
                 }
-                return PdfFile::readProject(new SafetyInterceptor(app_config()['data_dir']), $folder, $path);
+                return PdfFile::readProject(new SafetyInterceptor(app_config()['data_dir']), $folder, $path, (string)($args['question'] ?? ''), $shouldStop);
             },
             'read_image' => function (array $args) use ($folder, $shouldStop): string {
                 $path = (string)($args['path'] ?? '');

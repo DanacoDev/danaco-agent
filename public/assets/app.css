@@ -335,6 +335,7 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 .task-archive { width: 100%; margin-top: 16px; }
 .task-archive > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .task-archive h3 { margin: 0; font-size: 1rem; }
+.archive-actions { display: flex; align-items: center; gap: 8px; }
 .archive-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .archive-row .task-card { margin-bottom: 0; }
 .task-card header { display: flex; justify-content: space-between; gap: 8px; }
