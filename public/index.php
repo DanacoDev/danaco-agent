@@ -492,7 +492,11 @@ header('X-Danaco: 1');
           </section>
 
           <section v-else-if="tab==='agents'" class="view">
-            <div class="view-head"><h2>Agents</h2></div>
+            <div class="view-head">
+              <h2>Agents</h2>
+              <button v-if="agentsBusy && !stopModal" class="btn" type="button" :disabled="stopBusy" @click="stopAgents">Stop</button>
+            </div>
+            <p v-if="stopError && !stopModal" class="form-error">{{ stopError }}</p>
             <div v-if="pendingActions.length" class="setup-box">
               <h3>Pending approvals</h3>
               <p class="hint">The agent is waiting for you before continuing.</p>
@@ -1061,6 +1065,22 @@ header('X-Danaco: 1');
         <button class="btn" type="button" @click="confirmDeleteProject(false)">Keep folder</button>
         <button class="btn" type="button" @click="confirmDeleteProject(true)">Delete folder</button>
       </template>
+    </form>
+  </div>
+
+  <div v-if="stopModal" class="modal-back" @click.self="dismissStop">
+    <form class="modal" @submit.prevent="submitStopNote">
+      <h2>Stopped</h2>
+      <p class="hint">Stopped by user. Waiting for further instructions. Tell the main agent why this was stopped and what it should do instead.</p>
+      <label class="field">Instruction
+        <textarea v-model="stopNote" rows="5" maxlength="4000" required></textarea>
+      </label>
+      <p v-if="!stopSettled" class="hint">Waiting for the run to stop.</p>
+      <p v-if="stopError" class="form-error">{{ stopError }}</p>
+      <div class="modal-actions">
+        <button class="btn btn-gold" type="submit" :disabled="!stopSettled || stopBusy || !stopNote.trim()">Send</button>
+        <button class="btn" type="button" @click="dismissStop">Cancel</button>
+      </div>
     </form>
   </div>
 

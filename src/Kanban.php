@@ -90,7 +90,30 @@ class Kanban
                 $fields['finished_at'] = null;
             }
         }
+        $placed = (string)($fields['status'] ?? $existing['status'] ?? '');
+        if ($byUser) {
+            $fields['held'] = 0;
+        } elseif ((int)($existing['held'] ?? 0) === 1 && $this->agentReleasesHold($args, $existing, $schedule, $recurrence, $placed)) {
+            $fields['held'] = 0;
+        }
         return $this->db->updateTask($id, $fields);
+    }
+
+    private function agentReleasesHold(array $args, array $existing, ?string $schedule, string $recurrence, string $status): bool
+    {
+        if (array_key_exists('schedule_time', $args)) {
+            $before = $existing['schedule_time'] ?? null;
+            $before = is_string($before) && $before !== '' ? $before : null;
+            if ($schedule !== $before) {
+                return true;
+            }
+        }
+        if (array_key_exists('recurrence', $args) || array_key_exists('recurrence_interval', $args)) {
+            if ($recurrence !== (string)($existing['recurrence_interval'] ?? 'none')) {
+                return true;
+            }
+        }
+        return $status === 'review' || $status === 'done';
     }
 
     public function listing(?int $projectId): string
@@ -113,6 +136,9 @@ class Kanban
                 $line .= ' ' . $task['recurrence_interval'];
             } else {
                 $line .= ' run once';
+            }
+            if ((int)($task['held'] ?? 0) === 1) {
+                $line .= ' held';
             }
             $result = trim((string)($task['result'] ?? ''));
             if ($result !== '') {

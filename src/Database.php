@@ -127,6 +127,9 @@ SQL);
         if (!in_array('finished_at', $taskColumns, true)) {
             $this->pdo->exec('ALTER TABLE tasks ADD COLUMN finished_at DATETIME');
         }
+        if (!in_array('held', $taskColumns, true)) {
+            $this->pdo->exec('ALTER TABLE tasks ADD COLUMN held INTEGER NOT NULL DEFAULT 0');
+        }
         $projectColumns = array_column($this->pdo->query('PRAGMA table_info(projects)')->fetchAll(), 'name');
         if (!in_array('former_name', $projectColumns, true)) {
             $this->pdo->exec('ALTER TABLE projects ADD COLUMN former_name TEXT');
@@ -459,7 +462,7 @@ SQL);
 
     public function updateTask(int $id, array $fields): ?array
     {
-        $allowed = ['title', 'description', 'status', 'assigned_agent', 'schedule_time', 'recurrence_interval', 'project_id', 'result', 'finished_at'];
+        $allowed = ['title', 'description', 'status', 'assigned_agent', 'schedule_time', 'recurrence_interval', 'project_id', 'result', 'finished_at', 'held'];
         $sets = [];
         $values = [];
         foreach ($allowed as $key) {
@@ -499,7 +502,7 @@ SQL);
 
     public function dueTasks(): array
     {
-        $stmt = $this->pdo->prepare("SELECT * FROM tasks WHERE project_id IS NOT NULL AND status IN ('todo', 'backlog', 'in_progress') AND id NOT IN (SELECT ref_id FROM jobs WHERE kind = 'task' AND status IN ('running', 'error') AND ref_id IS NOT NULL) AND ((schedule_time IS NOT NULL AND schedule_time <= ?) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') NOT IN ('', 'none')) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') IN ('', 'none') AND project_id NOT IN (SELECT project_id FROM jobs WHERE project_id IS NOT NULL AND kind IN ('chat', 'subagent') AND updated_at >= datetime('now', '-5 minutes')))) ORDER BY schedule_time");
+        $stmt = $this->pdo->prepare("SELECT * FROM tasks WHERE project_id IS NOT NULL AND status IN ('todo', 'backlog', 'in_progress') AND COALESCE(held, 0) = 0 AND id NOT IN (SELECT ref_id FROM jobs WHERE kind = 'task' AND status IN ('running', 'error') AND ref_id IS NOT NULL) AND ((schedule_time IS NOT NULL AND schedule_time <= ?) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') NOT IN ('', 'none')) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') IN ('', 'none') AND project_id NOT IN (SELECT project_id FROM jobs WHERE project_id IS NOT NULL AND kind IN ('chat', 'subagent') AND updated_at >= datetime('now', '-5 minutes')))) ORDER BY schedule_time");
         $stmt->execute([date('Y-m-d H:i:s')]);
         $rows = $stmt->fetchAll();
         return array_map([$this, 'castTask'], $rows);
@@ -644,6 +647,11 @@ SQL);
 
     public function failJob(int $id, string $error, int $maxAttempts): void
     {
+        $job = $this->job($id);
+        if ($job && $this->runStopRequested($job['project_id'] !== null ? (int)$job['project_id'] : 0)) {
+            $this->closeStoppedJob($job);
+            return;
+        }
         $stmt = $this->pdo->prepare('SELECT attempts FROM jobs WHERE id = ?');
         $stmt->execute([$id]);
         $attempts = (int)$stmt->fetchColumn();
@@ -1122,6 +1130,126 @@ SQL);
         return 'chat_stop_gen_' . max(0, $projectId);
     }
 
+    public function requestRunStop(int $projectId, array $jobIds): void
+    {
+        $ids = [];
+        foreach ($jobIds as $jobId) {
+            $jobId = (int)$jobId;
+            if ($jobId > 0) {
+                $ids[$jobId] = $jobId;
+            }
+        }
+        $ids = array_values($ids);
+        if (!$ids) {
+            if ($this->runStopRequested($projectId)) {
+                return;
+            }
+            $this->setSetting($this->runStopJobsKey($projectId), '');
+            $this->setSetting($this->runStopKey($projectId), '0');
+            return;
+        }
+        $this->setSetting($this->runStopJobsKey($projectId), implode(',', $ids));
+        $this->setSetting($this->runStopKey($projectId), (string)time());
+    }
+
+    public function runStopRequested(int $projectId): bool
+    {
+        return $this->runStopAge($projectId) !== null;
+    }
+
+    public function runStopAge(int $projectId): ?int
+    {
+        $value = (string)$this->getSetting($this->runStopKey($projectId), '0');
+        if ($value === '0' || $value === '' || !ctype_digit($value)) {
+            return null;
+        }
+        return max(0, time() - (int)$value);
+    }
+
+    public function acknowledgeRunStop(int $projectId, int $jobId): void
+    {
+        if (!$this->runStopRequested($projectId)) {
+            return;
+        }
+        $ids = $this->runStopJobIds($projectId);
+        if ($jobId > 0) {
+            $ids = array_values(array_diff($ids, [$jobId]));
+        }
+        if ($ids) {
+            $this->setSetting($this->runStopJobsKey($projectId), implode(',', $ids));
+            return;
+        }
+        $this->clearRunStop($projectId);
+    }
+
+    public function clearRunStop(int $projectId): void
+    {
+        $this->setSetting($this->runStopJobsKey($projectId), '');
+        $this->setSetting($this->runStopKey($projectId), '0');
+    }
+
+    public function runningJobs(int $projectId): array
+    {
+        if ($projectId > 0) {
+            $stmt = $this->pdo->prepare("SELECT * FROM jobs WHERE project_id = ? AND status IN ('running', 'error')");
+            $stmt->execute([$projectId]);
+        } else {
+            $stmt = $this->pdo->query("SELECT * FROM jobs WHERE project_id IS NULL AND status IN ('running', 'error')");
+        }
+        return $stmt->fetchAll();
+    }
+
+    public function closeStoppedJob(array $job): void
+    {
+        $projectId = $job['project_id'] !== null ? (int)$job['project_id'] : 0;
+        if ((string)($job['kind'] ?? '') === 'task') {
+            $taskId = (int)($job['ref_id'] ?? 0);
+            if ($taskId <= 0) {
+                $payload = $job['payload'] ?? null;
+                if (is_string($payload)) {
+                    $payload = json_decode($payload, true);
+                }
+                if (is_array($payload)) {
+                    $taskId = (int)($payload['task_id'] ?? 0);
+                }
+            }
+            if ($taskId > 0) {
+                $this->updateTask($taskId, ['held' => 1]);
+            }
+        }
+        $id = (int)($job['id'] ?? 0);
+        if ($id > 0) {
+            $this->finishJob($id);
+            $this->acknowledgeRunStop($projectId, $id);
+        }
+    }
+
+    private function runStopKey(int $projectId): string
+    {
+        return 'run_stop_' . max(0, $projectId);
+    }
+
+    private function runStopJobsKey(int $projectId): string
+    {
+        return 'run_stop_jobs_' . max(0, $projectId);
+    }
+
+    private function runStopJobIds(int $projectId): array
+    {
+        $raw = (string)$this->getSetting($this->runStopJobsKey($projectId), '');
+        if ($raw === '') {
+            return [];
+        }
+        $ids = [];
+        foreach (explode(',', $raw) as $part) {
+            $id = (int)$part;
+            if ($id > 0) {
+                $ids[$id] = $id;
+            }
+        }
+        return array_values($ids);
+    }
+
     public function answerInstall(string $id, bool $allow): bool
     {
         return $this->answerAction($id, $allow);
@@ -1385,6 +1513,7 @@ SQL);
     {
         $row['id'] = (int)$row['id'];
         $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
+        $row['held'] = (int)($row['held'] ?? 0);
         return $row;
     }
 

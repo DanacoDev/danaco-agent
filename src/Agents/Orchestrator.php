@@ -559,7 +559,7 @@ Tools:
 {$consultLine}- kanban: the task board. args action (list, create, move, or delete).
   list: no other args.
   create: title, description, agent, status, schedule_time (YYYY-MM-DD HH:MM), recurrence (none, 5min, 15min, 30min, hourly, daily, weekly, or monthly). none means run once. Leave schedule_time empty only when the card should run immediately. A later card needs a real clock time. Do not invent one. Before create, list the board and check for a duplicate or a similar task. Do not add a card for work that is already there. An exact duplicate is not added. The tool returns an error that names the existing card. Use that card.
-  move: id, plus any of status, description, result, agent, schedule_time, recurrence.
+  move: id, plus any of status, description, result, agent, schedule_time, recurrence. A card marked held was stopped by the user. Leave it held unless the user asked you to change, resume, or end it. A new schedule or repeat resumes it. Moving a run-once card to review ends it.
   delete: id. Removes that card from the board. Use it when a card is wrong, stale, or the user asks you to remove it.
   backlog = later agent work with no schedule. in_progress = work happening now, or a card with a time or a repeat. A repeating card stays in in_progress. review = a finished run-once card waiting for the user; include result. You cannot set done, and you cannot move a repeating card to review.
   Cards are for an agent, or a reminder that will send something or take an action. Not a static todo for the user.
@@ -789,6 +789,7 @@ TXT;
                     } catch (ChatStopped $e) {
                         $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' stopped');
                         $this->db->finishJob($jobId);
+                        $this->db->acknowledgeRunStop($projectId, $jobId);
                         throw $e;
                     } catch (RuntimeException $e) {
                         if ($e->getMessage() === 'Only one subagent can run at a time.') {
@@ -1187,7 +1188,8 @@ TXT;
             }
             if ($action === 'move' || $action === 'update') {
                 $task = $board->move((int)($args['id'] ?? 0), $args, false);
-                return 'Moved task #' . $task['id'] . ' to ' . $board->column($task) . ': ' . $task['title'];
+                $held = (int)($task['held'] ?? 0) === 1 ? ' The card stays held and will not start.' : '';
+                return 'Moved task #' . $task['id'] . ' to ' . $board->column($task) . ': ' . $task['title'] . $held;
             }
             if ($action === 'delete') {
                 $id = (int)($args['id'] ?? 0);

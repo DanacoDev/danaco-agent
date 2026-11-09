@@ -148,6 +148,12 @@
           chatGeneration: '',
           chatStreamProject: 0,
           userStop: false,
+          stopModal: false,
+          stopNote: '',
+          stopBusy: false,
+          stopError: '',
+          heldTasks: [],
+          runStopping: false,
           toolPending: false,
           streamEnded: false,
           steerText: '',
@@ -393,6 +399,13 @@
         flowLive() {
           return this.subAgents.some((agent) => agent.status === 'thinking' || agent.status === 'executing_tool')
             || !!(this.mainAgent && (this.mainAgent.status === 'thinking' || this.mainAgent.status === 'executing_tool'));
+        },
+        agentsBusy() {
+          const projectId = this.projectId || 0;
+          return this.agents.some((agent) => this.agentBusy(agent) && (agent.project_id || 0) === projectId);
+        },
+        stopSettled() {
+          return !this.agentsBusy && !this.runStopping && !this.sending;
         },
         thinkingSpinner() {
           return (this.sending || this.awaitingModel) && !this.answerStarted && !this.streamError;
@@ -1336,6 +1349,50 @@
           if (this.chatAbort) this.chatAbort.abort();
           this.api('/api/chat/stop', { method: 'POST', body: { project_id: this.projectId || 0, generation: generation }, quiet: true }).catch(function () {});
         },
+        async stopAgents() {
+          if (this.stopBusy || this.stopModal) return;
+          this.stopBusy = true;
+          this.stopError = '';
+          try {
+            const data = await this.api('/api/agents/stop', {
+              method: 'POST',
+              body: { project_id: this.projectId || 0, generation: this.chatGeneration || '' }
+            });
+            this.heldTasks = Array.isArray(data.held) ? data.held : [];
+            this.runStopping = true;
+            this.stopNote = '';
+            this.stopModal = true;
+            await this.refreshStatus(true);
+          } catch (error) {
+            this.stopError = error.message || 'Could not stop the run.';
+          } finally {
+            this.stopBusy = false;
+          }
+        },
+        dismissStop() {
+          this.stopModal = false;
+          this.stopNote = '';
+          this.stopError = '';
+        },
+        async submitStopNote() {
+          const note = this.stopNote.trim();
+          if (!note || !this.stopSettled || this.stopBusy) return;
+          const ids = (this.heldTasks || []).filter((id) => Number(id) > 0).map((id) => '#' + id);
+          let message = 'The current run was stopped. ';
+          if (ids.length) {
+            message += 'Held tasks: ' + ids.join(', ') + '. Do not start a held task unless this instruction says to resume it. Change the card, resume it, or end it.';
+          } else {
+            message += 'Do not continue the stopped run.';
+          }
+          message += '\n\n' + note;
+          this.stopModal = false;
+          this.stopNote = '';
+          this.stopError = '';
+          if (this.tab !== 'chat') this.setTab('chat');
+          this.messages.push({ id: 'local-' + Date.now(), role: 'user', agent_name: 'human', content: message });
+          this.scrollChat(true);
+          await this.runChat(message);
+        },
         answerAction(allow) {
           const prompt = this.actionPrompt;
           if (!prompt) return;
@@ -2255,7 +2312,11 @@
           this.trash = data.trash;
         },
         async refreshStatus(quiet) {
-          this.agents = (await this.api('/api/agents/status', { quiet: !!quiet })).agents;
+          const params = new URLSearchParams();
+          params.set('project_id', String(this.projectId || 0));
+          const data = await this.api('/api/agents/status?' + params.toString(), { quiet: !!quiet });
+          this.agents = data.agents;
+          this.runStopping = !!data.stopping;
         },
         async refreshLogs(quiet) {
           const projectId = this.projectId || 0;

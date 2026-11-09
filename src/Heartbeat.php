@@ -14,6 +14,12 @@ class Heartbeat
         $this->reconcile();
         foreach ($this->db->dueJobs(self::STALE_SECONDS, self::MAX_ATTEMPTS) as $job) {
             $id = (int)$job['id'];
+            $projectId = $job['project_id'] !== null ? (int)$job['project_id'] : 0;
+            if ($this->db->runStopRequested($projectId)) {
+                $this->db->closeStoppedJob($job);
+                $this->traceJob($job, 'Stopped by user · job ' . $id . ' not retried');
+                continue;
+            }
             $attempt = (int)($job['attempts'] ?? 1);
             $this->traceJob($job, 'Due job ' . $id . ' · ' . $job['kind'] . ' · attempt ' . $attempt);
             if ((string)$job['kind'] === 'subagent' && $this->db->lockFresh('subagent_lock', 900)) {
@@ -32,7 +38,7 @@ class Heartbeat
                     $this->traceJob($job, 'Retry finished · job ' . $id);
                 }
             } catch (ChatStopped $e) {
-                $this->db->finishJob($id);
+                $this->db->closeStoppedJob($job);
                 $this->traceJob($job, 'Stopped by user · job ' . $id);
             } catch (Throwable $e) {
                 $this->db->failJob($id, $e->getMessage(), self::MAX_ATTEMPTS);
@@ -69,10 +75,19 @@ class Heartbeat
                 $projectId = $job['project_id'];
             } elseif ($status === 'thinking' || $status === 'executing_tool') {
                 $stuckProject = $this->db->latestJobProject($name);
-                $this->db->setAgentStatus($name, 'stuck');
-                $this->db->logAgent($name, $stuckProject, 'error', $note);
-                $this->db->loopWrite(null, $stuckProject, $name, 'process', 'Marked stuck · no report for ' . $minutes . ' minutes');
-                $status = 'stuck';
+                $stopProject = $stuckProject !== null ? (int)$stuckProject : 0;
+                $age = $this->db->runStopAge($stopProject);
+                if ($age !== null && $age < self::STALE_SECONDS) {
+                    $projectId = $stuckProject;
+                } else {
+                    if ($age !== null) {
+                        $this->db->clearRunStop($stopProject);
+                    }
+                    $this->db->setAgentStatus($name, 'stuck');
+                    $this->db->logAgent($name, $stuckProject, 'error', $note);
+                    $this->db->loopWrite(null, $stuckProject, $name, 'process', 'Marked stuck · no report for ' . $minutes . ' minutes');
+                    $status = 'stuck';
+                }
             }
             $out[$name] = [
                 'status' => $status,
@@ -129,6 +144,25 @@ class Heartbeat
             $this->settleIfDue($task);
             return;
         }
+        if ((int)($task['held'] ?? 0) === 1) {
+            if ($jobId !== null) {
+                $this->db->finishJob($jobId);
+                $this->db->acknowledgeRunStop($projectId, $jobId);
+            }
+            $this->db->loopWrite($jobId, $projectId, 'heartbeat', 'process', 'Task ' . $taskId . ' held · not started');
+            return;
+        }
+        if ($this->db->runStopRequested($projectId)) {
+            if ($jobId !== null) {
+                $this->db->updateTask($taskId, ['held' => 1]);
+                $this->db->finishJob($jobId);
+                $this->db->acknowledgeRunStop($projectId, $jobId);
+                $this->db->loopWrite($jobId, $projectId, 'heartbeat', 'process', 'Task ' . $taskId . ' stopped · held');
+            } else {
+                $this->db->loopWrite(null, $projectId, 'heartbeat', 'process', 'Task ' . $taskId . ' not started · run stopped');
+            }
+            return;
+        }
         if ($ownJob) {
             Recovery::reset($this->db);
             $jobId = $this->db->startJob('task', $projectId, [
@@ -152,10 +186,13 @@ class Heartbeat
             $turn = new ChatTurn();
             try {
                 $answer = $turn->run($projectId, static function (): void {
-                }, function () use ($jobId): bool {
+                }, function () use ($jobId, $projectId): bool {
                     $this->db->touchJob($jobId);
-                    return false;
+                    return $this->db->runStopRequested($projectId);
                 });
+                if ($this->db->runStopRequested($projectId)) {
+                    throw new ChatStopped('Stopped.');
+                }
                 $detail = ChatTurn::encodeDetail($turn->detail);
                 if (trim($answer) === '' && $detail === null) {
                     throw new RuntimeException('The model returned an empty answer.');
@@ -168,8 +205,11 @@ class Heartbeat
                 $this->settle($task, $this->withTaskNotes($spoken, $turn->notices), false, $turn->notices !== []);
             } catch (Throwable $e) {
                 if ($e instanceof ChatStopped) {
-                    $this->db->loop('orchestrator', 'process', 'Stopped · job ' . $jobId);
+                    $this->db->updateTask((int)$task['id'], ['held' => 1]);
+                    $this->db->loop('orchestrator', 'process', 'Stopped by user · job ' . $jobId);
                     $this->db->finishJob($jobId);
+                    $this->db->acknowledgeRunStop($projectId, $jobId);
+                    $this->db->setAgentStatus('orchestrator', 'idle');
                     return;
                 }
                 if ($saved) {
@@ -232,10 +272,13 @@ class Heartbeat
                 $instruction = (string)($payload['instruction'] ?? '');
                 $this->db->loop($agent !== '' ? $agent : 'subagent', 'process', 'Subagent retry · job ' . $id . ($agent !== '' ? ' · ' . $agent : ''));
                 $result = app_services()['subagents']->run($agent, $folder, $instruction, static function (): void {
-                }, $projectId, function () use ($id): bool {
+                }, $projectId, function () use ($id, $projectId): bool {
                     $this->db->touchJob($id);
-                    return false;
+                    return $this->db->runStopRequested($projectId);
                 }, !empty($payload['scheduled']));
+                if ($this->db->runStopRequested($projectId)) {
+                    throw new ChatStopped('Stopped.');
+                }
                 if (trim($result) !== '') {
                     $this->db->addMessage($projectId, 'assistant', $result, $agent);
                 }
@@ -252,10 +295,13 @@ class Heartbeat
             $turn = new ChatTurn();
             try {
                 $answer = $turn->run($projectId, static function (): void {
-                }, function () use ($id): bool {
+                }, function () use ($id, $projectId): bool {
                     $this->db->touchJob($id);
-                    return false;
+                    return $this->db->runStopRequested($projectId);
                 });
+                if ($this->db->runStopRequested($projectId)) {
+                    throw new ChatStopped('Stopped.');
+                }
             } catch (Throwable $e) {
                 if (!($e instanceof ChatStopped)) {
                     $error = error_text($e->getMessage());
