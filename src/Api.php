@@ -63,6 +63,8 @@ class Api
         $router->add('GET', '#^/api/agents/status$#', $this->guard(fn() => $this->agentStatus()));
         $router->add('GET', '#^/api/model/load$#', $this->guard(fn() => $this->modelLoad()));
         $router->add('GET', '#^/api/agents/logs$#', $this->guard(fn() => $this->agentLogs()));
+        $router->add('GET', '#^/api/agents/loop$#', $this->guard(fn() => $this->loopLogs()));
+        $router->add('GET', '#^/api/agents/loop/download$#', $this->guard(fn() => $this->downloadLoop()));
         $router->add('GET', '#^/api/tools$#', $this->guard(fn() => $this->tools()));
         $router->add('POST', '#^/api/tools$#', $this->guard(fn() => $this->saveTools()));
         $router->add('GET', '#^/api/tools/email$#', $this->guard(fn() => $this->emailAccounts()));
@@ -506,17 +508,20 @@ class Api
         }
         $load = $this->modelLoadStatus();
         if (empty($load['ready'])) {
+            $this->db->loopWrite(null, null, 'heartbeat', 'process', 'Chat refused · model still loading');
             $this->json(['error' => 'The model is still loading.'], 409);
             return;
         }
         $body = $this->input();
         $projectId = (int)($body['project_id'] ?? 0);
         if ($projectId > 0 && !$this->db->project($projectId)) {
+            $this->db->loopWrite(null, $projectId, 'heartbeat', 'process', 'Chat refused · project not found');
             $this->json(['error' => 'Project not found.'], 404);
             return;
         }
         $message = trim((string)($body['message'] ?? ''));
         if ($message === '' || mb_strlen($message) > 20000) {
+            $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'heartbeat', 'process', 'Chat refused · message rejected');
             $this->json(['error' => 'Message is required.'], 422);
             return;
         }
@@ -532,6 +537,7 @@ class Api
             $this->db->addMessage($projectId, 'user', $message, 'human');
         }
         $jobId = $this->db->startJob('chat', $projectId > 0 ? $projectId : null, ['message' => $message]);
+        $this->db->loopPush($jobId, $projectId > 0 ? $projectId : null);
         session_write_close();
         $this->beginSse();
         $turn = new ChatTurn();
@@ -561,44 +567,63 @@ class Api
             return $stopCached;
         };
         try {
-            $answer = $turn->run($projectId, $emit, $stop);
-            if ($stop()) {
-                throw new ChatStopped('Stopped.');
+            $this->db->loop('orchestrator', 'process', 'Job ' . $jobId . ' started · chat');
+            if (!empty($body['retry'])) {
+                $this->db->loop('orchestrator', 'process', 'User retry of a failed message');
             }
-            $detail = ChatTurn::encodeDetail($turn->detail);
-            if (trim($answer) === '' && $detail === null) {
-                throw new RuntimeException('The model returned an empty answer.');
-            }
-            $saved = $this->db->addMessage($projectId, 'assistant', $answer, 'orchestrator', false, $detail);
-            $this->db->finishJob($jobId);
-            $this->sse('done', ['message' => $saved]);
-        } catch (ChatStopped $e) {
-            $this->db->finishJob($jobId);
-            $text = trim($turn->streamed);
-            $asked = $this->db->chatStopRequested($projectId);
-            if ($asked) {
-                $text = $text === '' ? 'Stopped.' : $text . "\n\nStopped.";
-                $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, ChatTurn::encodeDetail($turn->detail));
-                $this->db->setAgentStatus('orchestrator', 'idle');
-                $this->sse('stopped', ['text' => 'Stopped.']);
-            } else {
-                $why = error_text('The reply stopped while the model was still thinking.');
-                $text = $text !== '' ? $text . "\n\n" . $why : $why;
+            $this->db->loop('orchestrator', 'process', 'Recovery counters reset');
+            try {
+                $answer = $turn->run($projectId, $emit, $stop);
+                if ($stop()) {
+                    throw new ChatStopped('Stopped.');
+                }
+                $detail = ChatTurn::encodeDetail($turn->detail);
+                if (trim($answer) === '' && $detail === null) {
+                    throw new RuntimeException('The model returned an empty answer.');
+                }
+                $saved = $this->db->addMessage($projectId, 'assistant', $answer, 'orchestrator', false, $detail);
+                $this->db->loop('orchestrator', 'process', 'Answer saved · job ' . $jobId . ' finished');
+                $this->db->finishJob($jobId);
+                $this->sse('done', ['message' => $saved]);
+            } catch (ChatStopped $e) {
+                $this->db->finishJob($jobId);
+                $text = trim($turn->streamed);
+                $asked = $this->db->chatStopRequested($projectId);
+                if ($asked) {
+                    $this->db->loop('orchestrator', 'process', 'Intentional stop · job ' . $jobId . ' finished');
+                    $text = $text === '' ? 'Stopped.' : $text . "\n\nStopped.";
+                    $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, ChatTurn::encodeDetail($turn->detail));
+                    $this->db->setAgentStatus('orchestrator', 'idle');
+                    $this->sse('stopped', ['text' => 'Stopped.']);
+                } else {
+                    $this->db->loop('orchestrator', 'process', 'Stop while the model was still thinking · job ' . $jobId . ' finished');
+                    $why = error_text('The reply stopped while the model was still thinking.');
+                    $text = $text !== '' ? $text . "\n\n" . $why : $why;
+                    $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
+                    $this->db->setAgentStatus('orchestrator', 'idle');
+                    $this->sse('error', ['text' => $why]);
+                }
+            } catch (Throwable $e) {
+                $reason = $e->getMessage();
+                $retry = str_contains($reason, 'cut off before it finished') ? 1 : Heartbeat::MAX_ATTEMPTS;
+                $this->db->failJob($jobId, $reason, $retry);
+                $this->db->setAgentStatus('orchestrator', 'error');
+                if (str_contains($reason, 'empty answer')) {
+                    $line = 'Empty answer · job ' . $jobId;
+                } else {
+                    $line = 'Job ' . $jobId . ' failed · ' . $reason;
+                }
+                $line .= $retry === 1 ? ' · give up' : ' · heartbeat may retry';
+                $this->db->loop('orchestrator', 'process', $line);
+                $error = error_text($reason);
+                $text = trim($turn->streamed);
+                $text = $text !== '' ? $text . "\n\n" . $error : $error;
                 $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
-                $this->db->setAgentStatus('orchestrator', 'idle');
-                $this->sse('error', ['text' => $why]);
+                $this->sse('status', ['agent' => 'orchestrator', 'status' => 'error']);
+                $this->sse('error', ['text' => $error]);
             }
-        } catch (Throwable $e) {
-            $reason = $e->getMessage();
-            $retry = str_contains($reason, 'cut off before it finished') ? 1 : Heartbeat::MAX_ATTEMPTS;
-            $this->db->failJob($jobId, $reason, $retry);
-            $this->db->setAgentStatus('orchestrator', 'error');
-            $error = error_text($reason);
-            $text = trim($turn->streamed);
-            $text = $text !== '' ? $text . "\n\n" . $error : $error;
-            $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
-            $this->sse('status', ['agent' => 'orchestrator', 'status' => 'error']);
-            $this->sse('error', ['text' => $error]);
+        } finally {
+            $this->db->loopPop();
         }
     }
 
@@ -612,6 +637,7 @@ class Api
         }
         $generation = trim((string)($body['generation'] ?? ''));
         $this->db->requestChatStop($projectId, $generation);
+        $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'heartbeat', 'process', 'Stop asked');
         $this->json(['ok' => true]);
     }
 
@@ -1190,6 +1216,34 @@ class Api
         $agent = trim((string)($_GET['agent'] ?? ''));
         $projectId = (int)($_GET['project_id'] ?? 0);
         $this->json(['logs' => $this->db->logs($after, $agent, $projectId > 0 ? $projectId : null)]);
+    }
+
+    private function loopLogs(): void
+    {
+        $projectId = (int)($_GET['project_id'] ?? 0);
+        $this->json(['logs' => $this->db->loopLogs($projectId > 0 ? $projectId : null)]);
+    }
+
+    private function downloadLoop(): void
+    {
+        $projectId = (int)($_GET['project_id'] ?? 0);
+        $project = $projectId > 0 ? $this->db->project($projectId) : null;
+        if ($projectId > 0 && !$project) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return;
+        }
+        $label = is_array($project) ? (string)($project['name'] ?? '') : '';
+        $text = $this->db->loopLogText($projectId > 0 ? $projectId : null, $label);
+        $slug = $projectId > 0 && is_array($project)
+            ? preg_replace('/[^A-Za-z0-9._-]+/', '-', (string)$project['folder_name'])
+            : 'danaco';
+        $name = ($slug !== '' ? $slug : 'danaco') . '-loop.txt';
+        header('Content-Type: text/plain; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $name . '"');
+        header('Content-Length: ' . strlen($text));
+        header('Cache-Control: no-store');
+        header('X-Content-Type-Options: nosniff');
+        echo $text;
     }
 
     private function tools(): void

@@ -28,8 +28,12 @@ class Orchestrator
         }
         $emit(['type' => 'context', 'used' => $packed['used'], 'total' => $packed['total']]);
         $messages = $packed['messages'];
+        if (!empty($packed['updated'])) {
+            $this->db->loop('orchestrator', 'context', count($messages) . ' msgs · summary updated', $projectId > 0 ? $projectId : null);
+        }
         $last = $messages[count($messages) - 1] ?? null;
         if (is_array($last) && $this->toolWasCutOff((string)($last['content'] ?? ''))) {
+            $this->db->loop('orchestrator', 'steer', 'cutoff · carried into this run', $projectId > 0 ? $projectId : null);
             $messages[] = ['role' => 'user', 'content' => 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.'];
         }
         if ($this->db->taskRunning()) {
@@ -199,6 +203,7 @@ class Orchestrator
 
     private function betweenTurns(array $messages, ?array $project, callable $emit, int $projectId, ?callable $shouldStop): array
     {
+        $before = count($messages);
         $pendingKey = 'context_compress_pending_' . max(0, $projectId);
         $pending = $this->db->getSetting($pendingKey, '0') === '1';
         $last = $messages[count($messages) - 1] ?? null;
@@ -225,11 +230,16 @@ class Orchestrator
         $packed = ContextWindow::apply($system, $summary, $split['kept'], $total, $split['used']);
         $emit(['type' => 'notice', 'text' => ContextWindow::NOTICE]);
         $emit(['type' => 'context', 'used' => $packed['used'], 'total' => $packed['total']]);
+        $after = count($packed['messages']);
+        if ($after !== $before) {
+            $this->db->loop('orchestrator', 'context', $before . ' → ' . $after . ' msgs', $projectId > 0 ? $projectId : null);
+        }
         return $packed['messages'];
     }
 
     private function repackForFailsafe(array $messages, ?array $project, callable $emit, ?callable $shouldStop): array
     {
+        $before = count($messages);
         $system = (string)($messages[0]['content'] ?? '');
         $rest = array_slice($messages, 1);
         $total = $this->contextTotal();
@@ -248,6 +258,10 @@ class Orchestrator
         $packed = ContextWindow::apply($system, $summary, $split['kept'], $total, $split['used']);
         $emit(['type' => 'notice', 'text' => ContextWindow::NOTICE]);
         $emit(['type' => 'context', 'used' => $packed['used'], 'total' => $packed['total']]);
+        $after = count($packed['messages']);
+        if ($after !== $before) {
+            $this->db->loop('orchestrator', 'context', 'failsafe · ' . $before . ' → ' . $after . ' msgs');
+        }
         return $packed['messages'];
     }
 
@@ -679,12 +693,17 @@ TXT;
     private function gateExternal(string $kind, string $summary, callable $run, callable $emit, ?callable $shouldStop, ?int $projectId = null): string
     {
         if ($this->db->hitlExternalActions()) {
+            $scope = $projectId && $projectId > 0 ? $projectId : null;
             if (PHP_SAPI === 'cli') {
+                $this->db->loop('orchestrator', 'process', 'approval · ' . $kind . ' · scheduled cannot ask · ' . $summary, $scope);
                 return 'This action needs human approval, but a scheduled run cannot ask. Turn off extra approval gates, or run it from chat.';
             }
+            $this->db->loop('orchestrator', 'process', 'approval · ' . $kind . ' · needs approval · ' . $summary, $scope);
             if (!$this->confirmAction($kind, $summary, $emit, $shouldStop, $projectId)) {
+                $this->db->loop('orchestrator', 'process', 'approval · ' . $kind . ' · denied', $scope);
                 return 'The user did not allow this action.';
             }
+            $this->db->loop('orchestrator', 'process', 'approval · ' . $kind . ' · allowed', $scope);
         }
         $result = $run();
         $this->db->logCompliance('tool_' . $kind, 'agent', $summary, ['result' => clip_text($result, 500)], $projectId);
@@ -724,18 +743,22 @@ TXT;
         $tools = [
             'delegate' => function (array $args) use ($folder, $projectName, $formerName, $shownProject, $emit, $projectId, $shouldStop, $scheduled, &$createdTaskIds): string {
                 if ($folder === '') {
+                    $this->db->loop('orchestrator', 'process', 'Delegate rejected · no project');
                     return 'General chat has no project. Tell the user to create a project manually from the menu before delegating.';
                 }
                 $agent = strtolower(trim((string)($args['agent'] ?? '')));
                 $instruction = trim((string)($args['instruction'] ?? ''));
                 $tagged = trim((string)($args['project'] ?? $folder));
                 if (!$this->acceptsProjectTag($tagged, $folder, $projectName, $formerName, $projectId)) {
+                    $this->db->loop('orchestrator', 'process', 'Delegate rejected · project tag');
                     return 'Delegation rejected. The project tag must be project: ' . $folder;
                 }
                 if (!in_array($agent, ['researcher', 'writer', 'coder', 'analyst', 'marketer'], true)) {
+                    $this->db->loop('orchestrator', 'process', 'Delegate rejected · unknown agent');
                     return 'Unknown subagent.';
                 }
                 if ($instruction === '') {
+                    $this->db->loop('orchestrator', 'process', 'Delegate rejected · no instruction');
                     return 'The subagent needs an instruction.';
                 }
                 $note = '';
@@ -751,43 +774,57 @@ TXT;
                     'instruction' => $instruction,
                     'scheduled' => $scheduled,
                 ]);
+                $this->db->loopPush($jobId, $projectId > 0 ? $projectId : null);
                 $watch = function () use ($shouldStop, $jobId): bool {
                     $this->db->touchJob($jobId);
                     return $shouldStop && $shouldStop();
                 };
                 try {
-                    $result = $this->subagents->run($agent, $folder, $instruction, $emit, $projectId, $watch, $scheduled);
-                    $this->db->finishJob($jobId);
-                    return $result . $note;
-                } catch (ChatStopped $e) {
-                    $this->db->finishJob($jobId);
-                    throw $e;
-                } catch (RuntimeException $e) {
-                    if ($e->getMessage() === 'Only one subagent can run at a time.') {
+                    $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' started');
+                    try {
+                        $result = $this->subagents->run($agent, $folder, $instruction, $emit, $projectId, $watch, $scheduled);
+                        $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' finished');
                         $this->db->finishJob($jobId);
-                        return 'Only one subagent can run at a time. Wait for the current one to finish, then delegate the next task.' . $note;
+                        return $result . $note;
+                    } catch (ChatStopped $e) {
+                        $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' stopped');
+                        $this->db->finishJob($jobId);
+                        throw $e;
+                    } catch (RuntimeException $e) {
+                        if ($e->getMessage() === 'Only one subagent can run at a time.') {
+                            $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' closed · one already running');
+                            $this->db->finishJob($jobId);
+                            return 'Only one subagent can run at a time. Wait for the current one to finish, then delegate the next task.' . $note;
+                        }
+                        $this->db->failJob($jobId, $e->getMessage(), Heartbeat::MAX_ATTEMPTS);
+                        $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' failed · ' . $e->getMessage());
+                        $notice = agent_error($agent, $e->getMessage());
+                        $emit(['type' => 'token', 'agent' => $agent, 'text' => $notice]);
+                        return $notice . $note;
+                    } catch (Throwable $e) {
+                        $this->db->failJob($jobId, $e->getMessage(), Heartbeat::MAX_ATTEMPTS);
+                        $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' failed · ' . $e->getMessage());
+                        $notice = agent_error($agent, $e->getMessage());
+                        $emit(['type' => 'token', 'agent' => $agent, 'text' => $notice]);
+                        return $notice . $note;
                     }
-                    $this->db->failJob($jobId, $e->getMessage(), Heartbeat::MAX_ATTEMPTS);
-                    $notice = agent_error($agent, $e->getMessage());
-                    $emit(['type' => 'token', 'agent' => $agent, 'text' => $notice]);
-                    return $notice . $note;
-                } catch (Throwable $e) {
-                    $this->db->failJob($jobId, $e->getMessage(), Heartbeat::MAX_ATTEMPTS);
-                    $notice = agent_error($agent, $e->getMessage());
-                    $emit(['type' => 'token', 'agent' => $agent, 'text' => $notice]);
-                    return $notice . $note;
+                } finally {
+                    $this->db->loopPop();
                 }
             },
             'consult' => function (array $args) use ($folder, $shownProject, $emit, $projectId, $shouldStop, $scheduled): string {
                 if (!$this->db->consultantActive()) {
                     $reason = (string)($this->db->consultantState()['reason'] ?? '');
                     if ($reason === 'no_key') {
+                        $this->db->loop('orchestrator', 'process', 'Consult rejected · no key');
                         return 'The Consultant has no API key. Tell the user to add one on the Setup page, under External LLM provider, and use that API for the Consultant.';
                     }
+                    $this->db->loop('orchestrator', 'process', 'Consult rejected · turned off');
                     return 'The Consultant is turned off. Tell the user they can turn it on from the Agents page. It costs tokens while it is on.';
                 }
                 $instruction = trim((string)($args['instruction'] ?? ''));
                 if ($instruction === '') {
+                    $this->db->loop('orchestrator', 'process', 'Consult rejected · no instruction');
                     return 'The Consultant needs an assignment.';
                 }
                 $emit(['type' => 'delegation', 'agent' => 'consultant', 'project' => $shownProject !== '' ? $shownProject : 'general', 'text' => $instruction]);

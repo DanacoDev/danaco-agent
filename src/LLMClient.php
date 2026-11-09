@@ -24,9 +24,13 @@ class LLMClient
 
     public bool $ranOut = false;
 
+    public string $doneReason = '';
+
     public bool $brief = false;
 
     public bool $usingFailsafe = false;
+
+    private int $attemptTry = 1;
 
     private float $gpuRestoreNotBefore = 0;
 
@@ -217,10 +221,12 @@ class LLMClient
         }
         $this->restoreGpu();
         $last = null;
+        $who = $agent !== '' ? $agent : 'orchestrator';
         for ($try = 1; $try <= 3; $try++) {
             if ($shouldStop && $shouldStop()) {
                 throw new ChatStopped('Stopped.');
             }
+            $this->attemptTry = $try;
             try {
                 return $this->attempt($messages, $onToken, $shouldStop, $onThinking, $cloud, $agent, $this->usingFailsafe);
             } catch (ChatStopped $e) {
@@ -229,6 +235,7 @@ class LLMClient
                 throw $e;
             } catch (LlmException $e) {
                 $last = $e;
+                $this->db->loop($who, 'retry', 'try ' . $try . '/3 · ' . $e->getMessage());
                 if ($this->isFullGpu($e->getMessage())) {
                     $this->keepSplit((string)$this->db->getSetting('local_model', app_config()['local_model']));
                 }
@@ -238,12 +245,15 @@ class LLMClient
                 $again = $this->stoppedWhileThinking($e->getMessage());
                 $note = $this->recover($e->getMessage());
                 if ($note === null) {
+                    $this->db->loop($who, 'retry', 'try ' . $try . '/3 · no recovery');
                     break;
                 }
                 if ($note !== '') {
                     $this->recoveries[] = $note;
+                    $this->db->loop($who, 'retry', 'recovery · ' . $note);
                 }
                 if ($again) {
+                    $this->db->loop($who, 'retry', 'pause before retry');
                     $this->pauseForRetry($shouldStop);
                 }
             }
@@ -252,6 +262,7 @@ class LLMClient
             $this->usingFailsafe = true;
             $this->db->setSetting('cpu_fallback', '1');
             $this->recoveries[] = 'The model connection was lost. Continuing with the CPU failsafe.';
+            $this->db->loop($who, 'retry', 'CPU failsafe · ' . $last->getMessage());
             throw new ContextFallback($last->getMessage());
         }
         throw $last ?? new LlmException('The model failed.', false);
@@ -344,10 +355,39 @@ class LLMClient
         return !empty($result['retry']) ? (string)$result['note'] : null;
     }
 
+    private function traceModel(string $agent, array $messages, string $model, int $numCtx, bool $brief): void
+    {
+        $chars = 0;
+        $last = '';
+        foreach ($messages as $message) {
+            if (!is_array($message)) {
+                continue;
+            }
+            $content = (string)($message['content'] ?? '');
+            $chars += strlen($content);
+            if (($message['role'] ?? '') === 'user' && trim($content) !== '') {
+                $last = $content;
+            }
+        }
+        $last = preg_replace('/\s+/', ' ', trim($last)) ?? '';
+        if (strlen($last) > 48) {
+            $last = substr($last, 0, 47) . '…';
+        }
+        $line = 'model ' . $model . ' · ' . count($messages) . ' msgs · ' . $chars . ' chars · ctx ' . $numCtx . ' · brief ' . ($brief ? 'on' : 'off');
+        if ($this->attemptTry > 1) {
+            $line = 'try ' . $this->attemptTry . '/3 · ' . $line;
+        }
+        if ($last !== '') {
+            $line .= ' · last: ' . $last;
+        }
+        $this->db->loop($agent !== '' ? $agent : 'orchestrator', 'model', $line);
+    }
+
     private function attempt(array $messages, callable $onToken, ?callable $shouldStop, ?callable $onThinking = null, bool $cloud = false, string $agent = '', bool $failsafe = false): string
     {
         $this->incomplete = false;
         $this->ranOut = false;
+        $this->doneReason = '';
         $brief = $this->brief;
         $this->brief = false;
         $mode = $failsafe ? 'cpu_failsafe' : (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
@@ -361,6 +401,8 @@ class LLMClient
             $brief = true;
         }
         if (!$failsafe && ($cloud || $mode === 'cloud')) {
+            $cloudModel = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
+            $this->traceModel($agent, $messages, $cloudModel, $numCtx, $brief);
             return $this->streamOpenAi($messages, $onToken, $shouldStop, $onThinking, $brief);
         }
         $model = $mode === 'cpu_failsafe'
@@ -402,6 +444,7 @@ class LLMClient
         if (!is_string($payload) || $payload === '') {
             throw new LlmException('The model request could not be encoded.', false);
         }
+        $this->traceModel($agent, $messages, $model, $numCtx, $brief);
         try {
             return $this->curlStream($base . '/api/chat', $payload, [], $onToken, true, $base, $model, $shouldStop, $onThinking);
         } catch (LlmException $e) {
@@ -563,6 +606,7 @@ class LLMClient
         $err = curl_error($ch);
         unset($ch);
         $stopped = false;
+        $this->doneReason = $doneReason;
         try {
             $stopped = $shouldStop && $shouldStop();
         } catch (ChatStopped $e) {

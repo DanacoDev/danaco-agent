@@ -5,6 +5,8 @@ class Database
     private static ?self $instance = null;
     private PDO $pdo;
 
+    private array $loopScope = [];
+
     public static function instance(): self
     {
         if (self::$instance === null) {
@@ -144,6 +146,18 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(status, updated_at);
+SQL);
+        $this->pdo->exec(<<<'SQL'
+CREATE TABLE IF NOT EXISTS loop_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NULL,
+    project_id INTEGER NULL,
+    agent_name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    line TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_loop_logs_lookup ON loop_logs(project_id, id);
 SQL);
         $this->pdo->exec(<<<'SQL'
 CREATE TABLE IF NOT EXISTS email_accounts (
@@ -564,9 +578,15 @@ SQL);
         $projectId = $projectId && $projectId > 0 ? $projectId : null;
         if ($kind === 'chat') {
             if ($projectId) {
-                $this->pdo->prepare("UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE kind = 'chat' AND project_id = ? AND status IN ('running', 'error')")->execute([$projectId]);
+                $close = $this->pdo->prepare("UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE kind = 'chat' AND project_id = ? AND status IN ('running', 'error')");
+                $close->execute([$projectId]);
             } else {
-                $this->pdo->prepare("UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE kind = 'chat' AND project_id IS NULL AND status IN ('running', 'error')")->execute();
+                $close = $this->pdo->prepare("UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE kind = 'chat' AND project_id IS NULL AND status IN ('running', 'error')");
+                $close->execute();
+            }
+            $closed = $close->rowCount();
+            if ($closed > 0) {
+                $this->loopWrite(null, $projectId, 'heartbeat', 'process', 'Closed ' . $closed . ' earlier chat ' . ($closed === 1 ? 'job' : 'jobs'));
             }
         }
         $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -583,7 +603,17 @@ SQL);
             return;
         }
         $last[$id] = $now;
-        $this->pdo->prepare("UPDATE jobs SET updated_at = datetime('now') WHERE id = ? AND status = 'running'")->execute([$id]);
+        $stmt = $this->pdo->prepare("UPDATE jobs SET updated_at = datetime('now') WHERE id = ? AND status = 'running'");
+        $stmt->execute([$id]);
+        if ($stmt->rowCount() < 1) {
+            return;
+        }
+        $job = $this->job($id);
+        if (!$job) {
+            return;
+        }
+        $project = $job['project_id'] !== null ? (int)$job['project_id'] : null;
+        $this->loopWrite($id, $project, $this->loopJobAgent($job), 'process', 'Job ' . $id . ' alive · ' . $job['kind'] . ' · attempt ' . (int)$job['attempts']);
     }
 
     public function finishJob(int $id): void
@@ -773,6 +803,127 @@ SQL);
         }
         $sql = 'DELETE FROM agent_logs WHERE agent_name = ? AND project_id = ? AND id < COALESCE((SELECT id FROM agent_logs WHERE agent_name = ? AND project_id = ? ORDER BY id DESC LIMIT 1 OFFSET 99), 0)';
         $this->pdo->prepare($sql)->execute([$agent, $projectId, $agent, $projectId]);
+    }
+
+    public function loopPush(?int $jobId, ?int $projectId): void
+    {
+        $this->loopScope[] = [
+            'job_id' => $jobId && $jobId > 0 ? $jobId : null,
+            'project_id' => $projectId && $projectId > 0 ? $projectId : null,
+        ];
+    }
+
+    public function loopPop(): void
+    {
+        array_pop($this->loopScope);
+    }
+
+    public function loop(string $agent, string $kind, string $line, ?int $projectId = null): void
+    {
+        $jobId = null;
+        $scoped = null;
+        if ($this->loopScope !== []) {
+            $scope = $this->loopScope[count($this->loopScope) - 1];
+            $jobId = $scope['job_id'];
+            $scoped = $scope['project_id'];
+        }
+        if ($projectId === null) {
+            $projectId = $scoped;
+        }
+        $this->loopWrite($jobId, $projectId, $agent, $kind, $line);
+    }
+
+    public function loopWrite(?int $jobId, ?int $projectId, string $agent, string $kind, string $line): void
+    {
+        $projectId = $projectId && $projectId > 0 ? $projectId : null;
+        $jobId = $jobId && $jobId > 0 ? $jobId : null;
+        $agent = trim($agent);
+        if ($agent === '') {
+            $agent = 'heartbeat';
+        }
+        $kind = trim($kind);
+        if ($kind === '') {
+            $kind = 'process';
+        }
+        $line = preg_replace('/\s+/', ' ', trim($line)) ?? '';
+        if ($line === '') {
+            return;
+        }
+        if (mb_strlen($line) > 160) {
+            $line = rtrim(mb_substr($line, 0, 159)) . '…';
+        }
+        $stmt = $this->pdo->prepare('INSERT INTO loop_logs (job_id, project_id, agent_name, kind, line) VALUES (?, ?, ?, ?, ?)');
+        $stmt->execute([$jobId, $projectId, $agent, $kind, $line]);
+        $this->trimLoopLogs($projectId);
+    }
+
+    public function loopLogs(?int $projectId = null, int $limit = 400): array
+    {
+        $projectId = $projectId && $projectId > 0 ? $projectId : null;
+        $limit = max(1, min(500, $limit));
+        if ($projectId === null) {
+            $stmt = $this->pdo->prepare('SELECT * FROM loop_logs WHERE project_id IS NULL OR project_id = 0 ORDER BY id DESC LIMIT ?');
+            $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+        } else {
+            $stmt = $this->pdo->prepare('SELECT * FROM loop_logs WHERE project_id = ? ORDER BY id DESC LIMIT ?');
+            $stmt->bindValue(1, $projectId, PDO::PARAM_INT);
+            $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+        }
+        $stmt->execute();
+        return array_map([$this, 'castLoopLog'], array_reverse($stmt->fetchAll()));
+    }
+
+    public function loopLogText(?int $projectId, string $projectName): string
+    {
+        $projectId = $projectId && $projectId > 0 ? $projectId : null;
+        $limit = 5000;
+        if ($projectId === null) {
+            $stmt = $this->pdo->prepare('SELECT * FROM loop_logs WHERE project_id IS NULL OR project_id = 0 ORDER BY id ASC LIMIT ?');
+            $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+        } else {
+            $stmt = $this->pdo->prepare('SELECT * FROM loop_logs WHERE project_id = ? ORDER BY id ASC LIMIT ?');
+            $stmt->bindValue(1, $projectId, PDO::PARAM_INT);
+            $stmt->bindValue(2, $limit, PDO::PARAM_INT);
+        }
+        $stmt->execute();
+        $rows = array_map([$this, 'castLoopLog'], $stmt->fetchAll());
+        $name = trim($projectName) !== '' ? trim($projectName) : 'General chat';
+        $lines = [
+            '# Loop trace',
+            '# Project: ' . $name,
+            '# Lines: ' . count($rows),
+            '# id	time	job	agent	kind	line',
+        ];
+        foreach ($rows as $row) {
+            $job = $row['job_id'] !== null ? (string)$row['job_id'] : '-';
+            $lines[] = $row['id'] . "\t" . $row['created_at'] . "\t" . $job . "\t" . $row['agent_name'] . "\t" . $row['kind'] . "\t" . $row['line'];
+        }
+        if ($rows === []) {
+            $lines[] = '# No loop trace yet.';
+        }
+        return implode("\n", $lines) . "\n";
+    }
+
+    private function trimLoopLogs(?int $projectId): void
+    {
+        if ($projectId === null) {
+            $sql = 'DELETE FROM loop_logs WHERE (project_id IS NULL OR project_id = 0) AND id < COALESCE((SELECT id FROM loop_logs WHERE project_id IS NULL OR project_id = 0 ORDER BY id DESC LIMIT 1 OFFSET 4999), 0)';
+            $this->pdo->exec($sql);
+            return;
+        }
+        $sql = 'DELETE FROM loop_logs WHERE project_id = ? AND id < COALESCE((SELECT id FROM loop_logs WHERE project_id = ? ORDER BY id DESC LIMIT 1 OFFSET 4999), 0)';
+        $this->pdo->prepare($sql)->execute([$projectId, $projectId]);
+    }
+
+    private function loopJobAgent(array $job): string
+    {
+        $kind = (string)($job['kind'] ?? '');
+        if ($kind === 'subagent') {
+            $payload = json_decode((string)($job['payload'] ?? ''), true);
+            $agent = is_array($payload) ? trim((string)($payload['agent'] ?? '')) : '';
+            return $agent !== '' ? $agent : 'subagent';
+        }
+        return 'orchestrator';
     }
 
     public function setAgentStatus(string $agent, string $status): void
@@ -1242,6 +1393,14 @@ SQL);
     private function castLog(array $row): array
     {
         $row['id'] = (int)$row['id'];
+        $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
+        return $row;
+    }
+
+    private function castLoopLog(array $row): array
+    {
+        $row['id'] = (int)$row['id'];
+        $row['job_id'] = $row['job_id'] !== null ? (int)$row['job_id'] : null;
         $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
         return $row;
     }

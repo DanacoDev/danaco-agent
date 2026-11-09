@@ -562,6 +562,19 @@ header('X-Danaco: 1');
               </article>
               <p v-if="!logs.length" class="empty">{{ logAgent ? 'No activity for this agent yet.' : (projectId ? 'No activity in this project yet.' : 'No activity in General chat yet.') }}</p>
             </div>
+            <div class="flow-log-head">
+              <h3 class="flow-log-title">Loop</h3>
+              <a class="btn btn-ghost" :href="'/api/agents/loop/download?project_id=' + (projectId || 0)">Download log</a>
+            </div>
+            <div class="log-feed">
+              <article v-for="log in loopLogs" :key="'loop-' + log.id" class="log-row">
+                <div class="log-summary">
+                  <span class="type">{{ agentLabel(log.agent_name) }} · {{ logProject(log) }} · {{ loopKind(log.kind) }} · {{ log.created_at }}</span>
+                  <span class="hint">{{ log.line }}</span>
+                </div>
+              </article>
+              <p v-if="!loopLogs.length" class="empty">No loop trace yet.</p>
+            </div>
           </section>
 
           <section v-else-if="tab==='skills'" class="view skills-view">

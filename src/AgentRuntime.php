@@ -2,6 +2,8 @@
 
 class OutputLineFilter
 {
+    public int $dropped = 0;
+
     private string $pending = '';
 
     private bool $lineStart = true;
@@ -27,6 +29,7 @@ class OutputLineFilter
             $line = substr($this->pending, 0, $break);
             $this->pending = substr($this->pending, $break + 1);
             if ($this->lineStart && $this->isMarker($line)) {
+                $this->dropped++;
                 $this->lineStart = true;
                 continue;
             }
@@ -44,6 +47,7 @@ class OutputLineFilter
             return '';
         }
         if ($this->lineStart && $this->isMarker($rest)) {
+            $this->dropped++;
             $this->lineStart = true;
             return '';
         }
@@ -219,6 +223,8 @@ class ReplyNoiseFilter
 
     private const PASS = ['chat'];
 
+    public int $asideChars = 0;
+
     private string $pending = '';
 
     private string $mode = '';
@@ -313,6 +319,7 @@ class ReplyNoiseFilter
             $this->mode = '';
             $this->closer = '';
         }
+        $this->asideChars += strlen($aside);
         return ['visible' => $visible, 'aside' => $aside];
     }
 
@@ -395,6 +402,7 @@ class AgentRuntime
                 }
             }
             $skipCompact = false;
+            $this->db->loop($agent, 'process', 'Turn ' . ($turn + 1) . '/' . $maxTurns, $projectId);
             $this->llm->onCpuChange = function (bool $cpu) use ($emit): void {
                 $emit(['type' => 'cpu', 'cpu' => $cpu]);
             };
@@ -488,12 +496,14 @@ class AgentRuntime
                 $present($this->releaseMarker($markers, $parser));
                 $finishNoise();
                 $flushThinking(true);
+                $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
                 $this->db->setAgentStatus($agent, 'idle');
                 throw $e;
             } catch (OutputRepeated $e) {
                 $finishNoise();
                 $flushThinking(true);
                 $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
+                $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
                 if ($turnText !== '') {
                     $this->db->logAgent($agent, $projectId, 'thinking', $turnText);
                 }
@@ -505,7 +515,9 @@ class AgentRuntime
                 $flushThinking(true);
                 $emit(['type' => 'cpu', 'cpu' => true]);
                 $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
+                $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
                 if ($fallbackTries >= 1) {
+                    $this->db->loop($agent, 'stop', 'context fallback · ' . $e->getMessage(), $projectId);
                     $this->db->setAgentStatus($agent, 'error');
                     $notice = agent_error($agent, $e->getMessage());
                     $this->db->logAgent($agent, $projectId, 'error', $notice);
@@ -513,6 +525,7 @@ class AgentRuntime
                     throw new LlmException($notice, false);
                 }
                 $fallbackTries++;
+                $this->db->loop($agent, 'steer', 'context fallback · ' . $e->getMessage(), $projectId);
                 if ($onFallback) {
                     $next = $onFallback($messages);
                     if (is_array($next) && $next !== []) {
@@ -524,6 +537,8 @@ class AgentRuntime
             } catch (LlmException $e) {
                 $flushThinking(true);
                 $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
+                $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
+                $this->db->loop($agent, 'stop', $e->getMessage(), $projectId);
                 $this->db->setAgentStatus($agent, 'error');
                 $notice = agent_error($agent, $e->getMessage());
                 $this->db->logAgent($agent, $projectId, 'error', $notice);
@@ -546,6 +561,8 @@ class AgentRuntime
             if ($turnText !== '') {
                 $this->db->logAgent($agent, $projectId, 'thinking', $turnText);
             }
+            $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
+            $this->traceOutcome($agent, $projectId, $turnText, $tail, $cutOff);
             if ($guard->tripped) {
                 if (!$this->steerAfterRepeat($repeatTries, $messages, $guard->singleCopy($turnText), $guard->repeated, $visible, $emit, $agent, $skipCompact)) {
                     return $this->finishVisible($visible);
@@ -557,6 +574,7 @@ class AgentRuntime
                 $inferred = $this->proseDelegation($turnText);
                 if ($inferred !== null) {
                     $tail['tools'] = [$inferred];
+                    $this->db->loop($agent, 'steer', 'prose delegate · ' . (string)($inferred['args']['agent'] ?? ''), $projectId);
                 }
             }
             $proseTools = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->announcedToolsWithoutCall($turnText);
@@ -564,6 +582,8 @@ class AgentRuntime
             if (!$tail['tools'] && ($cutOff || $this->llm->incomplete || $proseTools || $emptyFences)) {
                 $ranOut = $this->llm->ranOut;
                 if ($retryOpen >= 5 && !$ranOut) {
+                    $why = $emptyFences ? 'empty fences' : ($proseTools ? 'prose tool' : 'cutoff');
+                    $this->db->loop($agent, 'stop', $why . ' · retry limit', $projectId);
                     if ($emptyFences) {
                         throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
                     }
@@ -574,6 +594,17 @@ class AgentRuntime
                 if (!$ranOut) {
                     $retryOpen++;
                 }
+                $why = 'incomplete';
+                if ($cutOff) {
+                    $why = 'cutoff';
+                } elseif ($emptyFences) {
+                    $why = 'empty fences';
+                } elseif ($proseTools) {
+                    $why = 'prose tool';
+                } elseif ($ranOut) {
+                    $why = 'ran out · brief on';
+                }
+                $this->db->loop($agent, 'steer', $why . ($ranOut ? '' : ' · retry ' . $retryOpen . '/5'), $projectId);
                 $skipCompact = true;
                 $replay = $turnText;
                 if ($ranOut && trim($replay) === '') {
@@ -620,6 +651,7 @@ class AgentRuntime
             if (!$tail['tools']) {
                 if ($agent === 'orchestrator' && $finishChecks < 2 && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop)) {
                     $finishChecks++;
+                    $this->db->loop($agent, 'steer', 'finish-check continue · ' . $finishChecks . '/2', $projectId);
                     $skipCompact = true;
                     $replay = trim($turnText);
                     if ($replay === '') {
@@ -632,6 +664,7 @@ class AgentRuntime
                     $messages[] = ['role' => 'user', 'content' => $this->finishSteer($scheduled)];
                     continue;
                 }
+                $this->db->loop($agent, 'stop', 'completed', $projectId);
                 $this->db->setAgentStatus($agent, 'completed');
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
                 return $this->finishVisible($visible);
@@ -648,6 +681,7 @@ class AgentRuntime
                 $toolArgs = is_array($tool['args'] ?? null) ? $tool['args'] : [];
                 $writePath = $this->repeatWritePath($toolName, $toolArgs);
                 if ($writePath !== '' && $writePath === $writeStreakPath && $writeStreak >= 2) {
+                    $this->db->loop($agent, 'stop', 'write-streak · ' . $writePath, $projectId);
                     $this->db->setAgentStatus($agent, 'completed');
                     $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
                     return 'Saved ' . $writePath . '.';
@@ -655,6 +689,7 @@ class AgentRuntime
                 if ($agent === 'orchestrator' && ($tool['name'] ?? '') === 'delegate') {
                     if ($delegated) {
                         $skipped = 'Only one subagent can run at a time. This delegation was not started. Wait for the current result, then delegate the next task.';
+                        $this->db->loop($agent, 'tool', 'delegate skipped · one at a time', $projectId);
                         $emit(['type' => 'tool_call', 'agent' => $agent, 'name' => 'delegate', 'args' => $tool['args']]);
                         $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => 'delegate', 'text' => $skipped]);
                         $messages[] = ['role' => 'user', 'content' => "TOOL RESULT delegate:\n{$skipped}"];
@@ -665,6 +700,7 @@ class AgentRuntime
                 if ($agent === 'orchestrator' && ($tool['name'] ?? '') === 'consult') {
                     if ($consulted) {
                         $skipped = 'The Consultant was already called this turn. It costs money, so wait for that result before asking again.';
+                        $this->db->loop($agent, 'tool', 'consult skipped · already called', $projectId);
                         $emit(['type' => 'tool_call', 'agent' => $agent, 'name' => 'consult', 'args' => $tool['args']]);
                         $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => 'consult', 'text' => $skipped]);
                         $messages[] = ['role' => 'user', 'content' => "TOOL RESULT consult:\n{$skipped}"];
@@ -676,6 +712,7 @@ class AgentRuntime
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'executing_tool']);
                 $emit(['type' => 'tool_call', 'agent' => $agent, 'name' => $tool['name'], 'args' => $tool['args']]);
                 $this->db->logAgent($agent, $projectId, 'tool_call', $tool['name'] . ' ' . json_encode($tool['args'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                $this->db->loop($agent, 'tool', $this->toolTrace($toolName, $toolArgs), $projectId);
                 try {
                     if (!isset($toolHandlers[$tool['name']])) {
                         $result = agent_error($agent, 'Unknown tool: ' . $tool['name']);
@@ -704,20 +741,24 @@ class AgentRuntime
                     $writeStreak = 0;
                 }
                 $result = clip_text($result);
+                $this->db->loop($agent, 'tool', $this->toolResultTrace($toolName, $result), $projectId);
                 $this->db->logAgent($agent, $projectId, 'output', $result);
                 $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => $tool['name'], 'text' => $result]);
                 $messages[] = ['role' => 'user', 'content' => "TOOL RESULT {$tool['name']}:\n{$result}"];
                 if ($this->kanbanFollowsDelegate($agent, (string)($tool['name'] ?? ''), $result)) {
+                    $this->db->loop($agent, 'steer', 'kanban after delegate', $projectId);
                     $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the kanban and update the matching cards before you reply or delegate again. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has cards. Move a finished run-once card to review with a short result. Leave a repeating card in in_progress. Move the card you are starting to in_progress. You never mark a task done. Do not explain the board workflow in place of listing it and updating the cards.'];
                 }
             }
             if ($cutOff) {
                 $skipCompact = true;
+                $this->db->loop($agent, 'steer', $savedThisTurn !== '' ? 'already saved · ' . $savedThisTurn : 'cutoff · after tools', $projectId);
                 $messages[] = ['role' => 'user', 'content' => $savedThisTurn !== ''
                     ? 'That file is already saved. Do not write it again. Reply with the path and stop.'
                     : 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.'];
             }
         }
+        $this->db->loop($agent, 'stop', 'max-turns ' . $maxTurns, $projectId);
         $note = "\n\nStopped because of too many turns.";
         $visible .= $note;
         $emit(['type' => 'token', 'agent' => $agent, 'text' => $note]);
@@ -979,6 +1020,7 @@ class AgentRuntime
     private function steerAfterRepeat(int &$tries, array &$messages, string $kept, string $line, string &$visible, callable $emit, string $agent, bool &$skipCompact): bool
     {
         if ($tries >= 3) {
+            $this->db->loop($agent, 'stop', 'repeat-line');
             $note = "\n\nStopped because the same line was repeating.";
             $visible .= $note;
             $emit(['type' => 'token', 'agent' => $agent, 'text' => $note]);
@@ -987,6 +1029,11 @@ class AgentRuntime
             return false;
         }
         $tries++;
+        $shown = preg_replace('/\s+/', ' ', trim($line)) ?? '';
+        if (strlen($shown) > 60) {
+            $shown = substr($shown, 0, 59) . '…';
+        }
+        $this->db->loop($agent, 'steer', 'repeat-line · try ' . $tries . '/3' . ($shown !== '' ? ' · ' . $shown : ''));
         $skipCompact = true;
         if ($kept !== '') {
             $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($kept)];
@@ -1004,9 +1051,16 @@ class AgentRuntime
         if ($shouldStop && $shouldStop()) {
             throw new ChatStopped('Stopped.');
         }
-        $verdict = $this->llm->yesNo($this->finishCheckPrompt($messages, $reply, $scheduled), $shouldStop);
+        $prompt = $this->finishCheckPrompt($messages, $reply, $scheduled);
+        $this->db->loop('orchestrator', 'model', 'finish-check · ' . strlen($prompt) . ' chars');
+        $verdict = $this->llm->yesNo($prompt, $shouldStop);
         if ($shouldStop && $shouldStop()) {
             throw new ChatStopped('Stopped.');
+        }
+        if ($verdict === null) {
+            $this->db->loop('orchestrator', 'process', 'finish-check skipped');
+        } else {
+            $this->db->loop('orchestrator', 'process', $verdict ? 'finish-check done' : 'finish-check not done');
         }
         return $verdict === false;
     }
@@ -1125,6 +1179,89 @@ class AgentRuntime
             $this->postNotice($emit, $projectId, $agent, (string)$line, $scheduled);
         }
         $this->llm->recoveries = [];
+    }
+
+    private function traceFilters(string $agent, ?int $projectId, OutputLineFilter $markers, ReplyNoiseFilter $noise, RepeatLineGuard $guard): void
+    {
+        if ($markers->dropped === 0 && $noise->asideChars === 0 && !$guard->tripped) {
+            return;
+        }
+        $parts = [];
+        if ($markers->dropped > 0) {
+            $parts[] = 'output markers ' . $markers->dropped;
+        }
+        if ($noise->asideChars > 0) {
+            $parts[] = 'noise ' . $noise->asideChars . ' chars';
+        }
+        if ($guard->tripped) {
+            $repeated = preg_replace('/\s+/', ' ', trim($guard->repeated)) ?? '';
+            if (strlen($repeated) > 60) {
+                $repeated = substr($repeated, 0, 59) . '…';
+            }
+            $parts[] = 'repeat' . ($repeated !== '' ? ' · ' . $repeated : '');
+        }
+        $this->db->loop($agent, 'filter', implode(' · ', $parts), $projectId);
+    }
+
+    private function traceOutcome(string $agent, ?int $projectId, string $turnText, array $tail, bool $cutOff): void
+    {
+        $reason = $this->llm->doneReason !== '' ? $this->llm->doneReason : 'stop';
+        $line = 'done ' . $reason . ' · tools ' . count($tail['tools'] ?? []) . ' · visible ' . strlen($turnText) . ' chars';
+        $flags = [];
+        if ($this->llm->incomplete) {
+            $flags[] = 'incomplete';
+        }
+        if ($this->llm->ranOut) {
+            $flags[] = 'ran out';
+        }
+        if ($cutOff) {
+            $flags[] = 'cutoff';
+        }
+        if ($flags !== []) {
+            $line .= ' · ' . implode(' · ', $flags);
+        }
+        $this->db->loop($agent, 'model', $line, $projectId);
+    }
+
+    private function toolTrace(string $name, array $args): string
+    {
+        $detail = '';
+        foreach (['path', 'file', 'filepath', 'agent', 'name'] as $key) {
+            $value = trim((string)($args[$key] ?? ''));
+            if ($value !== '') {
+                $detail = $key . '=' . $value;
+                break;
+            }
+        }
+        $size = 0;
+        foreach (['content', 'source', 'text', 'instruction', 'body'] as $key) {
+            if (isset($args[$key]) && is_string($args[$key])) {
+                $size += strlen($args[$key]);
+            }
+        }
+        $line = $name !== '' ? $name : 'tool';
+        if ($detail !== '') {
+            $line .= ' · ' . $detail;
+        }
+        $line .= ' · args ' . count($args);
+        if ($size > 0) {
+            $line .= ' · content ' . $size . ' chars';
+        }
+        return $line;
+    }
+
+    private function toolResultTrace(string $name, string $result): string
+    {
+        $failed = str_starts_with($result, 'Error:');
+        $flat = preg_replace('/\s+/', ' ', trim($result)) ?? '';
+        if (strlen($flat) > 80) {
+            $flat = substr($flat, 0, 79) . '…';
+        }
+        $line = ($name !== '' ? $name : 'tool') . ' · ' . ($failed ? 'error' : 'ok') . ' · ' . strlen($result) . ' chars';
+        if ($flat !== '') {
+            $line .= ' · ' . $flat;
+        }
+        return $line;
     }
 
     private function postNotice(callable $emit, ?int $projectId, string $agent, string $text, bool $scheduled, string $logType = 'error'): void

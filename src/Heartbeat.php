@@ -14,20 +14,38 @@ class Heartbeat
         $this->reconcile();
         foreach ($this->db->dueJobs(self::STALE_SECONDS, self::MAX_ATTEMPTS) as $job) {
             $id = (int)$job['id'];
+            $attempt = (int)($job['attempts'] ?? 1);
+            $this->traceJob($job, 'Due job ' . $id . ' · ' . $job['kind'] . ' · attempt ' . $attempt);
             if ((string)$job['kind'] === 'subagent' && $this->db->lockFresh('subagent_lock', 900)) {
+                $this->traceJob($job, 'Skipped job ' . $id . ' · subagent lock held');
                 continue;
             }
             $this->db->bumpJob($id);
+            $this->traceJob($job, 'Bumped job ' . $id . ' · attempt ' . ($attempt + 1));
+            $this->traceJob($job, 'Retry started · job ' . $id);
             try {
                 if ($this->retry($job)) {
                     $this->db->finishJob($id);
+                    $this->traceJob($job, 'Retry finished · job ' . $id);
                 }
             } catch (ChatStopped $e) {
                 $this->db->finishJob($id);
+                $this->traceJob($job, 'Stopped by user · job ' . $id);
             } catch (Throwable $e) {
                 $this->db->failJob($id, $e->getMessage(), self::MAX_ATTEMPTS);
                 $projectId = $job['project_id'] !== null ? (int)$job['project_id'] : null;
                 $this->db->logAgent('orchestrator', $projectId, 'error', 'Heartbeat retry failed: ' . $e->getMessage());
+                $current = $this->db->job($id);
+                $status = (string)($current['status'] ?? '');
+                $reason = $e->getMessage();
+                if (str_contains($reason, 'empty answer')) {
+                    $line = 'Empty answer · job ' . $id . ($status === 'gave_up' ? ' · give up' : ' · heartbeat may retry');
+                } elseif ($status === 'gave_up') {
+                    $line = 'Gave up · job ' . $id . ' · ' . $reason;
+                } else {
+                    $line = 'Failed · job ' . $id . ' · attempt ' . (int)($current['attempts'] ?? 0) . ' · heartbeat may retry · ' . $reason;
+                }
+                $this->traceJob($job, $line);
                 $this->gaveUpTask($job);
             }
         }
@@ -47,8 +65,10 @@ class Heartbeat
             if ($job !== null) {
                 $projectId = $job['project_id'];
             } elseif ($status === 'thinking' || $status === 'executing_tool') {
+                $stuckProject = $this->db->latestJobProject($name);
                 $this->db->setAgentStatus($name, 'stuck');
-                $this->db->logAgent($name, $this->db->latestJobProject($name), 'error', $note);
+                $this->db->logAgent($name, $stuckProject, 'error', $note);
+                $this->db->loopWrite(null, $stuckProject, $name, 'process', 'Marked stuck · no report for ' . $minutes . ' minutes');
                 $status = 'stuck';
             }
             $out[$name] = [
@@ -102,36 +122,59 @@ class Heartbeat
         } else {
             $this->db->deleteLatestFailed($projectId);
         }
-        $turn = new ChatTurn();
+        $this->db->loopPush($jobId, $projectId);
         try {
-            $answer = $turn->run($projectId, static function (): void {
-            }, function () use ($jobId): bool {
-                $this->db->touchJob($jobId);
-                return false;
-            });
-            $detail = ChatTurn::encodeDetail($turn->detail);
-            if (trim($answer) === '' && $detail === null) {
-                throw new RuntimeException('The model returned an empty answer.');
+            if ($ownJob) {
+                $this->db->loop('orchestrator', 'process', 'Task ' . (int)$task['id'] . ' started · job ' . $jobId . ' · in progress');
+                $this->db->loop('orchestrator', 'process', 'Recovery counters reset');
+            } else {
+                $this->db->loop('orchestrator', 'process', 'Heartbeat retry · task ' . (int)$task['id'] . ' · job ' . $jobId);
             }
-            $spoken = $answer !== '' ? $answer : 'Finished the scheduled task.';
-            $this->db->addMessage($projectId, 'assistant', $spoken, 'orchestrator', false, $detail);
-            $this->db->finishJob($jobId);
-            $this->settle($task, $this->withTaskNotes($spoken, $turn->notices), false, $turn->notices !== []);
-        } catch (Throwable $e) {
-            if ($e instanceof ChatStopped) {
+            $turn = new ChatTurn();
+            try {
+                $answer = $turn->run($projectId, static function (): void {
+                }, function () use ($jobId): bool {
+                    $this->db->touchJob($jobId);
+                    return false;
+                });
+                $detail = ChatTurn::encodeDetail($turn->detail);
+                if (trim($answer) === '' && $detail === null) {
+                    throw new RuntimeException('The model returned an empty answer.');
+                }
+                $spoken = $answer !== '' ? $answer : 'Finished the scheduled task.';
+                $this->db->addMessage($projectId, 'assistant', $spoken, 'orchestrator', false, $detail);
+                $this->db->loop('orchestrator', 'process', 'Answer saved · job ' . $jobId . ' finished');
                 $this->db->finishJob($jobId);
-                return;
+                $this->settle($task, $this->withTaskNotes($spoken, $turn->notices), false, $turn->notices !== []);
+            } catch (Throwable $e) {
+                if ($e instanceof ChatStopped) {
+                    $this->db->loop('orchestrator', 'process', 'Stopped · job ' . $jobId);
+                    $this->db->finishJob($jobId);
+                    return;
+                }
+                $this->db->failJob($jobId, $e->getMessage(), self::MAX_ATTEMPTS);
+                $this->db->logAgent('orchestrator', $projectId, 'error', $e->getMessage());
+                $this->db->setAgentStatus('orchestrator', 'error');
+                $current = $this->db->job($jobId);
+                $reason = $e->getMessage();
+                $status = (string)($current['status'] ?? '');
+                if (str_contains($reason, 'empty answer')) {
+                    $line = 'Empty answer · job ' . $jobId;
+                } elseif ($status === 'gave_up') {
+                    $line = 'Gave up · job ' . $jobId . ' · ' . $reason;
+                } else {
+                    $line = 'Failed · job ' . $jobId . ' · ' . $reason;
+                }
+                $this->db->loop('orchestrator', 'process', $line);
+                if ($ownJob && $status === 'gave_up') {
+                    $this->settle($task, $this->withTaskNotes((string)($current['last_error'] ?? $e->getMessage()), $turn->notices), true);
+                }
+                if (!$ownJob) {
+                    throw $e;
+                }
             }
-            $this->db->failJob($jobId, $e->getMessage(), self::MAX_ATTEMPTS);
-            $this->db->logAgent('orchestrator', $projectId, 'error', $e->getMessage());
-            $this->db->setAgentStatus('orchestrator', 'error');
-            $current = $this->db->job($jobId);
-            if ($ownJob && ($current['status'] ?? '') === 'gave_up') {
-                $this->settle($task, $this->withTaskNotes((string)($current['last_error'] ?? $e->getMessage()), $turn->notices), true);
-            }
-            if (!$ownJob) {
-                throw $e;
-            }
+        } finally {
+            $this->db->loopPop();
         }
     }
 
@@ -147,51 +190,67 @@ class Heartbeat
         if ($kind === 'task') {
             $task = $this->db->task((int)($job['ref_id'] ?? $payload['task_id'] ?? 0));
             if (!$task) {
+                $this->traceJob($job, 'Task missing · job ' . $id . ' closed');
                 return true;
             }
             $this->runTask($task, $id);
             return true;
         }
         if ($kind === 'subagent') {
-            if ($this->db->lockFresh('subagent_lock', 900)) {
-                return false;
+            $this->db->loopPush($id, $projectId > 0 ? $projectId : null);
+            try {
+                if ($this->db->lockFresh('subagent_lock', 900)) {
+                    $this->db->loop('heartbeat', 'process', 'Skipped · subagent lock held · job ' . $id);
+                    return false;
+                }
+                $agent = (string)($payload['agent'] ?? '');
+                $folder = (string)($payload['folder'] ?? '');
+                $instruction = (string)($payload['instruction'] ?? '');
+                $this->db->loop($agent !== '' ? $agent : 'subagent', 'process', 'Subagent retry · job ' . $id . ($agent !== '' ? ' · ' . $agent : ''));
+                $result = app_services()['subagents']->run($agent, $folder, $instruction, static function (): void {
+                }, $projectId, function () use ($id): bool {
+                    $this->db->touchJob($id);
+                    return false;
+                }, !empty($payload['scheduled']));
+                if (trim($result) !== '') {
+                    $this->db->addMessage($projectId, 'assistant', $result, $agent);
+                }
+                $this->db->loop($agent !== '' ? $agent : 'subagent', 'process', 'Subagent retry finished · job ' . $id);
+                return true;
+            } finally {
+                $this->db->loopPop();
             }
-            $agent = (string)($payload['agent'] ?? '');
-            $folder = (string)($payload['folder'] ?? '');
-            $instruction = (string)($payload['instruction'] ?? '');
-            $result = app_services()['subagents']->run($agent, $folder, $instruction, static function (): void {
-            }, $projectId, function () use ($id): bool {
-                $this->db->touchJob($id);
-                return false;
-            }, !empty($payload['scheduled']));
-            if (trim($result) !== '') {
-                $this->db->addMessage($projectId, 'assistant', $result, $agent);
-            }
-            return true;
         }
-        $this->db->deleteLatestFailed($projectId);
-        $turn = new ChatTurn();
+        $this->db->loopPush($id, $projectId > 0 ? $projectId : null);
         try {
-            $answer = $turn->run($projectId, static function (): void {
-            }, function () use ($id): bool {
-                $this->db->touchJob($id);
-                return false;
-            });
-        } catch (Throwable $e) {
-            if (!($e instanceof ChatStopped)) {
-                $error = error_text($e->getMessage());
-                $text = trim($turn->streamed);
-                $text = $text !== '' ? $text . "\n\n" . $error : $error;
-                $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
+            $this->db->deleteLatestFailed($projectId);
+            $this->db->loop('orchestrator', 'process', 'Chat retry · job ' . $id);
+            $turn = new ChatTurn();
+            try {
+                $answer = $turn->run($projectId, static function (): void {
+                }, function () use ($id): bool {
+                    $this->db->touchJob($id);
+                    return false;
+                });
+            } catch (Throwable $e) {
+                if (!($e instanceof ChatStopped)) {
+                    $error = error_text($e->getMessage());
+                    $text = trim($turn->streamed);
+                    $text = $text !== '' ? $text . "\n\n" . $error : $error;
+                    $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
+                }
+                throw $e;
             }
-            throw $e;
+            $detail = ChatTurn::encodeDetail($turn->detail);
+            if (trim($answer) === '' && $detail === null) {
+                throw new RuntimeException('The model returned an empty answer.');
+            }
+            $this->db->addMessage($projectId, 'assistant', $answer, 'orchestrator', false, $detail);
+            $this->db->loop('orchestrator', 'process', 'Answer saved · job ' . $id . ' finished');
+            return true;
+        } finally {
+            $this->db->loopPop();
         }
-        $detail = ChatTurn::encodeDetail($turn->detail);
-        if (trim($answer) === '' && $detail === null) {
-            throw new RuntimeException('The model returned an empty answer.');
-        }
-        $this->db->addMessage($projectId, 'assistant', $answer, 'orchestrator', false, $detail);
-        return true;
     }
 
     private function gaveUpTask(array $job): void
@@ -230,7 +289,13 @@ class Heartbeat
     {
         $board = new Kanban($this->db);
         $next = $this->nextSchedule((string)($task['recurrence_interval'] ?? 'none'), (string)($task['schedule_time'] ?? ''));
+        $projectId = (int)($task['project_id'] ?? 0);
         if ($next) {
+            $line = 'Task ' . (int)$task['id'] . ' rescheduled · ' . $next;
+            if ($failed || $noted) {
+                $line .= ' · result noted';
+            }
+            $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'orchestrator', 'process', $line);
             $fields = ['status' => 'in_progress', 'schedule_time' => $next];
             if ($failed || $noted) {
                 $fields['result'] = $result;
@@ -238,10 +303,32 @@ class Heartbeat
             $board->move((int)$task['id'], $fields, false);
             return;
         }
+        $line = 'Task ' . (int)$task['id'] . ' settled to review';
+        if ($failed || $noted) {
+            $line .= ' · result noted';
+        }
+        $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'orchestrator', 'process', $line);
         $board->move((int)$task['id'], [
             'status' => 'review',
             'result' => $result,
         ], false);
+    }
+
+    private function traceJob(array $job, string $line): void
+    {
+        $projectId = $job['project_id'] !== null ? (int)$job['project_id'] : null;
+        $kind = (string)($job['kind'] ?? '');
+        $agent = 'orchestrator';
+        if ($kind === 'subagent') {
+            $payload = $job['payload'] ?? null;
+            if (is_string($payload)) {
+                $payload = json_decode($payload, true);
+            }
+            $name = is_array($payload) ? trim((string)($payload['agent'] ?? '')) : '';
+            $agent = $name !== '' ? $name : 'subagent';
+        }
+        $jobId = isset($job['id']) ? (int)$job['id'] : null;
+        $this->db->loopWrite($jobId, $projectId, $agent, 'process', $line);
     }
 
     private function nextSchedule(string $interval, string $from): ?string

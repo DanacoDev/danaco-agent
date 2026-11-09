@@ -231,6 +231,7 @@
           structuredTableName: '',
           agents: [],
           logs: [],
+          loopLogs: [],
           logAgent: '',
           logLatest: {},
           logLatestProject: -1,
@@ -472,6 +473,7 @@
           if (document.hidden || !this.authed || this.tab !== 'agents') return;
           this.refreshStatus(true).catch(function () {});
           this.refreshLogs(true).catch(function () {});
+          this.refreshLoop(true).catch(function () {});
         });
         window.addEventListener('mousedown', (event) => {
           if (!this.treeMenu || event.button !== 0) return;
@@ -624,6 +626,7 @@
           if (this.tab === 'workspace') await this.loadTree();
           if (this.tab === 'agents') {
             await this.refreshLogs();
+            await this.refreshLoop();
             await this.refreshPendingActions();
           }
           if (this.tab === 'skills') {
@@ -888,6 +891,17 @@
             if (box) box.scrollIntoView({ block: 'center' });
             if (field) field.focus();
           });
+        },
+        loopKind(type) {
+          if (type === 'model') return 'Model';
+          if (type === 'retry') return 'Retry';
+          if (type === 'filter') return 'Filter';
+          if (type === 'steer') return 'Steer';
+          if (type === 'tool') return 'Tool';
+          if (type === 'context') return 'Context';
+          if (type === 'stop') return 'Stop';
+          if (type === 'process') return 'Process';
+          return type || 'Note';
         },
         logKind(type) {
           if (type === 'tool_call') return 'Tool';
@@ -2221,6 +2235,13 @@
           }
           this.logs = logs;
         },
+        async refreshLoop(quiet) {
+          const projectId = this.projectId || 0;
+          const params = new URLSearchParams();
+          params.set('project_id', String(projectId));
+          const logs = (await this.api('/api/agents/loop?' + params.toString(), { quiet: !!quiet })).logs;
+          this.loopLogs = Array.isArray(logs) ? logs.slice().reverse() : [];
+        },
         projectName(id) {
           const project = this.projects.find((item) => item.id === id);
           return project ? project.name : 'Missing project';
@@ -2692,6 +2713,7 @@
             if (this.tab === 'agents') {
               this.refreshStatus(true).catch(function () {});
               this.refreshLogs(true).catch(function () {});
+              this.refreshLoop(true).catch(function () {});
               if (!document.hidden) this.refreshPendingActions().catch(function () {});
             }
           }, 1000);
