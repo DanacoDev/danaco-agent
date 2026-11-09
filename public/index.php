@@ -286,10 +286,8 @@ header('X-Danaco: 1');
                   <p class="hint">{{ column.hint }}</p>
                 </header>
                 <article v-for="task in tasksFor(column.id)" :key="task.id" class="task-card" :draggable="canDrag && !taskRepeats(task)" @dragstart="onDragStart(task, $event)">
-                  <h3 class="task-title">{{ task.title }}</h3>
-                  <div class="task-tags">
-                    <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
-                    <span class="task-tag">#{{ task.id }}</span>
+                  <header>
+                    <h3 class="task-title">{{ task.title }}</h3>
                     <span class="task-tools" @mousedown.stop>
                       <button class="task-edit" type="button" :aria-label="openTask === task.id ? 'Close' : 'Edit'" @click="toggleTask(task)">
                         <svg class="ico" aria-hidden="true"><use :href="openTask === task.id ? '#i-close' : '#i-edit'"></use></svg>
@@ -298,8 +296,12 @@ header('X-Danaco: 1');
                         <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
                       </button>
                     </span>
+                  </header>
+                  <div class="task-tags">
+                    <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
+                    <span class="task-tag">#{{ task.id }}</span>
+                    <span class="task-when">{{ task.schedule_time || 'immediately' }} · {{ repeatLabel(task.recurrence_interval) }}</span>
                   </div>
-                  <p class="hint">{{ task.schedule_time || 'immediately' }} · {{ repeatLabel(task.recurrence_interval) }}</p>
                   <p v-if="task.result" class="task-result">{{ task.result }}</p>
                   <label v-if="!taskRepeats(task)" class="field move-field">Move
                     <select :value="columnStatus(task)" @change="moveTask(task, $event.target.value)">
@@ -356,15 +358,17 @@ header('X-Danaco: 1');
               </header>
               <div v-if="finishedVisible().length" class="archive-row">
                 <article v-for="task in finishedVisible()" :key="'done'+task.id" class="task-card">
-                  <h3 class="task-title">{{ task.title }}</h3>
-                  <div class="task-tags">
-                    <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
-                    <span class="task-tag">#{{ task.id }}</span>
+                  <header>
+                    <h3 class="task-title">{{ task.title }}</h3>
                     <span class="task-tools">
                       <button class="task-edit" type="button" aria-label="Delete task" @click="deleteTask(task)">
                         <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
                       </button>
                     </span>
+                  </header>
+                  <div class="task-tags">
+                    <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
+                    <span class="task-tag">#{{ task.id }}</span>
                   </div>
                   <p v-if="task.result" class="task-result">{{ task.result }}</p>
                 </article>
@@ -373,21 +377,21 @@ header('X-Danaco: 1');
             </section>
           </section>
 
-          <section v-else-if="tab==='workspace'" class="view workspace-view">
+          <section v-else-if="tab==='workspace'" class="view workspace-view" :class="{ 'is-vault': vaultOpen }">
             <div class="view-head">
               <h2>Workspace</h2>
-              <button class="btn btn-ghost" type="button" @click="toggleVault">Show backups</button>
+              <button class="btn btn-ghost" type="button" @click="toggleVault">{{ vaultOpen ? 'Hide backups' : 'Show backups' }}</button>
             </div>
             <form class="wiki-tools workspace-search" @submit.prevent="searchWorkspace">
               <div class="search-field">
-                <input v-model="wikiQuery" aria-label="Search the workspace" placeholder="Search filename or content">
+                <input v-model="wikiQuery" :aria-label="vaultOpen ? 'Search backups' : 'Search the workspace'" :placeholder="vaultOpen ? 'Search backups' : 'Search filename or content'">
                 <button v-if="wikiQuery" class="search-clear" type="button" aria-label="Clear search" @click="clearWorkspaceSearch">
                   <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>
                 </button>
               </div>
               <button class="btn" type="submit">Search</button>
             </form>
-            <div class="split">
+            <div v-if="!vaultOpen" class="split">
               <div class="panel" @scroll="treeMenu = null">
                 <p v-if="treeError" class="form-error">{{ treeError }}</p>
                 <file-tree :nodes="tree" :selected="fileKey" :over-key="treeOverKey" @open="openFile" @menu="openTreeMenu" @move="moveTreeNode" @hover="treeOverKey = $event"></file-tree>
@@ -479,15 +483,15 @@ header('X-Danaco: 1');
             <div v-if="vaultOpen" class="vault panel">
               <h3>Restoration</h3>
               <p class="hint">Agents can read and restore these files. They cannot delete them. Trash older than 10 days is removed automatically.</p>
-              <article v-for="item in backups" :key="'b'+item.stored_as" class="log-row">
-                <div>Backup · {{ item.original }}</div>
-                <button class="btn" type="button" @click="restoreItem('backup', item.stored_as)">Restore</button>
+              <article v-for="item in listedVault(backups)" :key="'b'+item.stored_as" class="log-row vault-row">
+                <div class="vault-name">Backup · {{ item.original }}</div>
+                <button class="btn" :class="{ 'is-restored': vaultRestored('backup', item.stored_as) }" type="button" :disabled="vaultRestored('backup', item.stored_as)" @click="restoreItem('backup', item.stored_as)">{{ vaultRestored('backup', item.stored_as) ? 'Restored' : 'Restore' }}</button>
               </article>
-              <article v-for="item in trash" :key="'t'+item.stored_as" class="log-row">
-                <div>Trash · {{ item.original }}</div>
-                <button class="btn" type="button" @click="restoreItem('trash', item.stored_as)">Restore</button>
+              <article v-for="item in listedVault(trash)" :key="'t'+item.stored_as" class="log-row vault-row">
+                <div class="vault-name">Trash · {{ item.original }}</div>
+                <button class="btn" :class="{ 'is-restored': vaultRestored('trash', item.stored_as) }" type="button" :disabled="vaultRestored('trash', item.stored_as)" @click="restoreItem('trash', item.stored_as)">{{ vaultRestored('trash', item.stored_as) ? 'Restored' : 'Restore' }}</button>
               </article>
-              <p v-if="!backups.length && !trash.length" class="empty">Nothing to restore.</p>
+              <p v-if="!listedVault(backups).length && !listedVault(trash).length" class="empty">{{ wikiQuery.trim() ? 'No matches.' : 'Nothing to restore.' }}</p>
             </div>
           </section>
 

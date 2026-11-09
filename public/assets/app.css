@@ -307,14 +307,16 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 .column > header { font-size: 0.82rem; color: var(--muted); margin-bottom: 8px; }
 .column-title { display: flex; justify-content: space-between; gap: 8px; color: var(--text); font-weight: 600; }
 .column-title + .hint { margin: 4px 0 0; }
-.task-card { position: relative; background: #42404f; border: 1px solid #000; border-radius: 12px; padding: 10px; margin-bottom: 8px; }
-.task-title { margin: 0 0 8px; width: 100%; font-size: 0.92rem; font-weight: 600; line-height: 1.3; }
-.task-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.task-card { position: relative; background: #42404f; border: 1px solid #000; border-radius: 12px; padding: 8px 10px; margin-bottom: 8px; }
+.task-card header { align-items: flex-start; }
+.task-title { margin: 0; flex: 1; min-width: 0; font-size: 0.92rem; font-weight: 600; line-height: 1.3; }
+.task-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
 .task-tag {
   max-width: 100%; padding: 2px 8px; border: 1px solid var(--line); border-radius: 8px;
   font-size: 0.68rem; line-height: 1.4; color: var(--text);
 }
 .task-tools { margin-left: auto; display: flex; align-items: center; flex: 0 0 auto; }
+.task-when { font-size: 0.8rem; line-height: 1.4; color: var(--muted); }
 .task-edit {
   width: 28px; height: 28px; flex: 0 0 auto;
   display: grid; place-items: center; padding: 0; color: #d4d4dc;
@@ -345,6 +347,7 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 .workspace-view .split { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
 .workspace-view .split > .panel { min-height: 0; overflow: auto; }
 .workspace-view .vault { flex: none; max-height: 32%; overflow: auto; }
+.workspace-view.is-vault .vault { flex: 1; max-height: none; margin-top: 0; min-height: 0; }
 .panel { padding: 12px; min-height: 280px; overflow: auto; }
 .tree { list-style: none; margin: 0; padding: 0; }
 .tree ul { margin-left: 14px; }
@@ -426,6 +429,11 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 }
 .file-image { display: block; max-width: 100%; height: auto; border-radius: 10px; }
 .vault { margin-top: 12px; }
+.vault-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.vault-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vault-row .btn { flex: 0 0 auto; }
+.vault-row .btn.is-restored,
+.vault-row .btn.is-restored:disabled { background: var(--ok); color: #163024; font-weight: 650; opacity: 1; cursor: default; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .log-feed { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
 .log-row .type { color: var(--gold); font-size: 0.75rem; }

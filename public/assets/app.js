@@ -215,6 +215,7 @@
           fileError: '',
           showingSearch: false,
           vaultOpen: false,
+          restoredVault: {},
           backups: [],
           trash: [],
           wikiWhich: 'central',
@@ -2276,7 +2277,16 @@
           this.searchHits = [];
           this.showingSearch = false;
         },
+        listedVault(items) {
+          const query = this.wikiQuery.trim().toLowerCase();
+          if (!query) return items || [];
+          return (items || []).filter((item) => {
+            const hay = [item.original, item.stored_as, item.relative_path, item.project_folder, item.kind].join(' ').toLowerCase();
+            return hay.includes(query);
+          });
+        },
         async searchWorkspace() {
+          if (this.vaultOpen) return;
           this.wikiResult = '';
           this.searchHits = [];
           const query = this.wikiQuery.trim();
@@ -2298,12 +2308,15 @@
             this.trash = data.trash;
           }
         },
+        vaultRestored(kind, storedAs) {
+          return !!this.restoredVault[kind + '\n' + storedAs];
+        },
         async restoreItem(kind, storedAs) {
+          const key = kind + '\n' + storedAs;
+          if (this.restoredVault[key]) return;
           await this.api('/api/workspace/restore', { method: 'POST', body: { kind: kind, stored_as: storedAs } });
+          this.restoredVault[key] = true;
           await this.loadTree();
-          const data = await this.api('/api/workspace/vault');
-          this.backups = data.backups;
-          this.trash = data.trash;
         },
         async refreshStatus(quiet) {
           const params = new URLSearchParams();
