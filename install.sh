@@ -381,6 +381,130 @@ choose_port() {
   return 1
 }
 
+find_bin() {
+  local name="$1"
+  local path
+  path="$(command -v "$name" 2>/dev/null || true)"
+  if [[ -n "$path" ]]; then
+    printf '%s' "$path"
+    return 0
+  fi
+  for path in "/usr/sbin/${name}" "/sbin/${name}"; do
+    if [[ -x "$path" ]]; then
+      printf '%s' "$path"
+      return 0
+    fi
+  done
+  return 1
+}
+
+allow_iptables_port() {
+  local port="$1"
+  local iptables_bin rules policy blocking=0 saved=0
+  iptables_bin="$(find_bin iptables || true)"
+  [[ -n "$iptables_bin" ]] || return 1
+  rules="$(as_root "$iptables_bin" -S INPUT 2>/dev/null || true)"
+  policy="$(awk '/^-P INPUT / { print $3; exit }' <<<"$rules")"
+  case "$policy" in
+    DROP|REJECT) blocking=1 ;;
+  esac
+  if [[ "$blocking" -eq 0 ]] && grep -Eq '^-A INPUT( -p tcp)? -j (DROP|REJECT)' <<<"$rules"; then
+    blocking=1
+  fi
+  [[ "$blocking" -eq 1 ]] || return 1
+  if as_root "$iptables_bin" -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
+    return 0
+  fi
+  as_root "$iptables_bin" -I INPUT -p tcp --dport "$port" -j ACCEPT
+  if find_bin netfilter-persistent >/dev/null; then
+    as_root "$(find_bin netfilter-persistent)" save >/dev/null 2>&1 && saved=1
+  fi
+  if [[ "$saved" -eq 0 ]]; then
+    echo "Allowed tcp/${port} in iptables. Allow it again after a restart if those rules are loaded from a file."
+  fi
+  return 0
+}
+
+allow_nft_port() {
+  local port="$1"
+  local nft_bin line family="" table="" chain="" added=0 fresh=0
+  local -a families=() tables=() chains=()
+  nft_bin="$(find_bin nft || true)"
+  [[ -n "$nft_bin" ]] || return 1
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^table[[:space:]]+(inet|ip)[[:space:]]+([^[:space:]{]+) ]]; then
+      family="${BASH_REMATCH[1]}"
+      table="${BASH_REMATCH[2]}"
+      chain=""
+    elif [[ "$line" =~ ^table[[:space:]] ]]; then
+      family=""
+      table=""
+      chain=""
+    elif [[ "$line" =~ ^[[:space:]]*chain[[:space:]]+([^[:space:]{]+) ]]; then
+      chain="${BASH_REMATCH[1]}"
+    elif [[ -n "$family" && -n "$table" && -n "$chain" && "$line" =~ hook[[:space:]]+input && "$line" =~ policy[[:space:]]+drop ]]; then
+      families+=("$family")
+      tables+=("$table")
+      chains+=("$chain")
+      chain=""
+    fi
+  done < <(as_root "$nft_bin" list ruleset 2>/dev/null || true)
+  [[ ${#chains[@]} -gt 0 ]] || return 1
+  local i
+  for i in "${!chains[@]}"; do
+    if as_root "$nft_bin" list chain "${families[$i]}" "${tables[$i]}" "${chains[$i]}" 2>/dev/null | grep -Eq "tcp dport ${port}[[:space:]].*accept"; then
+      added=1
+      continue
+    fi
+    as_root "$nft_bin" insert rule "${families[$i]}" "${tables[$i]}" "${chains[$i]}" tcp dport "$port" accept
+    added=1
+    fresh=1
+  done
+  [[ "$added" -eq 1 ]]
+  if [[ "$fresh" -eq 1 ]]; then
+    echo "Allowed tcp/${port} in nftables. Allow it again after a restart if those rules are loaded from a file."
+  fi
+  return 0
+}
+
+allow_lan_port() {
+  local port="$1"
+  local active=0 known=0
+  local ufw_bin="" firewall_cmd="" firewall_offline=""
+  ufw_bin="$(find_bin ufw || true)"
+  firewall_cmd="$(find_bin firewall-cmd || true)"
+  firewall_offline="$(find_bin firewall-offline-cmd || true)"
+  if [[ -n "$ufw_bin" ]]; then
+    as_root "$ufw_bin" allow "${port}/tcp"
+    known=1
+    if as_root env LANG=C "$ufw_bin" status 2>/dev/null | grep -qi '^Status:[[:space:]]*active'; then
+      active=1
+    fi
+  fi
+  if [[ -n "$firewall_cmd" ]] && as_root "$firewall_cmd" --state >/dev/null 2>&1; then
+    as_root "$firewall_cmd" --add-port="${port}/tcp"
+    as_root "$firewall_cmd" --permanent --add-port="${port}/tcp"
+    known=1
+    active=1
+  elif [[ -n "$firewall_offline" ]]; then
+    as_root "$firewall_offline" --add-port="${port}/tcp"
+    known=1
+  fi
+  if [[ "$active" -eq 1 ]]; then
+    return 0
+  fi
+  if allow_iptables_port "$port"; then
+    return 0
+  fi
+  if allow_nft_port "$port"; then
+    return 0
+  fi
+  if [[ "$known" -eq 1 ]]; then
+    return 0
+  fi
+  echo "If a firewall is on, allow tcp/${port} before using the LAN address."
+}
+
 APP_PORT="$(choose_port)"
 if [[ "$APP_PORT" == "8000" ]]; then
   echo "Using port ${APP_PORT}."
@@ -389,12 +513,7 @@ else
 fi
 
 if [[ "$BIND_HOST" == "0.0.0.0" && "$OS" == "Linux" ]]; then
-  if command -v ufw >/dev/null 2>&1; then
-    as_root ufw allow ssh
-    as_root ufw allow "${APP_PORT}/tcp"
-  else
-    echo "ufw is not installed. Open ssh and tcp/${APP_PORT} yourself before using the LAN address."
-  fi
+  allow_lan_port "$APP_PORT"
 fi
 
 read_masked() {
