@@ -474,7 +474,7 @@ SQL);
 
     public function dueTasks(): array
     {
-        $stmt = $this->pdo->prepare("SELECT * FROM tasks WHERE project_id IS NOT NULL AND status IN ('todo', 'backlog', 'in_progress') AND id NOT IN (SELECT ref_id FROM jobs WHERE kind = 'task' AND status IN ('running', 'error') AND ref_id IS NOT NULL) AND ((schedule_time IS NOT NULL AND schedule_time <= ?) OR (schedule_time IS NULL AND status = 'in_progress' AND project_id NOT IN (SELECT project_id FROM jobs WHERE project_id IS NOT NULL AND kind IN ('chat', 'subagent') AND updated_at >= datetime('now', '-3 minutes')))) ORDER BY schedule_time");
+        $stmt = $this->pdo->prepare("SELECT * FROM tasks WHERE project_id IS NOT NULL AND status IN ('todo', 'backlog', 'in_progress') AND id NOT IN (SELECT ref_id FROM jobs WHERE kind = 'task' AND status IN ('running', 'error') AND ref_id IS NOT NULL) AND ((schedule_time IS NOT NULL AND schedule_time <= ?) OR (schedule_time IS NULL AND status = 'in_progress' AND project_id NOT IN (SELECT project_id FROM jobs WHERE project_id IS NOT NULL AND kind IN ('chat', 'subagent') AND updated_at >= datetime('now', '-5 minutes')))) ORDER BY schedule_time");
         $stmt->execute([date('Y-m-d H:i:s')]);
         $rows = $stmt->fetchAll();
         return array_map([$this, 'castTask'], $rows);
@@ -539,23 +539,23 @@ SQL);
     public function hasRunningJob(int $projectId): bool
     {
         if ($projectId > 0) {
-            $stmt = $this->pdo->prepare("SELECT 1 FROM jobs WHERE project_id = ? AND status = 'running' AND updated_at >= datetime('now', '-3 minutes') LIMIT 1");
+            $stmt = $this->pdo->prepare("SELECT 1 FROM jobs WHERE project_id = ? AND status = 'running' AND updated_at >= datetime('now', '-5 minutes') LIMIT 1");
             $stmt->execute([$projectId]);
         } else {
-            $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE project_id IS NULL AND status = 'running' AND updated_at >= datetime('now', '-3 minutes') LIMIT 1");
+            $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE project_id IS NULL AND status = 'running' AND updated_at >= datetime('now', '-5 minutes') LIMIT 1");
         }
         return (bool)$stmt->fetchColumn();
     }
 
     public function modelInUse(): bool
     {
-        $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE kind IN ('chat', 'subagent', 'task') AND status = 'running' AND updated_at >= datetime('now', '-3 minutes') LIMIT 1");
+        $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE kind IN ('chat', 'subagent', 'task') AND status = 'running' AND updated_at >= datetime('now', '-5 minutes') LIMIT 1");
         return (bool)$stmt->fetchColumn();
     }
 
     public function taskRunning(): bool
     {
-        $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE kind = 'task' AND status = 'running' AND updated_at >= datetime('now', '-3 minutes') LIMIT 1");
+        $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE kind = 'task' AND status = 'running' AND updated_at >= datetime('now', '-5 minutes') LIMIT 1");
         return (bool)$stmt->fetchColumn();
     }
 

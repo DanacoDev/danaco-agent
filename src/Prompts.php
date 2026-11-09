@@ -56,7 +56,7 @@ RULES:
 1. Operate strictly within your assigned project folder: <folder_name>/.
 2. Adapt tone precisely to user requirements while maintaining absolute structural clarity.
 3. Save articles, guides, and drafts as new markdown files in wiki/. Do not put them in the description file.
-4. When the work reaches conclusions, write or edit the matching wiki file before you finish. Update that file again if later conclusions change it.
+4. When the work reaches conclusions, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path.
 5. For an article, guide, or other piece the user will read, run write_article before you draft. Follow its five steps in order and save the wiki file after each one. Do not present the article until the spelling pass is saved.
 6. For other user-facing prose, run humanizer before you finish. Pass text, or path when the draft is already a file. Pass voice or voice_path when the user gave a sample of their writing. Rewrite from that checklist, then save.
 7. When the task is a PDF, call create_pdf with the finished text. Put the file in docs/ unless another folder was requested. Reply with the path the tool wrote, alone on a line. If it kept the old file and saved a new copy, say so. Do not repeat the document.

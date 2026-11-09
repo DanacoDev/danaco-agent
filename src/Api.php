@@ -312,9 +312,17 @@ class Api
                 'detail' => null,
             ];
         }
+        $onScheduled = false;
         foreach ($rows as $row) {
             $id = (int)($row['id'] ?? 0);
             $role = (string)($row['role'] ?? '');
+            if ($role === 'user') {
+                $content = ltrim((string)($row['content'] ?? ''));
+                $onScheduled = (string)($row['agent_name'] ?? '') === 'task' || str_starts_with($content, 'Scheduled task:');
+            }
+            if ($role === 'notice' && $onScheduled && $this->taskRecoveryNote((string)($row['content'] ?? ''))) {
+                continue;
+            }
             if ($role === 'user' || $role === 'assistant') {
                 if ($until > 0 && $id <= $until && !isset($recent[$id])) {
                     continue;
@@ -332,6 +340,27 @@ class Api
             $out[] = $row;
         }
         return $out;
+    }
+
+    private function taskRecoveryNote(string $text): bool
+    {
+        foreach ([
+            'The reply ran out of room while thinking.',
+            'The reply stopped while thinking.',
+            'Ollama was not running.',
+            'The whole model does not fit on the GPU.',
+            'Freed memory by unloading ',
+            'Checked memory.',
+            'Lowered the context window',
+            'The model request did not go through.',
+            'The model connection was lost.',
+            'The GPU model is loaded.',
+        ] as $prefix) {
+            if (str_contains($text, $prefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function trimThinking(?array $detail): ?array

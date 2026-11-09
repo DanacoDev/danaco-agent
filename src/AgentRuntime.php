@@ -382,6 +382,8 @@ class AgentRuntime
         $fallbackTries = 0;
         $finishChecks = 0;
         $skipCompact = false;
+        $writeStreakPath = '';
+        $writeStreak = 0;
         for ($turn = 0; $turn < $maxTurns; $turn++) {
             if ($shouldStop && $shouldStop()) {
                 throw new ChatStopped('Stopped.');
@@ -396,9 +398,8 @@ class AgentRuntime
             $this->llm->onCpuChange = function (bool $cpu) use ($emit): void {
                 $emit(['type' => 'cpu', 'cpu' => $cpu]);
             };
-            $this->llm->restoreGpu(function (string $text) use ($emit, $projectId, $agent): void {
-                $this->db->addMessage($projectId ?? 0, 'notice', $text, $agent);
-                $emit(['type' => 'notice', 'text' => $text]);
+            $this->llm->restoreGpu(function (string $text) use ($emit, $projectId, $agent, $scheduled): void {
+                $this->postNotice($emit, $projectId, $agent, $text, $scheduled, 'note');
             });
             $emit(['type' => 'cpu', 'cpu' => $this->llm->onCpu()]);
             $this->scrubAssistantFences($messages);
@@ -482,7 +483,7 @@ class AgentRuntime
                     $flushThinking(false);
                 }, $cloud, $agent);
                 $flushThinking(true);
-                $this->flushRecoveries($emit, $projectId, $agent);
+                $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
             } catch (ChatStopped $e) {
                 $present($this->releaseMarker($markers, $parser));
                 $finishNoise();
@@ -492,7 +493,7 @@ class AgentRuntime
             } catch (OutputRepeated $e) {
                 $finishNoise();
                 $flushThinking(true);
-                $this->flushRecoveries($emit, $projectId, $agent);
+                $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
                 if ($turnText !== '') {
                     $this->db->logAgent($agent, $projectId, 'thinking', $turnText);
                 }
@@ -503,7 +504,7 @@ class AgentRuntime
             } catch (ContextFallback $e) {
                 $flushThinking(true);
                 $emit(['type' => 'cpu', 'cpu' => true]);
-                $this->flushRecoveries($emit, $projectId, $agent);
+                $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
                 if ($fallbackTries >= 1) {
                     $this->db->setAgentStatus($agent, 'error');
                     $notice = agent_error($agent, $e->getMessage());
@@ -522,7 +523,7 @@ class AgentRuntime
                 continue;
             } catch (LlmException $e) {
                 $flushThinking(true);
-                $this->flushRecoveries($emit, $projectId, $agent);
+                $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
                 $this->db->setAgentStatus($agent, 'error');
                 $notice = agent_error($agent, $e->getMessage());
                 $this->db->logAgent($agent, $projectId, 'error', $notice);
@@ -606,8 +607,7 @@ class AgentRuntime
                         : 'That reply used the whole output limit while thinking and wrote nothing. Keep this reply short. Do one small step and call the tool. Then stop.';
                     $this->llm->brief = true;
                     $note = 'The reply ran out of room while thinking. Continuing with a shorter step.';
-                    $this->db->addMessage($projectId ?? 0, 'notice', $note, $agent);
-                    $emit(['type' => 'notice', 'text' => $note]);
+                    $this->postNotice($emit, $projectId, $agent, $note, $scheduled);
                 } else {
                     $prompt = 'The reply stopped before the work finished. Continue that same task. If a tool still needs to run, call it now.';
                 }
@@ -639,9 +639,18 @@ class AgentRuntime
             $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($raw !== '' ? $raw : $turnText)];
             $delegated = false;
             $consulted = false;
+            $savedThisTurn = '';
             foreach ($tail['tools'] as $tool) {
                 if ($shouldStop && $shouldStop()) {
                     throw new ChatStopped('Stopped.');
+                }
+                $toolName = (string)($tool['name'] ?? '');
+                $toolArgs = is_array($tool['args'] ?? null) ? $tool['args'] : [];
+                $writePath = $this->repeatWritePath($toolName, $toolArgs);
+                if ($writePath !== '' && $writePath === $writeStreakPath && $writeStreak >= 2) {
+                    $this->db->setAgentStatus($agent, 'completed');
+                    $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
+                    return 'Saved ' . $writePath . '.';
                 }
                 if ($agent === 'orchestrator' && ($tool['name'] ?? '') === 'delegate') {
                     if ($delegated) {
@@ -677,6 +686,23 @@ class AgentRuntime
                     $result = agent_error($agent, $e->getMessage());
                     $this->db->logAgent($agent, $projectId, 'error', $result);
                 }
+                if ($toolName === 'write_file' || $toolName === 'wiki_write') {
+                    if ($writePath !== '' && $this->writeSucceeded($result)) {
+                        if ($writePath === $writeStreakPath) {
+                            $writeStreak++;
+                        } else {
+                            $writeStreakPath = $writePath;
+                            $writeStreak = 1;
+                        }
+                        $savedThisTurn = $writePath;
+                        if ($writeStreak >= 2) {
+                            $result .= "\nThat file is already saved. Do not write it again. Reply with the path and stop.";
+                        }
+                    }
+                } else {
+                    $writeStreakPath = '';
+                    $writeStreak = 0;
+                }
                 $result = clip_text($result);
                 $this->db->logAgent($agent, $projectId, 'output', $result);
                 $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => $tool['name'], 'text' => $result]);
@@ -687,7 +713,9 @@ class AgentRuntime
             }
             if ($cutOff) {
                 $skipCompact = true;
-                $messages[] = ['role' => 'user', 'content' => 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.'];
+                $messages[] = ['role' => 'user', 'content' => $savedThisTurn !== ''
+                    ? 'That file is already saved. Do not write it again. Reply with the path and stop.'
+                    : 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.'];
             }
         }
         $note = "\n\nStopped because of too many turns.";
@@ -714,6 +742,43 @@ class AgentRuntime
             }
         }
         return true;
+    }
+
+    private function repeatWritePath(string $tool, array $args): string
+    {
+        if ($tool !== 'write_file' && $tool !== 'wiki_write') {
+            return '';
+        }
+        $raw = '';
+        if ($tool === 'write_file') {
+            $raw = (string)($args['path'] ?? '');
+        } else {
+            foreach (['path', 'file', 'filepath', 'name'] as $key) {
+                $value = trim((string)($args[$key] ?? ''));
+                if ($value !== '') {
+                    $raw = $value;
+                    break;
+                }
+            }
+        }
+        $path = str_replace('\\', '/', trim($raw));
+        $path = preg_replace('#/+#', '/', $path) ?? $path;
+        $path = ltrim($path, '/');
+        while (str_starts_with($path, './')) {
+            $path = substr($path, 2);
+        }
+        if ($path === '' || str_contains($path, '..')) {
+            return '';
+        }
+        if ($tool === 'wiki_write' && !str_contains($path, '/')) {
+            $path = 'wiki/' . basename($path);
+        }
+        return $path;
+    }
+
+    private function writeSucceeded(string $result): bool
+    {
+        return str_starts_with($result, 'Wrote ') || str_starts_with($result, 'Updated ');
     }
 
     private function announcedToolsWithoutCall(string $text): bool
@@ -1011,6 +1076,7 @@ class AgentRuntime
             'That reply used the whole output limit',
             'The delegated job just finished',
             'You described a wiki or file write',
+            'That file is already saved',
             'You wrote the same line',
             'You wrote this line more than five times',
             'The job is not finished',
@@ -1053,16 +1119,26 @@ class AgentRuntime
         return $parser->push($markers->finish());
     }
 
-    private function flushRecoveries(callable $emit, ?int $projectId, string $agent): void
+    private function flushRecoveries(callable $emit, ?int $projectId, string $agent, bool $scheduled = false): void
     {
         foreach ($this->llm->recoveries as $line) {
-            $line = trim((string)$line);
-            if ($line === '') {
-                continue;
-            }
-            $this->db->addMessage($projectId ?? 0, 'notice', $line, $agent);
-            $emit(['type' => 'notice', 'text' => $line]);
+            $this->postNotice($emit, $projectId, $agent, (string)$line, $scheduled);
         }
         $this->llm->recoveries = [];
+    }
+
+    private function postNotice(callable $emit, ?int $projectId, string $agent, string $text, bool $scheduled, string $logType = 'error'): void
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return;
+        }
+        if ($scheduled) {
+            $this->db->logAgent($agent, $projectId, $logType, $text);
+            $emit(['type' => 'task_note', 'text' => $text]);
+            return;
+        }
+        $this->db->addMessage($projectId ?? 0, 'notice', $text, $agent);
+        $emit(['type' => 'notice', 'text' => $text]);
     }
 }

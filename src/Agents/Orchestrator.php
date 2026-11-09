@@ -37,16 +37,17 @@ class Orchestrator
         } elseif ($waitingOnTask) {
             $emit(['type' => 'phase', 'phase' => '']);
         }
+        $scheduled = $this->scheduledRequest($messages);
         return $this->runtime->run(
             'orchestrator',
             $messages,
-            $this->tools($project, $emit, $projectId, $shouldStop),
+            $this->tools($project, $emit, $projectId, $shouldStop, $scheduled),
             $emit,
             $this->runtime->maxTurns(),
             $projectId > 0 ? $projectId : null,
             $shouldStop,
             false,
-            $this->scheduledRequest($messages),
+            $scheduled,
             fn(array $running): array => $this->betweenTurns($running, $project, $emit, $projectId, $shouldStop),
             fn(array $running): array => $this->repackForFailsafe($running, $project, $emit, $shouldStop)
         );
@@ -713,7 +714,7 @@ TXT;
         return !$other || (int)$other['id'] === $projectId;
     }
 
-    private function tools(?array $project, callable $emit, int $projectId, ?callable $shouldStop): array
+    private function tools(?array $project, callable $emit, int $projectId, ?callable $shouldStop, bool $scheduled = false): array
     {
         $folder = is_array($project) ? (string)$project['folder_name'] : '';
         $projectName = is_array($project) ? trim((string)($project['name'] ?? '')) : '';
@@ -721,7 +722,7 @@ TXT;
         $shownProject = $projectName !== '' ? $projectName : $folder;
         $createdTaskIds = [];
         $tools = [
-            'delegate' => function (array $args) use ($folder, $projectName, $formerName, $shownProject, $emit, $projectId, $shouldStop, &$createdTaskIds): string {
+            'delegate' => function (array $args) use ($folder, $projectName, $formerName, $shownProject, $emit, $projectId, $shouldStop, $scheduled, &$createdTaskIds): string {
                 if ($folder === '') {
                     return 'General chat has no project. Tell the user to create a project manually from the menu before delegating.';
                 }
@@ -748,13 +749,14 @@ TXT;
                     'agent' => $agent,
                     'folder' => $folder,
                     'instruction' => $instruction,
+                    'scheduled' => $scheduled,
                 ]);
                 $watch = function () use ($shouldStop, $jobId): bool {
                     $this->db->touchJob($jobId);
                     return $shouldStop && $shouldStop();
                 };
                 try {
-                    $result = $this->subagents->run($agent, $folder, $instruction, $emit, $projectId, $watch);
+                    $result = $this->subagents->run($agent, $folder, $instruction, $emit, $projectId, $watch, $scheduled);
                     $this->db->finishJob($jobId);
                     return $result . $note;
                 } catch (ChatStopped $e) {
@@ -776,7 +778,7 @@ TXT;
                     return $notice . $note;
                 }
             },
-            'consult' => function (array $args) use ($folder, $shownProject, $emit, $projectId, $shouldStop): string {
+            'consult' => function (array $args) use ($folder, $shownProject, $emit, $projectId, $shouldStop, $scheduled): string {
                 if (!$this->db->consultantActive()) {
                     $reason = (string)($this->db->consultantState()['reason'] ?? '');
                     if ($reason === 'no_key') {
@@ -790,7 +792,7 @@ TXT;
                 }
                 $emit(['type' => 'delegation', 'agent' => 'consultant', 'project' => $shownProject !== '' ? $shownProject : 'general', 'text' => $instruction]);
                 try {
-                    return $this->subagents->consult($folder, $instruction, $emit, $projectId, $shouldStop);
+                    return $this->subagents->consult($folder, $instruction, $emit, $projectId, $shouldStop, $scheduled);
                 } catch (ChatStopped $e) {
                     throw $e;
                 } catch (Throwable $e) {

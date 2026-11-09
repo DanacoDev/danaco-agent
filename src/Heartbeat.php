@@ -3,7 +3,7 @@
 class Heartbeat
 {
     public const MAX_ATTEMPTS = 3;
-    public const STALE_SECONDS = 180;
+    public const STALE_SECONDS = 300;
 
     public function __construct(private Database $db)
     {
@@ -14,10 +14,14 @@ class Heartbeat
         $this->reconcile();
         foreach ($this->db->dueJobs(self::STALE_SECONDS, self::MAX_ATTEMPTS) as $job) {
             $id = (int)$job['id'];
+            if ((string)$job['kind'] === 'subagent' && $this->db->lockFresh('subagent_lock', 900)) {
+                continue;
+            }
             $this->db->bumpJob($id);
             try {
-                $this->retry($job);
-                $this->db->finishJob($id);
+                if ($this->retry($job)) {
+                    $this->db->finishJob($id);
+                }
             } catch (ChatStopped $e) {
                 $this->db->finishJob($id);
             } catch (Throwable $e) {
@@ -109,9 +113,10 @@ class Heartbeat
             if (trim($answer) === '' && $detail === null) {
                 throw new RuntimeException('The model returned an empty answer.');
             }
-            $this->db->addMessage($projectId, 'assistant', $answer !== '' ? $answer : 'Finished the scheduled task.', 'orchestrator', false, $detail);
+            $spoken = $answer !== '' ? $answer : 'Finished the scheduled task.';
+            $this->db->addMessage($projectId, 'assistant', $spoken, 'orchestrator', false, $detail);
             $this->db->finishJob($jobId);
-            $this->settle($task, $answer !== '' ? $answer : 'Finished the scheduled task.');
+            $this->settle($task, $this->withTaskNotes($spoken, $turn->notices), false, $turn->notices !== []);
         } catch (Throwable $e) {
             if ($e instanceof ChatStopped) {
                 $this->db->finishJob($jobId);
@@ -122,7 +127,7 @@ class Heartbeat
             $this->db->setAgentStatus('orchestrator', 'error');
             $current = $this->db->job($jobId);
             if ($ownJob && ($current['status'] ?? '') === 'gave_up') {
-                $this->settle($task, (string)($current['last_error'] ?? $e->getMessage()), true);
+                $this->settle($task, $this->withTaskNotes((string)($current['last_error'] ?? $e->getMessage()), $turn->notices), true);
             }
             if (!$ownJob) {
                 throw $e;
@@ -130,7 +135,7 @@ class Heartbeat
         }
     }
 
-    private function retry(array $job): void
+    private function retry(array $job): bool
     {
         $kind = (string)$job['kind'];
         $projectId = $job['project_id'] !== null ? (int)$job['project_id'] : 0;
@@ -142,12 +147,15 @@ class Heartbeat
         if ($kind === 'task') {
             $task = $this->db->task((int)($job['ref_id'] ?? $payload['task_id'] ?? 0));
             if (!$task) {
-                return;
+                return true;
             }
             $this->runTask($task, $id);
-            return;
+            return true;
         }
         if ($kind === 'subagent') {
+            if ($this->db->lockFresh('subagent_lock', 900)) {
+                return false;
+            }
             $agent = (string)($payload['agent'] ?? '');
             $folder = (string)($payload['folder'] ?? '');
             $instruction = (string)($payload['instruction'] ?? '');
@@ -155,11 +163,11 @@ class Heartbeat
             }, $projectId, function () use ($id): bool {
                 $this->db->touchJob($id);
                 return false;
-            });
+            }, !empty($payload['scheduled']));
             if (trim($result) !== '') {
                 $this->db->addMessage($projectId, 'assistant', $result, $agent);
             }
-            return;
+            return true;
         }
         $this->db->deleteLatestFailed($projectId);
         $turn = new ChatTurn();
@@ -183,6 +191,7 @@ class Heartbeat
             throw new RuntimeException('The model returned an empty answer.');
         }
         $this->db->addMessage($projectId, 'assistant', $answer, 'orchestrator', false, $detail);
+        return true;
     }
 
     private function gaveUpTask(array $job): void
@@ -201,13 +210,29 @@ class Heartbeat
         }
     }
 
-    private function settle(array $task, string $result, bool $failed = false): void
+    private function withTaskNotes(string $result, array $notes): string
+    {
+        $lines = [];
+        foreach ($notes as $note) {
+            $note = trim((string)$note);
+            if ($note === '' || in_array($note, $lines, true)) {
+                continue;
+            }
+            $lines[] = $note;
+        }
+        if (!$lines) {
+            return $result;
+        }
+        return trim(implode("\n", $lines) . ($result !== '' ? "\n\n" . $result : ''));
+    }
+
+    private function settle(array $task, string $result, bool $failed = false, bool $noted = false): void
     {
         $board = new Kanban($this->db);
         $next = $this->nextSchedule((string)($task['recurrence_interval'] ?? 'none'), (string)($task['schedule_time'] ?? ''));
         if ($next) {
             $fields = ['status' => 'in_progress', 'schedule_time' => $next];
-            if ($failed) {
+            if ($failed || $noted) {
                 $fields['result'] = $result;
             }
             $board->move((int)$task['id'], $fields, false);

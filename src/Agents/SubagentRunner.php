@@ -14,7 +14,7 @@ class SubagentRunner
         $this->capabilities = new CapabilityTools($db);
     }
 
-    public function run(string $agent, string $projectFolder, string $instruction, callable $emit, int $projectId, ?callable $shouldStop = null): string
+    public function run(string $agent, string $projectFolder, string $instruction, callable $emit, int $projectId, ?callable $shouldStop = null, bool $scheduled = false): string
     {
         $allowed = ['researcher', 'writer', 'coder', 'analyst', 'marketer'];
         if (!in_array($agent, $allowed, true)) {
@@ -37,13 +37,13 @@ class SubagentRunner
             return $shouldStop && $shouldStop();
         };
         try {
-            return $this->finishSubagent($this->runtime->run($agent, $messages, $this->tools($agent, $projectFolder, $projectId, $emit, $watch), $emit, $this->runtime->maxTurns(), $projectId, $watch));
+            return $this->finishSubagent($this->runtime->run($agent, $messages, $this->tools($agent, $projectFolder, $projectId, $emit, $watch), $emit, $this->runtime->maxTurns(), $projectId, $watch, false, $scheduled));
         } finally {
             $this->db->unlock('subagent_lock');
         }
     }
 
-    public function consult(string $projectFolder, string $instruction, callable $emit, int $projectId, ?callable $shouldStop = null): string
+    public function consult(string $projectFolder, string $instruction, callable $emit, int $projectId, ?callable $shouldStop = null, bool $scheduled = false): string
     {
         if (!$this->db->consultantActive()) {
             $reason = (string)($this->db->consultantState()['reason'] ?? '');
@@ -76,7 +76,7 @@ class SubagentRunner
             ['role' => 'user', 'content' => $user],
         ];
         try {
-            return $this->finishSubagent($this->runtime->run('consultant', $messages, $tools, $emit, $this->runtime->maxTurns(), $projectId > 0 ? $projectId : null, $watch, true));
+            return $this->finishSubagent($this->runtime->run('consultant', $messages, $tools, $emit, $this->runtime->maxTurns(), $projectId > 0 ? $projectId : null, $watch, true, $scheduled));
         } finally {
             $this->db->unlock('consultant_lock');
         }
@@ -174,7 +174,7 @@ TXT;
         }
         $rules = <<<TXT
 {$identity}
-Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/{$projectFolder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file and not on the kanban. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish, and update it again if later conclusions change it. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/notes.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up. Do not edit soul.md. Only the main agent changes how to act in this project.
+Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/{$projectFolder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file and not on the kanban. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/notes.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up. Do not edit soul.md. Only the main agent changes how to act in this project.
 
 Do not install software or dependencies. If something is missing, say what it is and stop. The main agent asks the user and installs it.
 

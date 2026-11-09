@@ -4,13 +4,22 @@ class ChatTurn
 {
     public string $streamed = '';
     public array $detail = ['thinking' => [], 'tools' => []];
+    public array $notices = [];
 
     public function run(int $projectId, callable $emit, ?callable $shouldStop = null): string
     {
         $this->streamed = '';
         $this->detail = ['thinking' => [], 'tools' => []];
+        $this->notices = [];
         $wrapped = function (array $event) use ($emit): void {
             $type = (string)($event['type'] ?? '');
+            if ($type === 'task_note') {
+                $text = trim((string)($event['text'] ?? ''));
+                if ($text !== '' && !in_array($text, $this->notices, true)) {
+                    $this->notices[] = $text;
+                }
+                return;
+            }
             $agent = (string)($event['agent'] ?? '');
             if ($agent !== '' && $agent !== 'orchestrator' && in_array($type, ['token', 'thinking', 'tool_call', 'tool_result', 'activity'], true)) {
                 return;
