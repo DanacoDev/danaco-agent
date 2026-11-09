@@ -2,7 +2,7 @@
 /*
 ---
 name: task_breakdown
-description: Adds backlog cards for agent work or a scheduled action. Check the board for a duplicate or a similar task first. An exact duplicate is not added and returns an error. args project_id, tasks (each has title and agent). Not a user todo.
+description: Adds in_progress cards for work that should run now. Not for an idea, and not for a later task with no time. Check the board for a duplicate or a similar task first. An exact duplicate is not added and returns an error. args project_id, tasks (each has title and agent). Not a user todo.
 ---
 */
 $args = json_decode(stream_get_contents(STDIN) ?: '', true);
@@ -88,7 +88,7 @@ if ($projectId <= 0 || !$exists->fetch()) {
 $open = $db->prepare("SELECT id, title, description, status, assigned_agent, schedule_time, recurrence_interval FROM tasks WHERE project_id = ? AND status != 'done'");
 $open->execute([$projectId]);
 $existing = $open->fetchAll(PDO::FETCH_ASSOC);
-$insert = $db->prepare("INSERT INTO tasks (project_id, title, description, status, assigned_agent, recurrence_interval) VALUES (?, ?, '', 'backlog', ?, 'none')");
+$insert = $db->prepare("INSERT INTO tasks (project_id, title, description, status, assigned_agent, recurrence_interval) VALUES (?, ?, '', 'in_progress', ?, 'none')");
 $added = 0;
 $duplicates = [];
 foreach ($cards as $card) {
@@ -126,7 +126,7 @@ foreach ($cards as $card) {
         'id' => (int)$db->lastInsertId(),
         'title' => $card['title'],
         'description' => '',
-        'status' => 'backlog',
+        'status' => 'in_progress',
         'assigned_agent' => $card['agent'],
         'schedule_time' => null,
         'recurrence_interval' => 'none',
@@ -141,4 +141,4 @@ if ($duplicates) {
     echo json_encode(['status' => $added > 0 ? 'success' : 'error', 'message' => $message]);
     exit($added > 0 ? 0 : 1);
 }
-echo json_encode(['status' => 'success', 'message' => $added . ' cards appended to the backlog.']);
+echo json_encode(['status' => 'success', 'message' => $added . ' cards added in in_progress.']);

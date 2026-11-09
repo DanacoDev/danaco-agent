@@ -135,7 +135,8 @@ SQL);
             $this->pdo->exec('ALTER TABLE projects ADD COLUMN former_name TEXT');
         }
         $this->pdo->exec("UPDATE tasks SET status = 'in_progress' WHERE schedule_time IS NOT NULL AND status IN ('todo', 'backlog')");
-        $this->pdo->exec("UPDATE tasks SET status = 'in_progress' WHERE recurrence_interval IS NOT NULL AND recurrence_interval NOT IN ('', 'none') AND status IN ('review', 'done')");
+        $this->pdo->exec("UPDATE tasks SET status = 'in_progress' WHERE recurrence_interval IS NOT NULL AND recurrence_interval NOT IN ('', 'none') AND status IN ('todo', 'backlog', 'review', 'done')");
+        $this->pdo->exec("UPDATE tasks SET status = 'in_progress', held = 1 WHERE status IN ('todo', 'backlog')");
         $this->pdo->exec(<<<'SQL'
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

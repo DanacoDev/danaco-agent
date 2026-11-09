@@ -939,10 +939,14 @@ class Api
 
     private function exists(): void
     {
-        $project = $this->projectFromQuery();
+        $folder = $this->uploadFolder((int)($_GET['project_id'] ?? 0));
+        if ($folder === null) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return;
+        }
         $path = (string)($_GET['path'] ?? '');
         try {
-            $ok = app_services()['safety']->fileExists((string)$project['folder_name'], $path);
+            $ok = app_services()['safety']->fileExists($folder, $path);
         } catch (Throwable $e) {
             $ok = false;
         }
@@ -951,9 +955,13 @@ class Api
 
     private function download(): void
     {
-        $project = $this->projectFromQuery();
+        $folder = $this->uploadFolder((int)($_GET['project_id'] ?? 0));
+        if ($folder === null) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return;
+        }
         try {
-            $file = app_services()['safety']->readBytes((string)$project['folder_name'], (string)($_GET['path'] ?? ''), 8 * 1024 * 1024);
+            $file = app_services()['safety']->readBytes($folder, (string)($_GET['path'] ?? ''), 8 * 1024 * 1024);
         } catch (Throwable $e) {
             $this->json(['error' => $e->getMessage()], 422);
             return;
@@ -1101,8 +1109,8 @@ class Api
 
     private function upload(): void
     {
-        $project = $this->db->project((int)($_POST['project_id'] ?? 0));
-        if (!$project) {
+        $folder = $this->uploadFolder((int)($_POST['project_id'] ?? 0));
+        if ($folder === null) {
             $this->json(['error' => 'Project not found.'], 404);
             return;
         }
@@ -1121,7 +1129,6 @@ class Api
             $this->json(['error' => 'Could not read the uploaded file.'], 422);
             return;
         }
-        $folder = (string)$project['folder_name'];
         try {
             $uploads = Projects::root($folder) . '/uploads';
             if (!is_dir($uploads) && !mkdir($uploads, 0775, true) && !is_dir($uploads)) {
@@ -1133,6 +1140,18 @@ class Api
             return;
         }
         $this->json(['name' => $name, 'path' => $written['path']]);
+    }
+
+    private function uploadFolder(int $projectId): ?string
+    {
+        if ($projectId <= 0) {
+            return Projects::generalFolder();
+        }
+        $project = $this->db->project($projectId);
+        if (!$project) {
+            return null;
+        }
+        return (string)$project['folder_name'];
     }
 
     private function safeUploadName(string $name): string

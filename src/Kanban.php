@@ -16,6 +16,7 @@ class Kanban
         }
         $schedule = $this->schedule($args['schedule_time'] ?? null);
         $recurrence = $this->recurrence((string)($args['recurrence'] ?? $args['recurrence_interval'] ?? 'none'));
+        $this->rejectIdea($args, $schedule, $recurrence, $byUser);
         $description = mb_substr((string)($args['description'] ?? ''), 0, 20000);
         $agent = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
         if (!$byUser) {
@@ -28,7 +29,7 @@ class Kanban
             'project_id' => $projectId,
             'title' => $title,
             'description' => $description,
-            'status' => $this->place((string)($args['status'] ?? 'backlog'), $schedule, $recurrence, $byUser),
+            'status' => $this->place((string)($args['status'] ?? 'in_progress'), $schedule, $recurrence, $byUser),
             'assigned_agent' => $agent,
             'schedule_time' => $schedule,
             'recurrence_interval' => $recurrence,
@@ -71,10 +72,7 @@ class Kanban
                 $fields['schedule_time'] = $schedule;
             }
         }
-        if ($byUser && $recurrence === 'none' && array_key_exists('status', $args) && $this->place((string)$args['status'], null, 'none', true) === 'backlog') {
-            $schedule = null;
-            $fields['schedule_time'] = null;
-        }
+        $this->rejectIdea($args, $schedule, $recurrence, $byUser);
         if (array_key_exists('schedule_time', $args) || array_key_exists('schedule_time', $fields)) {
             $fields['schedule_time'] = $schedule;
         }
@@ -82,7 +80,7 @@ class Kanban
             $fields['recurrence_interval'] = $recurrence;
         }
         if (array_key_exists('status', $args) || array_key_exists('schedule_time', $args) || array_key_exists('schedule_time', $fields) || array_key_exists('recurrence', $args) || array_key_exists('recurrence_interval', $args)) {
-            $status = $this->place((string)($args['status'] ?? $existing['status'] ?? 'backlog'), $schedule, $recurrence, $byUser);
+            $status = $this->place((string)($args['status'] ?? $existing['status'] ?? 'in_progress'), $schedule, $recurrence, $byUser);
             $fields['status'] = $status;
             if ($status === 'done') {
                 $fields['finished_at'] = date('Y-m-d H:i:s');
@@ -158,21 +156,19 @@ class Kanban
         if ($status === 'done' || $status === 'review' || $status === 'in_progress') {
             return $status;
         }
-        if ($this->isScheduled($task['schedule_time'] ?? null, (string)($task['recurrence_interval'] ?? 'none'))) {
-            return 'in_progress';
-        }
-        return 'backlog';
+        return 'in_progress';
     }
 
     public function place(string $status, ?string $schedule, string $recurrence, bool $byUser): string
     {
         $status = strtolower(trim(str_replace(['-', ' '], '_', $status)));
         $aliases = [
-            '' => 'backlog',
-            'todo' => 'backlog',
-            'to_do' => 'backlog',
-            'later' => 'backlog',
-            'queued' => 'backlog',
+            '' => 'in_progress',
+            'todo' => 'in_progress',
+            'to_do' => 'in_progress',
+            'later' => 'in_progress',
+            'queued' => 'in_progress',
+            'backlog' => 'in_progress',
             'active' => 'in_progress',
             'activated' => 'in_progress',
             'started' => 'in_progress',
@@ -189,16 +185,28 @@ class Kanban
         if (!$byUser && $status === 'done') {
             $status = 'review';
         }
-        if (!in_array($status, ['backlog', 'in_progress', 'review', 'done'], true)) {
-            $status = 'backlog';
+        if (!in_array($status, ['in_progress', 'review', 'done'], true)) {
+            $status = 'in_progress';
         }
         if ($this->repeats($recurrence) && in_array($status, ['review', 'done'], true)) {
             return 'in_progress';
         }
-        if ($status === 'backlog' && $this->isScheduled($schedule, $recurrence)) {
-            return 'in_progress';
-        }
         return $status;
+    }
+
+    private function rejectIdea(array $args, ?string $schedule, string $recurrence, bool $byUser): void
+    {
+        if ($byUser || !array_key_exists('status', $args)) {
+            return;
+        }
+        $status = strtolower(trim(str_replace(['-', ' '], '_', (string)$args['status'])));
+        if (!in_array($status, ['backlog', 'todo', 'to_do', 'later', 'queued'], true)) {
+            return;
+        }
+        if ($this->isScheduled($schedule, $recurrence)) {
+            return;
+        }
+        throw new InvalidArgumentException('There is no backlog. Do not put an idea on the board. Write it in the project wiki. A card runs now, or it has a schedule_time.');
     }
 
     private function exactDuplicate(int $projectId, string $title, string $description, string $agent, ?string $schedule, string $recurrence): ?array

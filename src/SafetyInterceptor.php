@@ -39,6 +39,9 @@ class SafetyInterceptor
 
     public function fileExists(string $projectFolder, string $relativePath): bool
     {
+        if ($projectFolder === Projects::generalFolder() && !is_dir(Projects::root($projectFolder))) {
+            return false;
+        }
         $relativePath = $this->projectPath($projectFolder, $relativePath);
         try {
             $target = $this->resolveInside($this->projectRoot($projectFolder), $relativePath, false);
@@ -202,6 +205,22 @@ class SafetyInterceptor
             'place' => 'Main',
             'children' => $children,
         ];
+        $generalFolder = Projects::generalFolder();
+        $generalRoot = Projects::root($generalFolder);
+        if (is_dir($generalRoot) && !is_link($generalRoot)) {
+            $real = realpath($generalRoot);
+            if ($real !== false) {
+                $nodes[] = [
+                    'name' => 'General chat',
+                    'path' => '',
+                    'type' => 'dir',
+                    'scope' => 'project',
+                    'folder' => $generalFolder,
+                    'place' => 'General chat',
+                    'children' => $this->tag($this->walk($real, $real, 0), 'project', $generalFolder, 'General chat'),
+                ];
+            }
+        }
         foreach ($projects as $project) {
             $folder = (string)($project['folder_name'] ?? '');
             if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $folder)) {
@@ -436,6 +455,16 @@ class SafetyInterceptor
             throw new InvalidArgumentException('Enter a search.');
         }
         $roots = [['root' => $this->dataDir . '/wiki', 'scope' => 'wiki', 'folder' => '', 'place' => 'Main']];
+        $generalFolder = Projects::generalFolder();
+        $generalRoot = Projects::root($generalFolder);
+        if (is_dir($generalRoot) && !is_link($generalRoot)) {
+            $roots[] = [
+                'root' => $generalRoot,
+                'scope' => 'project',
+                'folder' => $generalFolder,
+                'place' => 'General chat',
+            ];
+        }
         foreach ($projects as $project) {
             $folder = (string)($project['folder_name'] ?? '');
             if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $folder)) {
@@ -777,9 +806,11 @@ class SafetyInterceptor
         if (!is_dir($root) && !mkdir($root, 0775, true) && !is_dir($root)) {
             throw new RuntimeException('Could not open project folder.');
         }
-        $wiki = $root . '/wiki';
-        if (!is_dir($wiki) && !mkdir($wiki, 0775, true) && !is_dir($wiki)) {
-            throw new RuntimeException('Could not open project wiki.');
+        if ($projectFolder !== Projects::generalFolder()) {
+            $wiki = $root . '/wiki';
+            if (!is_dir($wiki) && !mkdir($wiki, 0775, true) && !is_dir($wiki)) {
+                throw new RuntimeException('Could not open project wiki.');
+            }
         }
         $real = realpath($root);
         if ($real === false) {
@@ -880,6 +911,9 @@ class SafetyInterceptor
 
     private function descriptionPath(string $projectFolder, string $relativePath): string
     {
+        if ($projectFolder === Projects::generalFolder()) {
+            return $relativePath;
+        }
         $leaf = basename(str_replace('\\', '/', $relativePath));
         if (!preg_match('/_desc\.md$/i', $leaf)) {
             return $relativePath;

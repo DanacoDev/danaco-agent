@@ -1235,7 +1235,7 @@ class ProjectBackup
 
     private function assertFolder(string $folder): void
     {
-        if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $folder) || in_array($folder, ['wiki', 'skills', 'sessions', 'projects'], true) || str_contains($folder, 'trashcan') || str_contains($folder, 'backups')) {
+        if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $folder) || in_array($folder, ['wiki', 'skills', 'sessions', 'projects', Projects::generalFolder()], true) || str_contains($folder, 'trashcan') || str_contains($folder, 'backups')) {
             throw new InvalidArgumentException('That backup contains an unsafe project name.');
         }
     }

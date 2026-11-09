@@ -195,7 +195,6 @@
           canDrag: window.matchMedia('(pointer: fine)').matches,
           dragId: null,
           columns: [
-            { id: 'backlog', label: 'Backlog', hint: 'Agent work, or an action to send later' },
             { id: 'in_progress', label: 'In progress', hint: 'Being worked on, or scheduled' },
             { id: 'review', label: 'Review', hint: 'Finished run-once tasks waiting for you' }
           ],
@@ -515,7 +514,7 @@
       methods: {
         md(src) {
           const project = this.currentProject;
-          return renderMarkdown(src, project && project.folder_name ? project.folder_name : '');
+          return renderMarkdown(src, project && project.folder_name ? project.folder_name : 'general');
         },
         syncHash() {
           let id = (location.hash || '#chat').replace('#', '');
@@ -1142,11 +1141,11 @@
           const input = event.target;
           const files = [...input.files];
           input.value = '';
-          if (!this.projectId || !files.length) return;
+          if (!files.length) return;
           this.streamError = '';
           for (const file of files) {
             const body = new FormData();
-            body.append('project_id', String(this.projectId));
+            body.append('project_id', String(this.projectId || 0));
             body.append('file', file);
             try {
               const res = await fetch('/api/workspace/upload', { method: 'POST', body: body });
@@ -1712,8 +1711,7 @@
         columnStatus(task) {
           if (this.taskRepeats(task)) return 'in_progress';
           if (task.status === 'done' || task.status === 'review' || task.status === 'in_progress') return task.status;
-          if (task.schedule_time) return 'in_progress';
-          return 'backlog';
+          return 'in_progress';
         },
         finishedTasks() {
           return this.tasks.filter((task) => task.status === 'done' && task.project_id === this.projectId)
@@ -1752,7 +1750,7 @@
           try {
             await this.api('/api/tasks', {
               method: 'POST',
-              body: { project_id: projectId, title: title, status: 'backlog' }
+              body: { project_id: projectId, title: title, status: 'in_progress' }
             });
             this.taskDraft = '';
             await this.reloadTasks();
@@ -2234,7 +2232,7 @@
           note.textContent = message || 'File does not exist.';
         },
         async verifyCitedFiles() {
-          if (!this.projectId || !this.$refs.transcript) return;
+          if (!this.$refs.transcript) return;
           await this.$nextTick();
           const root = this.$refs.transcript;
           const buttons = root.querySelectorAll('.file-cite-dl[data-download]:not([data-checked="1"])');
@@ -2245,7 +2243,7 @@
             button.setAttribute('data-checked', '1');
             if (!path) continue;
             try {
-              const data = await this.api('/api/workspace/exists?project_id=' + encodeURIComponent(this.projectId) + '&path=' + encodeURIComponent(path));
+              const data = await this.api('/api/workspace/exists?project_id=' + encodeURIComponent(this.projectId || 0) + '&path=' + encodeURIComponent(path));
               if (!data.exists) this.markCiteMissing(button);
             } catch (error) {
               button.removeAttribute('data-checked');
@@ -2253,11 +2251,7 @@
           }
         },
         async downloadProjectFile(path, button) {
-          if (!this.projectId) {
-            if (button) button.title = 'Open a project to download this file.';
-            return;
-          }
-          const res = await fetch('/api/workspace/download?project_id=' + encodeURIComponent(this.projectId) + '&path=' + encodeURIComponent(path), { cache: 'no-store' });
+          const res = await fetch('/api/workspace/download?project_id=' + encodeURIComponent(this.projectId || 0) + '&path=' + encodeURIComponent(path), { cache: 'no-store' });
           if (res.status === 401) {
             this.authed = false;
             return;

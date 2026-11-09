@@ -48,6 +48,26 @@ class HardwareMonitor
         ];
     }
 
+    public function machineLine(): string
+    {
+        $parts = [];
+        $memory = $this->systemMemory();
+        $total = (int)($memory['total_mb'] ?? 0);
+        $available = (int)($memory['available_mb'] ?? 0);
+        if ($total > 0) {
+            $parts[] = 'RAM ' . $this->gbFromMb(max(0, $total - $available)) . '/' . $this->gbFromMb($total);
+        }
+        $vram = $this->vramUsage();
+        if (is_array($vram) && (int)($vram['total_mb'] ?? 0) > 0) {
+            $parts[] = 'VRAM ' . $this->gbFromMb((int)$vram['used_mb']) . '/' . $this->gbFromMb((int)$vram['total_mb']);
+        }
+        $busy = $this->busyProcesses();
+        if ($busy !== '') {
+            $parts[] = $busy;
+        }
+        return implode(' · ', $parts);
+    }
+
     public function recommendContext(string $mode): int
     {
         if ($mode === 'cloud') {
@@ -541,5 +561,56 @@ class HardwareMonitor
             'used_mb' => (int)round(((int)$match[2] * 512) / 1048576),
             'total_mb' => (int)round(($totalBlocks * 512) / 1048576),
         ];
+    }
+
+    private function gbFromMb(int $mb): string
+    {
+        if ($mb >= 1024) {
+            return number_format($mb / 1024, 1, '.', '') . 'GB';
+        }
+        return $mb . 'MB';
+    }
+
+    private function busyProcesses(): string
+    {
+        $command = PHP_OS_FAMILY === 'Darwin'
+            ? ['ps', '-axr', '-o', 'pcpu=,rss=,comm=']
+            : ['ps', '-axo', 'pcpu=,rss=,comm=', '--sort=-pcpu'];
+        $result = Process::run($command, null, null, 3);
+        if ($result['code'] !== 0) {
+            return '';
+        }
+        $shown = [];
+        foreach (preg_split("/\r\n|\n|\r/", trim($result['stdout'])) ?: [] as $row) {
+            $row = trim((string)$row);
+            if (!preg_match('/^([\d.]+)\s+(\d+)\s+(\S.*)$/', $row, $match)) {
+                continue;
+            }
+            $cpu = (float)$match[1];
+            $name = trim($match[3]);
+            $name = basename(str_replace('\\', '/', $name));
+            if (mb_strlen($name) > 22) {
+                $name = rtrim(mb_substr($name, 0, 21)) . '…';
+            }
+            if ($cpu < 1 || $name === '' || $name === 'ps') {
+                continue;
+            }
+            $shown[] = $name . ' ' . round($cpu) . '% ' . $this->kbLabel((int)$match[2]);
+            if (count($shown) >= 3) {
+                break;
+            }
+        }
+        return implode(', ', $shown);
+    }
+
+    private function kbLabel(int $kb): string
+    {
+        if ($kb >= 1048576) {
+            return number_format($kb / 1048576, 1, '.', '') . 'GB';
+        }
+        if ($kb >= 1024) {
+            return (string)max(1, (int)round($kb / 1024)) . 'MB';
+        }
+        return $kb . 'KB';
     }
 }

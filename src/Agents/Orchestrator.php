@@ -458,6 +458,7 @@ TXT;
 This is General chat. There is no project tag.
 Answer the user directly. Do not invent a project tag.
 The user creates projects manually from the menu. You cannot create one. If the user asks, tell them to do it from the menu.
+Files the user attaches are stored under uploads/. Read an attached file before you answer about it. When you cite one, put its path alone on a line, such as uploads/photo.png. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat.
 TXT;
         } else {
             $folder = $project['folder_name'];
@@ -468,7 +469,7 @@ TXT;
             $context = <<<TXT
 Assigned project folder: {$folder}
 Assigned project name: {$project['name']}
-{$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/{$folder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file in that folder, such as wiki/research.md, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file and not on the kanban.
+{$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/{$folder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file in that folder, such as wiki/research.md, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card.
 When you create or cite a file, put its path alone on a line, such as wiki/notes.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat.
 When this chat settles conclusions, decisions, or facts worth keeping, read the matching wiki file and then write or edit it with wiki_write before you finish. Keep doing this as the chat continues and those conclusions change. Do not wait for the end of a long task, and do not leave the record only in the chat.
 Tag every delegation exactly as project: {$folder}
@@ -508,18 +509,28 @@ TXT;
             if ($full) {
                 $fileTools .= "- run_command: args command. May use sudo. A path that starts with / is anywhere on this computer.\n";
             }
-        } elseif ($full) {
-            $fileTools = <<<TXT
-- list_files: args path. A full path, such as /Users/name. Lists that folder.
-- read_file: args path. A full path to a file.
-- read_pdf: args path, optional question. A full path to a PDF. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay.
-- read_image: args path, optional question. A full path to a png, jpg, gif, or webp. The GPU model can see the picture, including text in it. A scanned PDF is read_pdf.
+        } else {
+            if ($full) {
+                $fileTools = <<<TXT
+- list_files: args path. Use uploads for files attached in this chat. A full path, such as /Users/name, lists that folder.
+- read_file: args path. A file under uploads/, such as uploads/notes.txt, or a full path.
+- read_pdf: args path, optional question. A PDF under uploads/, or a full path. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay. Do not ask the user to type the page out.
+- read_image: args path, optional question. A png, jpg, gif, or webp under uploads/, or a full path. The GPU model can see the picture, including text in it. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.
 - write_file: args path, content. A full path. Creates or overwrites that file. It can create folders in the path.
 - delete_file: args path. A full path. Moves that file or folder to the trash.
 - move_file: args from, to. Both full paths. It can create folders in the path.
 - run_command: args command. May use sudo.
 
 TXT;
+            } else {
+                $fileTools = <<<TXT
+- list_files: args path. Use uploads to list files attached in this chat.
+- read_file: args path. A file under uploads/, such as uploads/notes.txt.
+- read_pdf: args path, optional question. A PDF under uploads/. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay. Do not ask the user to type the page out.
+- read_image: args path, optional question. A png, jpg, gif, or webp under uploads/. The GPU model can see the picture, including text in it. Use it for a screenshot, photo, or image upload. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.
+
+TXT;
+            }
         }
         $rules = <<<TXT
 {$context}
@@ -561,11 +572,11 @@ Tools:
   create: title, description, agent, status, schedule_time (YYYY-MM-DD HH:MM), recurrence (none, 5min, 15min, 30min, hourly, daily, weekly, or monthly). none means run once. Leave schedule_time empty only when the card should run immediately. A later card needs a real clock time. Do not invent one. Before create, list the board and check for a duplicate or a similar task. Do not add a card for work that is already there. An exact duplicate is not added. The tool returns an error that names the existing card. Use that card.
   move: id, plus any of status, description, result, agent, schedule_time, recurrence. A card marked held was stopped by the user. Leave it held unless the user asked you to change, resume, or end it. A new schedule or repeat resumes it. Moving a run-once card to review ends it.
   delete: id. Removes that card from the board. Use it when a card is wrong, stale, or the user asks you to remove it.
-  backlog = later agent work with no schedule. in_progress = work happening now, or a card with a time or a repeat. A repeating card stays in in_progress. review = a finished run-once card waiting for the user; include result. You cannot set done, and you cannot move a repeating card to review.
+  The board has two columns. in_progress = work happening now, or a card with a time or a repeat. A repeating card stays in in_progress. review = a finished run-once card waiting for the user; include result. There is no backlog. An idea for later is not a card. Write it in the project wiki. You cannot set done, and you cannot move a repeating card to review.
   Cards are for an agent, or a reminder that will send something or take an action. Not a static todo for the user.
   After the user has chosen now or scheduled, every future event needs its own card. A scheduled card needs schedule_time. Saying you will do it later does not schedule it. Split several events into separate cards. When the work repeats, set recurrence and have the coder register a PHP or Python skill with write_skill for the repeated steps when that is possible. Name that skill in the card description. A file in the project is not a skill.
   A result is assigned to the subagent who produces it. Planning with the user is assigned to orchestrator.
-  Do not move a mission you are still planning to in_progress. Move a task to in_progress when the user chose now and you start it, or when a scheduled card is due. Move a finished run-once card to review. Leave a repeating card in in_progress, with its repeat still set. Do not leave finished run-once work in backlog. Do not delegate new cards in the planning turn unless the user chose now.
+  Do not create a card while you are still planning. Move a task to in_progress when the user chose now and you start it, or when a scheduled card is due. Move a finished run-once card to review. Leave a repeating card in in_progress, with its repeat still set. Do not leave a finished run-once card in in_progress. Do not delegate new cards in the planning turn unless the user chose now.
   After every delegated job, list the board and update the matching cards before you reply or delegate again, even when this chat does not mention any tasks. A cleared context still has cards. Do not explain the workflow in place of updating them.
 - wiki_search: args query
 - wiki_read: args name. Reads one project wiki file. Omit name to read wiki/<folder>_desc.md, which is only the general description. General chat has no project wiki.
@@ -851,6 +862,13 @@ TXT;
             },
             'list_files' => function (array $args) use ($folder): string {
                 $path = (string)($args['path'] ?? '');
+                if ($folder === '' && trim(str_replace('\\', '/', $path)) === '') {
+                    $path = 'uploads';
+                }
+                $folder = $this->uploadsFolder($folder, $path);
+                if ($this->generalUploadsMissing($folder)) {
+                    return '[]';
+                }
                 $blocked = $this->needsProject($folder, $path, 'Open a project before listing its files.');
                 if ($blocked !== null) {
                     return $blocked;
@@ -860,6 +878,10 @@ TXT;
             },
             'read_file' => function (array $args) use ($folder, $projectId): string {
                 $path = (string)($args['path'] ?? '');
+                $folder = $this->uploadsFolder($folder, $path);
+                if ($this->generalUploadsMissing($folder)) {
+                    return 'File not found.';
+                }
                 $blocked = $this->needsProject($folder, $path, 'Open a project before reading its files.');
                 if ($blocked !== null) {
                     return $blocked;
@@ -869,6 +891,10 @@ TXT;
             },
             'read_pdf' => function (array $args) use ($folder, $shouldStop): string {
                 $path = (string)($args['path'] ?? '');
+                $folder = $this->uploadsFolder($folder, $path);
+                if ($this->generalUploadsMissing($folder)) {
+                    return 'File not found.';
+                }
                 $blocked = $this->needsProject($folder, $path, 'Open a project before reading a PDF.');
                 if ($blocked !== null) {
                     return $blocked;
@@ -877,6 +903,10 @@ TXT;
             },
             'read_image' => function (array $args) use ($folder, $shouldStop): string {
                 $path = (string)($args['path'] ?? '');
+                $folder = $this->uploadsFolder($folder, $path);
+                if ($this->generalUploadsMissing($folder)) {
+                    return 'File not found.';
+                }
                 $blocked = $this->needsProject($folder, $path, 'Open a project before looking at an image.');
                 if ($blocked !== null) {
                     return $blocked;
@@ -1206,6 +1236,27 @@ TXT;
             return $e->getMessage();
         }
         return 'Unknown kanban action. Use list, create, move, or delete.';
+    }
+
+    private function uploadsFolder(string $folder, string $path): string
+    {
+        if ($folder !== '') {
+            return $folder;
+        }
+        $raw = str_replace('\\', '/', trim($path));
+        if (str_starts_with($raw, '/')) {
+            return '';
+        }
+        $norm = ltrim($raw, '/');
+        if ($norm === 'uploads' || str_starts_with($norm, 'uploads/')) {
+            return Projects::generalFolder();
+        }
+        return '';
+    }
+
+    private function generalUploadsMissing(string $folder): bool
+    {
+        return $folder === Projects::generalFolder() && !is_dir(Projects::root($folder) . '/uploads');
     }
 
     private function needsProject(string $folder, string $path, string $message): ?string

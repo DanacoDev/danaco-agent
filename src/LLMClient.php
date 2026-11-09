@@ -380,7 +380,22 @@ class LLMClient
         if ($last !== '') {
             $line .= ' · last: ' . $last;
         }
-        $this->db->loop($agent !== '' ? $agent : 'orchestrator', 'model', $line);
+        $who = $agent !== '' ? $agent : 'orchestrator';
+        $this->db->loop($who, 'model', $line);
+        $this->noteMachine($who);
+    }
+
+    private function noteMachine(string $agent): void
+    {
+        try {
+            $line = $this->hardware->machineLine();
+        } catch (Throwable $e) {
+            return;
+        }
+        if ($line === '') {
+            return;
+        }
+        $this->db->loop($agent !== '' ? $agent : 'orchestrator', 'machine', $line);
     }
 
     private function attempt(array $messages, callable $onToken, ?callable $shouldStop, ?callable $onThinking = null, bool $cloud = false, string $agent = '', bool $failsafe = false): string
@@ -961,6 +976,7 @@ class LLMClient
             $ask = 'gpu';
         }
         $this->db->loop('orchestrator', 'model', 'yesno · ask ' . $ask . ' · ' . $model . ' · ' . $this->loadedSummary());
+        $this->noteMachine('orchestrator');
         $payload = json_encode([
             'model' => $model,
             'messages' => $messages,
@@ -991,6 +1007,7 @@ class LLMClient
         $base = rtrim((string)$this->db->getSetting('cloud_base_url', app_config()['cloud_base_url']), '/');
         $model = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
         $this->db->loop('orchestrator', 'model', 'yesno · ask cloud · ' . $model . ' · ' . $this->loadedSummary());
+        $this->noteMachine('orchestrator');
         if ($key === '') {
             return null;
         }

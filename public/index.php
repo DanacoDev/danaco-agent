@@ -262,7 +262,7 @@ header('X-Danaco: 1');
                     </span>
                   </div>
                   <div class="composer-line">
-                    <button class="attach-btn" type="button" aria-label="Attach a file" title="Attach a file" :disabled="!projectId || chatLocked" @click="$refs.attachInput.click()">
+                    <button class="attach-btn" type="button" aria-label="Attach a file" title="Attach a file" :disabled="chatLocked" @click="$refs.attachInput.click()">
                       <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M21.4 11.1 12.2 20.3a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
                     </button>
                     <textarea ref="composer" v-model="draft" rows="1" :placeholder="sending ? 'Send message to steer the agent' : 'Send message'" @input="fitComposer" @keydown.enter.exact.prevent="send"></textarea>

@@ -10,10 +10,15 @@ class Projects
         if ($folder === '' || !preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $folder)) {
             throw new InvalidArgumentException('Folder name must use lowercase letters, numbers, dashes, or underscores.');
         }
-        if (in_array($folder, ['wiki', 'skills', 'sessions', 'projects'], true) || str_contains($folder, 'trashcan') || str_contains($folder, 'backups')) {
+        if (in_array($folder, ['wiki', 'skills', 'sessions', 'projects', self::generalFolder()], true) || str_contains($folder, 'trashcan') || str_contains($folder, 'backups')) {
             throw new InvalidArgumentException('That folder name is reserved.');
         }
         return $folder;
+    }
+
+    public static function generalFolder(): string
+    {
+        return 'general';
     }
 
     public static function root(string $folder): string
@@ -561,7 +566,7 @@ class Projects
                 continue;
             }
             $name = (string)($project['folder_name'] ?? '');
-            if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $name) || in_array($name, ['wiki', 'skills', 'sessions', 'projects'], true)) {
+            if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $name) || in_array($name, ['wiki', 'skills', 'sessions', 'projects', self::generalFolder()], true)) {
                 continue;
             }
             $known[$name] = $project;
