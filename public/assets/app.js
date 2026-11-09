@@ -918,7 +918,7 @@
         toggleLog(id) {
           this.openLogs = Object.assign({}, this.openLogs, { [id]: !this.openLogs[id] });
         },
-        scheduledText(msg) {
+        scheduledRaw(msg) {
           if (!msg) return '';
           const text = String(msg.content || '').trim();
           if (msg.agent_name === 'task' || text.startsWith('Scheduled task:')) return text;
@@ -931,6 +931,14 @@
             return '';
           }
           return '';
+        },
+        scheduledText(msg) {
+          const text = this.scheduledRaw(msg);
+          if (!text) return '';
+          const first = text.split('\n')[0].replace(/^Scheduled task:\s*/, '').trim();
+          const numbered = first.match(/^#(\d+)\s+(.+)$/);
+          const card = numbered ? ('#' + numbered[1] + ' ' + numbered[2]) : first;
+          return 'Scheduled task started in the background, which might slow this chat down\n' + card;
         },
         agentLabel(name, markCpu) {
           let label = '';

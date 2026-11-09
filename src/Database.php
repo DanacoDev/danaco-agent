@@ -488,7 +488,7 @@ SQL);
 
     public function dueTasks(): array
     {
-        $stmt = $this->pdo->prepare("SELECT * FROM tasks WHERE project_id IS NOT NULL AND status IN ('todo', 'backlog', 'in_progress') AND id NOT IN (SELECT ref_id FROM jobs WHERE kind = 'task' AND status IN ('running', 'error') AND ref_id IS NOT NULL) AND ((schedule_time IS NOT NULL AND schedule_time <= ?) OR (schedule_time IS NULL AND status = 'in_progress' AND project_id NOT IN (SELECT project_id FROM jobs WHERE project_id IS NOT NULL AND kind IN ('chat', 'subagent') AND updated_at >= datetime('now', '-5 minutes')))) ORDER BY schedule_time");
+        $stmt = $this->pdo->prepare("SELECT * FROM tasks WHERE project_id IS NOT NULL AND status IN ('todo', 'backlog', 'in_progress') AND id NOT IN (SELECT ref_id FROM jobs WHERE kind = 'task' AND status IN ('running', 'error') AND ref_id IS NOT NULL) AND ((schedule_time IS NOT NULL AND schedule_time <= ?) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') NOT IN ('', 'none')) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') IN ('', 'none') AND project_id NOT IN (SELECT project_id FROM jobs WHERE project_id IS NOT NULL AND kind IN ('chat', 'subagent') AND updated_at >= datetime('now', '-5 minutes')))) ORDER BY schedule_time");
         $stmt->execute([date('Y-m-d H:i:s')]);
         $rows = $stmt->fetchAll();
         return array_map([$this, 'castTask'], $rows);
@@ -653,6 +653,71 @@ SQL);
         $stmt = $this->pdo->prepare("SELECT * FROM jobs WHERE status IN ('running', 'error') AND attempts < ? AND updated_at <= datetime('now', ?) ORDER BY id");
         $stmt->execute([$maxAttempts, '-' . $staleSeconds . ' seconds']);
         return $stmt->fetchAll();
+    }
+
+    public function taskRanSince(int $taskId, ?string $scheduleTime): bool
+    {
+        if ($taskId <= 0) {
+            return false;
+        }
+        $stmt = $this->pdo->prepare("SELECT updated_at FROM jobs WHERE kind = 'task' AND ref_id = ? AND status IN ('done', 'gave_up') ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$taskId]);
+        $updated = $stmt->fetchColumn();
+        if (!is_string($updated) || $updated === '') {
+            return false;
+        }
+        if ($scheduleTime === null || trim($scheduleTime) === '') {
+            return true;
+        }
+        $slot = strtotime($scheduleTime);
+        $at = strtotime($updated . ' UTC');
+        return $slot !== false && $at !== false && $at >= $slot;
+    }
+
+    public function scheduledAnswerSaved(int $projectId, int $taskId, string $title): bool
+    {
+        if ($projectId <= 0 || $taskId <= 0) {
+            return false;
+        }
+        $idNeedle = 'Scheduled task: #' . $taskId . ' ';
+        $title = trim($title);
+        $titleNeedle = $title !== '' ? 'Scheduled task: ' . $title : '';
+        $stmt = $this->pdo->prepare("SELECT id, content FROM messages WHERE project_id = ? AND role = 'user' ORDER BY id DESC LIMIT 80");
+        $stmt->execute([$projectId]);
+        $promptId = 0;
+        foreach ($stmt->fetchAll() as $row) {
+            $content = (string)$row['content'];
+            if (str_starts_with($content, $idNeedle)) {
+                $promptId = (int)$row['id'];
+                break;
+            }
+            if ($titleNeedle !== '' && str_starts_with($content, $titleNeedle)) {
+                $after = strlen($titleNeedle);
+                if (strlen($content) === $after || $content[$after] === "\n") {
+                    $promptId = (int)$row['id'];
+                    break;
+                }
+            }
+        }
+        if ($promptId <= 0) {
+            return false;
+        }
+        $next = $this->pdo->prepare('SELECT role, failed, content FROM messages WHERE project_id = ? AND id > ? ORDER BY id ASC LIMIT 20');
+        $next->execute([$projectId, $promptId]);
+        foreach ($next->fetchAll() as $row) {
+            $role = (string)$row['role'];
+            if ($role === 'notice') {
+                continue;
+            }
+            if ($role !== 'assistant') {
+                return false;
+            }
+            if ((int)($row['failed'] ?? 0) === 1 || trim((string)($row['content'] ?? '')) === 'No response.') {
+                return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     public function freshJobs(int $staleSeconds): array

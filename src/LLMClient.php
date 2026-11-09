@@ -355,7 +355,7 @@ class LLMClient
         return !empty($result['retry']) ? (string)$result['note'] : null;
     }
 
-    private function traceModel(string $agent, array $messages, string $model, int $numCtx, bool $brief): void
+    private function traceModel(string $agent, array $messages, string $model, int $numCtx, bool $brief, string $ask): void
     {
         $chars = 0;
         $last = '';
@@ -373,7 +373,7 @@ class LLMClient
         if (strlen($last) > 48) {
             $last = substr($last, 0, 47) . '…';
         }
-        $line = 'model ' . $model . ' · ' . count($messages) . ' msgs · ' . $chars . ' chars · ctx ' . $numCtx . ' · brief ' . ($brief ? 'on' : 'off');
+        $line = 'ask ' . $ask . ' · ' . $model . ' · ' . $this->loadedSummary() . ' · ctx ' . $numCtx . ' · ' . count($messages) . ' msgs · ' . $chars . ' chars · brief ' . ($brief ? 'on' : 'off');
         if ($this->attemptTry > 1) {
             $line = 'try ' . $this->attemptTry . '/3 · ' . $line;
         }
@@ -402,7 +402,7 @@ class LLMClient
         }
         if (!$failsafe && ($cloud || $mode === 'cloud')) {
             $cloudModel = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
-            $this->traceModel($agent, $messages, $cloudModel, $numCtx, $brief);
+            $this->traceModel($agent, $messages, $cloudModel, $numCtx, $brief, 'cloud');
             return $this->streamOpenAi($messages, $onToken, $shouldStop, $onThinking, $brief);
         }
         $model = $mode === 'cpu_failsafe'
@@ -427,8 +427,12 @@ class LLMClient
             'use_mmap' => true,
             'use_mlock' => false,
         ];
-        if ($mode === 'local' && $this->wholeModelOnGpu($model)) {
+        $ask = 'auto';
+        if ($mode === 'cpu_failsafe') {
+            $ask = 'cpu';
+        } elseif ($mode === 'local' && $this->wholeModelOnGpu($model)) {
             $options['num_gpu'] = 999;
+            $ask = 'gpu';
         }
         $body = [
             'model' => $model,
@@ -444,7 +448,7 @@ class LLMClient
         if (!is_string($payload) || $payload === '') {
             throw new LlmException('The model request could not be encoded.', false);
         }
-        $this->traceModel($agent, $messages, $model, $numCtx, $brief);
+        $this->traceModel($agent, $messages, $model, $numCtx, $brief, $ask);
         try {
             return $this->curlStream($base . '/api/chat', $payload, [], $onToken, true, $base, $model, $shouldStop, $onThinking);
         } catch (LlmException $e) {
@@ -782,6 +786,55 @@ class LLMClient
         return null;
     }
 
+    private function loadedSummary(): string
+    {
+        $json = $this->ollamaCall('GET', '/api/ps', null, 2);
+        if ($json === null) {
+            return 'loaded unknown';
+        }
+        $parts = [];
+        foreach ($json['models'] ?? [] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $name = trim((string)($row['name'] ?? $row['model'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+            $size = (int)($row['size'] ?? 0);
+            $vram = (int)($row['size_vram'] ?? 0);
+            $parts[] = $name . ' ' . $this->placeWord($vram, $size) . ' ' . $this->memoryPair($vram, $size);
+        }
+        return $parts ? 'loaded ' . implode(', ', $parts) : 'loaded none';
+    }
+
+    private function placeWord(int $vram, int $size): string
+    {
+        if ($vram <= 0) {
+            return 'cpu';
+        }
+        if ($size > 0 && $vram < (int)($size * 0.9)) {
+            return 'split';
+        }
+        return 'gpu';
+    }
+
+    private function memoryPair(int $vram, int $size): string
+    {
+        if ($size <= 0) {
+            return $this->gb($vram);
+        }
+        return $this->gb($vram) . '/' . $this->gb($size);
+    }
+
+    private function gb(int $bytes): string
+    {
+        if ($bytes <= 0) {
+            return '0GB';
+        }
+        return number_format($bytes / 1073741824, 1, '.', '') . 'GB';
+    }
+
     private function loadOntoGpu(string $model): bool
     {
         if ($this->placement($model) === 'cpu') {
@@ -900,9 +953,14 @@ class LLMClient
             'use_mmap' => true,
             'use_mlock' => false,
         ];
-        if ($mode === 'local' && $this->wholeModelOnGpu($model)) {
+        $ask = 'auto';
+        if ($mode === 'cpu_failsafe') {
+            $ask = 'cpu';
+        } elseif ($mode === 'local' && $this->wholeModelOnGpu($model)) {
             $options['num_gpu'] = 999;
+            $ask = 'gpu';
         }
+        $this->db->loop('orchestrator', 'model', 'yesno · ask ' . $ask . ' · ' . $model . ' · ' . $this->loadedSummary());
         $payload = json_encode([
             'model' => $model,
             'messages' => $messages,
@@ -932,6 +990,7 @@ class LLMClient
         $key = trim((string)$this->db->getSetting('cloud_api_key', ''));
         $base = rtrim((string)$this->db->getSetting('cloud_base_url', app_config()['cloud_base_url']), '/');
         $model = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
+        $this->db->loop('orchestrator', 'model', 'yesno · ask cloud · ' . $model . ' · ' . $this->loadedSummary());
         if ($key === '') {
             return null;
         }

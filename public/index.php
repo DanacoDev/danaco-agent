@@ -212,7 +212,7 @@ header('X-Danaco: 1');
               <div ref="transcript" class="transcript" :style="{ fontSize: chatFontPx + 'px' }" @scroll="onTranscriptScroll" @click="onTranscriptClick">
                 <template v-for="msg in messages" :key="msg.id">
                 <p v-if="msg.role==='notice'" class="context-note">{{ msg.content }}</p>
-                <p v-else-if="scheduledText(msg)" class="context-note">{{ scheduledText(msg) }}</p>
+                <p v-else-if="scheduledText(msg)" class="context-note scheduled-note">{{ scheduledText(msg) }}</p>
                 <article v-else class="bubble" :class="msg.role">
                   <div v-if="msg.role==='tool'" class="tool-line">{{ agentLabel(msg.agent_name, showCpu) }} · {{ msg.content }}</div>
                   <template v-else>
@@ -550,7 +550,10 @@ header('X-Danaco: 1');
             </div>
             <div class="flow-log-head">
               <h3 class="flow-log-title">{{ logAgent ? agentLabel(logAgent) : 'Activity' }}</h3>
-              <button v-if="logAgent" class="btn btn-ghost" type="button" @click="pickLogAgent(logAgent)">Show all</button>
+              <span class="flow-log-actions">
+                <button v-if="logAgent" class="btn btn-ghost" type="button" @click="pickLogAgent(logAgent)">Show all</button>
+                <a class="btn btn-ghost" :href="'/api/agents/loop/download?project_id=' + (projectId || 0)">Download activity</a>
+              </span>
             </div>
             <div class="log-feed">
               <article v-for="log in logs" :key="log.id" class="log-row log-item">
@@ -564,7 +567,6 @@ header('X-Danaco: 1');
             </div>
             <div class="flow-log-head">
               <h3 class="flow-log-title">Loop</h3>
-              <a class="btn btn-ghost" :href="'/api/agents/loop/download?project_id=' + (projectId || 0)">Download log</a>
             </div>
             <div class="log-feed">
               <article v-for="log in loopLogs" :key="'loop-' + log.id" class="log-row">

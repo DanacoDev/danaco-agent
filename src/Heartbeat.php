@@ -20,6 +20,9 @@ class Heartbeat
                 $this->traceJob($job, 'Skipped job ' . $id . ' · subagent lock held');
                 continue;
             }
+            if ((string)$job['kind'] === 'task' && $this->closeFinishedOccurrence($job)) {
+                continue;
+            }
             $this->db->bumpJob($id);
             $this->traceJob($job, 'Bumped job ' . $id . ' · attempt ' . ($attempt + 1));
             $this->traceJob($job, 'Retry started · job ' . $id);
@@ -110,14 +113,29 @@ class Heartbeat
         if ($projectId <= 0) {
             return;
         }
+        $taskId = (int)$task['id'];
+        $state = $this->slotState($task);
+        if ($state === 'later') {
+            return;
+        }
+        if ($state === 'ran') {
+            $this->db->loopWrite($jobId, $projectId, 'heartbeat', 'process', 'Task ' . $taskId . ' already finished · not started again');
+            $this->settleIfDue($task);
+            return;
+        }
         $ownJob = $jobId === null;
+        if (!$ownJob && $this->db->scheduledAnswerSaved($projectId, $taskId, (string)($task['title'] ?? ''))) {
+            $this->db->loopWrite($jobId, $projectId, 'heartbeat', 'process', 'Task ' . $taskId . ' already answered · job ' . $jobId . ' closed');
+            $this->settleIfDue($task);
+            return;
+        }
         if ($ownJob) {
             Recovery::reset($this->db);
             $jobId = $this->db->startJob('task', $projectId, [
                 'task_id' => (int)$task['id'],
             ], (int)$task['id']);
             $this->db->updateTask((int)$task['id'], ['status' => 'in_progress']);
-            $message = "Scheduled task: {$task['title']}\n\n" . (string)($task['description'] ?? '');
+            $message = 'Scheduled task: #' . (int)$task['id'] . ' ' . $task['title'] . "\n\n" . (string)($task['description'] ?? '');
             $this->db->addMessage($projectId, 'user', $message, 'task');
         } else {
             $this->db->deleteLatestFailed($projectId);
@@ -130,6 +148,7 @@ class Heartbeat
             } else {
                 $this->db->loop('orchestrator', 'process', 'Heartbeat retry · task ' . (int)$task['id'] . ' · job ' . $jobId);
             }
+            $saved = false;
             $turn = new ChatTurn();
             try {
                 $answer = $turn->run($projectId, static function (): void {
@@ -145,11 +164,16 @@ class Heartbeat
                 $this->db->addMessage($projectId, 'assistant', $spoken, 'orchestrator', false, $detail);
                 $this->db->loop('orchestrator', 'process', 'Answer saved · job ' . $jobId . ' finished');
                 $this->db->finishJob($jobId);
+                $saved = true;
                 $this->settle($task, $this->withTaskNotes($spoken, $turn->notices), false, $turn->notices !== []);
             } catch (Throwable $e) {
                 if ($e instanceof ChatStopped) {
                     $this->db->loop('orchestrator', 'process', 'Stopped · job ' . $jobId);
                     $this->db->finishJob($jobId);
+                    return;
+                }
+                if ($saved) {
+                    $this->db->loop('heartbeat', 'process', 'Answer saved · schedule not moved · job ' . $jobId . ' · ' . $e->getMessage());
                     return;
                 }
                 $this->db->failJob($jobId, $e->getMessage(), self::MAX_ATTEMPTS);
@@ -251,6 +275,78 @@ class Heartbeat
         } finally {
             $this->db->loopPop();
         }
+    }
+
+    private function closeFinishedOccurrence(array $job): bool
+    {
+        $task = $this->taskFromJob($job);
+        if (!$task) {
+            return false;
+        }
+        $state = $this->slotState($task);
+        $id = (int)$job['id'];
+        $taskId = (int)$task['id'];
+        if ($state === 'later') {
+            $this->traceJob($job, 'Task ' . $taskId . ' already scheduled · ' . $task['schedule_time'] . ' · job ' . $id . ' closed');
+            $this->db->finishJob($id);
+            return true;
+        }
+        $projectId = (int)($task['project_id'] ?? 0);
+        $answered = $state === 'ran' || $this->db->scheduledAnswerSaved($projectId, $taskId, (string)($task['title'] ?? ''));
+        if (!$answered) {
+            return false;
+        }
+        $this->traceJob($job, 'Task ' . $taskId . ' already finished · job ' . $id . ' closed');
+        $this->db->finishJob($id);
+        $this->settleIfDue($task);
+        return true;
+    }
+
+    private function taskFromJob(array $job): ?array
+    {
+        $taskId = (int)($job['ref_id'] ?? 0);
+        if ($taskId <= 0) {
+            $payload = $job['payload'] ?? null;
+            if (is_string($payload)) {
+                $payload = json_decode($payload, true);
+            }
+            $taskId = is_array($payload) ? (int)($payload['task_id'] ?? 0) : 0;
+        }
+        return $taskId > 0 ? $this->db->task($taskId) : null;
+    }
+
+    private function slotState(array $task): string
+    {
+        $when = trim((string)($task['schedule_time'] ?? ''));
+        if ($when !== '') {
+            $at = strtotime($when);
+            if ($at !== false && $at > time()) {
+                return 'later';
+            }
+            if ($at !== false && $this->db->taskRanSince((int)$task['id'], $when)) {
+                return 'ran';
+            }
+            return 'due';
+        }
+        if ($this->repeats((string)($task['recurrence_interval'] ?? 'none')) && $this->db->taskRanSince((int)$task['id'], null)) {
+            return 'ran';
+        }
+        return 'due';
+    }
+
+    private function settleIfDue(array $task): void
+    {
+        $when = trim((string)($task['schedule_time'] ?? ''));
+        $at = $when !== '' ? strtotime($when) : false;
+        if ($when !== '' && $at !== false && $at > time()) {
+            return;
+        }
+        $this->settle($task, (string)($task['result'] ?? ''), false);
+    }
+
+    private function repeats(string $recurrence): bool
+    {
+        return $recurrence !== '' && $recurrence !== 'none';
     }
 
     private function gaveUpTask(array $job): void
