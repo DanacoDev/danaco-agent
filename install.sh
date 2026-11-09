@@ -145,6 +145,11 @@ bash "$ROOT/bin/ensure-chromium.sh" || cdeps=$?
 if [[ "$cdeps" -ne 0 && "$cdeps" -ne 10 ]]; then
   exit 1
 fi
+ndeps=0
+bash "$ROOT/bin/ensure-nvidia.sh" || ndeps=$?
+if [[ "$ndeps" -ne 0 && "$ndeps" -ne 10 ]]; then
+  exit 1
+fi
 
 echo
 echo "Hardware"

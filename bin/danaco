@@ -844,6 +844,8 @@ cmd_update() {
   bash "$ROOT/bin/ensure-php.sh" || deps=$?
   cdeps=0
   bash "$ROOT/bin/ensure-chromium.sh" || cdeps=$?
+  ndeps=0
+  bash "$ROOT/bin/ensure-nvidia.sh" || ndeps=$?
   if [[ "$before" != "$after" || "$deps" -eq 10 ]]; then
     restart_service 2>/dev/null || true
     if wait_for_http; then
@@ -853,7 +855,7 @@ cmd_update() {
     fi
   fi
   install_shortcut || true
-  if [[ "$deps" -eq 1 || "$cdeps" -eq 1 ]]; then
+  if [[ "$deps" -eq 1 || "$cdeps" -eq 1 || "$ndeps" -eq 1 ]]; then
     exit 1
   fi
 }
