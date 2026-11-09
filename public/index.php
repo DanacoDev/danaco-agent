@@ -101,7 +101,7 @@ header('X-Danaco: 1');
   <symbol id="i-file" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M7 3.5h7.2L19 8.2V20.5H7zM14.2 3.8V8.2H18.5M10 12.5h6M10 16h4"/></symbol>
   <symbol id="i-agents" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" d="M8 12a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm8 1a2.5 2.5 0 1 0-2.5-2.5A2.5 2.5 0 0 0 16 13zM3 19c.4-2.4 2.4-4 5-4s4.6 1.6 5 4M14 19c.3-1.6 1.5-2.8 3.2-3 1.6.2 2.8 1.4 3.3 3"/></symbol>
   <symbol id="i-skills" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" d="M12 3l2.2 5.5L20 11l-5.8 2.5L12 19l-2.2-5.5L4 11l5.8-2.5z"/></symbol>
-  <symbol id="i-setup" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18"/></symbol>
+  <symbol id="i-setup" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M14.5 4.5 19.5 9.5 8 21H3v-5zM12.5 6.5l5 5"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4.5 7.5h15M9.2 7.4V5.2h5.6v2.2M7.2 7.5l.8 12h8l.8-12M10 11.2v5M14 11.2v5"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 4v10M8 10l4 4 4-4M5 19h14"/></symbol>
@@ -278,10 +278,6 @@ header('X-Danaco: 1');
           <section v-else-if="tab==='tasks'" class="view">
             <div class="view-head">
               <h2>Tasks</h2>
-              <select class="task-filter" v-model.number="taskFilter" aria-label="Filter tasks by project">
-                <option :value="0">All projects</option>
-                <option v-for="project in projects" :key="'filter'+project.id" :value="project.id">{{ project.name }}</option>
-              </select>
             </div>
             <div class="kanban">
               <section v-for="column in columns" :key="column.id" class="column" @dragover.prevent @drop.prevent="onDrop(column.id, $event)">
@@ -559,7 +555,7 @@ header('X-Danaco: 1');
             <div class="log-feed">
               <article v-for="log in logs" :key="log.id" class="log-row log-item">
                 <button type="button" class="log-summary" @click="toggleLog(log.id)" :aria-expanded="openLogs[log.id] ? 'true' : 'false'">
-                  <span class="type">{{ agentLabel(log.agent_name) }} · {{ logKind(log.log_type) }} · {{ log.created_at }}</span>
+                  <span class="type">{{ agentLabel(log.agent_name) }} · {{ logProject(log) }} · {{ logKind(log.log_type) }} · {{ log.created_at }}</span>
                   <span v-if="!openLogs[log.id]" class="hint">{{ logPreview(log.content) }}</span>
                 </button>
                 <div v-if="openLogs[log.id]" class="md" v-html="md(log.content)"></div>
@@ -1051,11 +1047,13 @@ header('X-Danaco: 1');
   </div>
 
   <div v-if="projectModal" class="modal-back" @click.self="projectModal = false">
-    <form class="modal" @submit.prevent="createProject">
+    <form class="modal project-modal" @submit.prevent="createProject">
       <h2>New project</h2>
-      <label class="field">Name<input v-model="projectForm.name" maxlength="25" required @input="onProjectName"></label>
-      <label class="field">Folder<input v-model="projectForm.folder_name" required @input="projectForm.folderTouched = true"></label>
-      <label class="field">Purpose<textarea v-model="projectForm.purpose" rows="4" placeholder="Explain what the mission or goals are for this project"></textarea></label>
+      <label class="field">Project name<input v-model="projectForm.name" maxlength="25" required></label>
+      <label class="field">Project description<textarea v-model="projectForm.description" rows="3" placeholder="What this project is"></textarea></label>
+      <label class="field">Intended goals and outcomes<textarea v-model="projectForm.goals" rows="3" placeholder="What this project should achieve"></textarea></label>
+      <label class="field">Limitations<textarea v-model="projectForm.limitations" rows="3" placeholder="Limits, constraints, or things to avoid"></textarea></label>
+      <label class="field">The agent's role in this project<textarea v-model="projectForm.role" rows="3" placeholder="What the agent should do here"></textarea></label>
       <p class="form-error">{{ projectError }}</p>
       <button class="btn btn-gold" type="submit">Create project</button>
     </form>

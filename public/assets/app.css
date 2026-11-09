@@ -214,7 +214,7 @@ svg.sprite { position: absolute; width: 0; height: 0; }
 .flow-node.is-inactive { opacity: 0.72; }
 .flow-node strong { font-size: 0.92rem; }
 .flow-node.is-thinking, .flow-node.is-executing_tool { border-color: rgba(232, 184, 109, 0.75); }
-.flow-node.is-error { border-color: rgba(240, 160, 160, 0.75); }
+.flow-node.is-error, .flow-node.is-stuck { border-color: rgba(240, 160, 160, 0.75); }
 .avatar { width: 36px; height: 36px; color: var(--gold); }
 .flow-status { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0; font-size: 0.78rem; }
 .flow-task { margin: 0; width: 100%; font-size: 0.75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -247,7 +247,7 @@ svg.sprite { position: absolute; width: 0; height: 0; }
 .status-thinking { color: var(--gold); }
 .status-executing_tool { color: #9ec1ff; }
 .status-completed { color: var(--ok); }
-.status-error { color: var(--danger); }
+.status-error, .status-stuck { color: var(--danger); }
 
 .view-head { justify-content: space-between; margin-bottom: 14px; }
 .view-head h2 { margin: 0; }
@@ -296,7 +296,7 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
   font-size: 0.82rem; text-align: center;
 }
 .task-add { display: flex; gap: 8px; margin-bottom: 12px; }
-.task-filter, .task-add select {
+.task-add select {
   width: auto; min-width: 140px; background: #0e0e12; border: 1px solid var(--line); border-radius: 10px; padding: 8px;
 }
 .kanban { display: flex; gap: 12px; overflow-x: auto; align-items: flex-start; padding-bottom: 8px; }
@@ -477,6 +477,7 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 .choice-block { padding: 10px 0; border-bottom: 1px solid var(--line); }
 .choice-block:last-of-type { border-bottom: 0; }
 .backup-modal { width: min(560px, 100%); max-height: calc(100dvh - 36px); overflow: auto; }
+.project-modal { width: min(520px, 100%); max-height: calc(100dvh - 36px); overflow: auto; }
 .model-row, .model-install { display: flex; align-items: center; gap: 10px; }
 .model-row { justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--line); }
 .model-row p { margin: 2px 0 0; }

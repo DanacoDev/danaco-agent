@@ -195,8 +195,6 @@
           ],
           finishedOpen: false,
           taskError: '',
-          taskFilter: 0,
-          taskAddProject: 0,
           taskLoading: false,
           agentNames: ['orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer', 'human'],
           tree: [],
@@ -301,7 +299,7 @@
           systemControlError: false,
           projectModal: false,
           projectError: '',
-          projectForm: { name: '', folder_name: '', purpose: '', folderTouched: false },
+          projectForm: { name: '', description: '', goals: '', limitations: '', role: '' },
           projectEdit: null,
           projectEditName: '',
           projectEditError: '',
@@ -401,6 +399,7 @@
         thinkingLabel() {
           if (this.toolPending) return 'Calling a tool';
           if (!this.thinkingSpinner) return 'Working';
+          if (this.waitPhase === 'scheduled') return 'Waiting (agent busy with scheduled task)';
           if (!this.slowReply) return 'Thinking';
           let why = '';
           if (this.waitPhase === 'compressing') why = 'compressing context';
@@ -469,6 +468,11 @@
       },
       mounted() {
         window.addEventListener('hashchange', () => this.onHash());
+        window.addEventListener('visibilitychange', () => {
+          if (document.hidden || !this.authed || this.tab !== 'agents') return;
+          this.refreshStatus(true).catch(function () {});
+          this.refreshLogs(true).catch(function () {});
+        });
         window.addEventListener('mousedown', (event) => {
           if (!this.treeMenu || event.button !== 0) return;
           const menu = document.querySelector('.tree-menu');
@@ -598,7 +602,6 @@
           if (this.projectId !== 0 && !this.projects.some((project) => project.id === this.projectId)) {
             this.projectId = 0;
           }
-          this.syncTaskFilter();
           this.applySettings(setup);
           this.skills = skills.skills;
           this.agents = status.agents;
@@ -617,10 +620,7 @@
         async refreshTab() {
           if (!this.authed) return;
           if (this.tab === 'chat') await this.reloadMessages();
-          if (this.tab === 'tasks') {
-            if (!this.taskAddProject) this.taskAddProject = this.projectId || (this.projects[0] ? this.projects[0].id : 0);
-            await this.reloadTasks();
-          }
+          if (this.tab === 'tasks') await this.reloadTasks();
           if (this.tab === 'workspace') await this.loadTree();
           if (this.tab === 'agents') {
             await this.refreshLogs();
@@ -643,12 +643,8 @@
           }
           await this.refreshStatus();
         },
-        syncTaskFilter() {
-          this.taskFilter = this.projectId || 0;
-        },
         async onProjectChange() {
           localStorage.setItem('projectId', String(this.projectId || 0));
-          this.syncTaskFilter();
           this.messages = [];
           this.awaitingModel = false;
           this.stickToBottom = true;
@@ -690,7 +686,7 @@
         },
         openProjectModal() {
           this.projectError = '';
-          this.projectForm = { name: '', folder_name: '', purpose: '', folderTouched: false };
+          this.projectForm = { name: '', description: '', goals: '', limitations: '', role: '' };
           this.projectModal = true;
           this.mobileNav = false;
         },
@@ -756,9 +752,21 @@
             this.projectEditError = error.message;
           }
         },
-        onProjectName() {
-          if (this.projectForm.folderTouched) return;
-          this.projectForm.folder_name = this.projectForm.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+        projectBrief() {
+          const form = this.projectForm;
+          const description = String(form.description || '').trim();
+          const goals = String(form.goals || '').trim();
+          const limitations = String(form.limitations || '').trim();
+          const role = String(form.role || '').trim();
+          const parts = [];
+          if (goals) parts.push('Intended goals and outcomes:\n' + goals);
+          if (limitations) parts.push('Limitations:\n' + limitations);
+          if (role) parts.push('Your role in this project:\n' + role);
+          let text = 'We are now starting a new project.';
+          if (description) text += ' ' + description;
+          if (parts.length) text += '\n\n' + parts.join('\n\n');
+          text += '\n\nAsk me simple questions to help me outline the project systematically';
+          return text;
         },
         async createProject() {
           this.projectError = '';
@@ -777,10 +785,9 @@
             this.draft = '';
             this.attachments = [];
             if (this.tab !== 'chat') this.setTab('chat');
-            const purpose = String((data.project && data.project.purpose) || '').trim();
             this.projectOpener = {
               projectId: data.project.id,
-              text: 'We are now starting a new project. ' + purpose + '\n\nAsk me simple questions to help me outline the project systematically',
+              text: this.projectBrief(),
               saved: false
             };
             await this.persistProjectOpener();
@@ -856,9 +863,18 @@
           if (!agent) return '';
           if (agent.status === 'inactive') return agent.note || 'Inactive';
           if (agent.status === 'idle') return 'Waiting';
+          if (this.agentBusy(agent)) return this.agentProject(agent);
           const log = this.logLatest[agent.name] || this.logs.find((item) => item.agent_name === agent.name);
           if (!log) return agent.label;
           return this.logPreview(log.content);
+        },
+        agentProject(agent) {
+          if (!agent || !agent.project_id) return 'General chat';
+          return this.projectName(agent.project_id);
+        },
+        logProject(log) {
+          if (!log || !log.project_id) return 'General chat';
+          return this.projectName(log.project_id);
         },
         pickLogAgent(name) {
           this.logAgent = this.logAgent === name ? '' : name;
@@ -1490,8 +1506,10 @@
           if (!dataLines.length) return;
           let data = {};
           try { data = JSON.parse(dataLines.join('\n')); } catch (error) { return; }
-          if (event === 'phase' && data.phase === 'compressing') {
-            this.waitPhase = 'compressing';
+          if (event === 'phase') {
+            if (!(data.phase === 'compressing' && this.waitPhase === 'scheduled')) {
+              this.waitPhase = data.phase || '';
+            }
           } else if (event === 'token') {
             this.slowReply = false;
             this.waitPhase = '';
@@ -1528,12 +1546,14 @@
             this.refreshPendingActions();
             this.scrollChat();
           } else if (event === 'tool_call') {
+            this.waitPhase = '';
             this.noteTool(data);
             this.scrollChat();
           } else if (event === 'tool_result') {
             this.noteToolResult(data);
             this.scrollChat();
           } else if (event === 'activity') {
+            this.waitPhase = '';
             this.toolPending = true;
             this.scrollChat();
           } else if (event === 'stopped') {
@@ -1556,7 +1576,8 @@
                 thinking: 'Thinking',
                 executing_tool: 'Executing Tool',
                 completed: 'Completed',
-                error: 'Error'
+                error: 'Error',
+                stuck: 'Stuck'
               })[data.status] || data.status;
             }
             if (data.status === 'thinking') {
@@ -1590,7 +1611,7 @@
           return 'backlog';
         },
         finishedTasks() {
-          return this.tasks.filter((task) => task.status === 'done' && (!this.taskFilter || task.project_id === this.taskFilter))
+          return this.tasks.filter((task) => task.status === 'done' && task.project_id === this.projectId)
             .sort((a, b) => String(b.finished_at || b.created_at || '').localeCompare(String(a.finished_at || a.created_at || '')) || (b.id - a.id));
         },
         finishedVisible() {
@@ -1600,8 +1621,7 @@
         tasksFor(status) {
           return this.tasks.filter((task) => {
             if (this.columnStatus(task) !== status) return false;
-            if (!this.taskFilter) return true;
-            return task.project_id === this.taskFilter;
+            return task.project_id === this.projectId;
           });
         },
         async reloadTasks() {
@@ -1619,8 +1639,7 @@
           this.taskError = '';
           const title = this.taskDraft.trim();
           if (!title) return;
-          let projectId = this.taskFilter || this.taskAddProject;
-          if (!projectId && this.projects.length === 1) projectId = this.projects[0].id;
+          let projectId = this.projectId;
           if (!projectId) {
             this.taskError = this.projects.length ? 'Choose a project for this task.' : 'Create a project first.';
             return;
@@ -2655,23 +2674,25 @@
         startPoll() {
           this.stopPoll();
           this.pollTimer = setInterval(() => {
-            if (!this.authed || document.hidden) return;
-            this.refreshModelLoad(true).then(() => this.maybeSendProjectOpener()).catch(function () {});
-            if (this.tab === 'tasks') this.reloadTasks();
+            if (!this.authed) return;
+            if (!document.hidden) {
+              this.refreshModelLoad(true).then(() => this.maybeSendProjectOpener()).catch(function () {});
+              if (this.tab === 'tasks') this.reloadTasks();
+              if (this.settings && this.settings.hitl_external_actions === '1' && (this.tab === 'chat' || this.sending)) {
+                this.refreshPendingActions().catch(function () {});
+              }
+              if (this.tab === 'setup') {
+                this.healthTick += 1;
+                if (this.healthTick >= 5) {
+                  this.healthTick = 0;
+                  this.refreshHealth();
+                }
+              }
+            }
             if (this.tab === 'agents') {
               this.refreshStatus(true).catch(function () {});
               this.refreshLogs(true).catch(function () {});
-              this.refreshPendingActions().catch(function () {});
-            }
-            if (this.settings && this.settings.hitl_external_actions === '1' && (this.tab === 'chat' || this.sending)) {
-              this.refreshPendingActions().catch(function () {});
-            }
-            if (this.tab === 'setup') {
-              this.healthTick += 1;
-              if (this.healthTick >= 5) {
-                this.healthTick = 0;
-                this.refreshHealth();
-              }
+              if (!document.hidden) this.refreshPendingActions().catch(function () {});
             }
           }, 1000);
         },

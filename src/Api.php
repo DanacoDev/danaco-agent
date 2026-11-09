@@ -174,8 +174,11 @@ class Api
                 $this->db,
                 (string)($body['name'] ?? ''),
                 (string)($body['folder_name'] ?? $body['folder'] ?? ''),
-                (string)($body['purpose'] ?? ''),
-                (string)($body['project_type'] ?? $body['type'] ?? '')
+                (string)($body['description'] ?? $body['purpose'] ?? ''),
+                (string)($body['project_type'] ?? $body['type'] ?? ''),
+                (string)($body['goals'] ?? ''),
+                (string)($body['limitations'] ?? ''),
+                (string)($body['role'] ?? '')
             );
         } catch (InvalidArgumentException $e) {
             $this->json(['error' => $e->getMessage()], 422);
@@ -1124,17 +1127,21 @@ class Api
             'executing_tool' => 'Executing Tool',
             'completed' => 'Completed',
             'error' => 'Error',
+            'stuck' => 'Stuck',
             'inactive' => 'Inactive',
         ];
-        $all = $this->db->agentStatus();
+        $reconciled = (new Heartbeat($this->db))->reconcile();
         $consultant = $this->db->consultantState();
         $agents = [];
         foreach (array_keys(Database::idleStatus()) as $name) {
-            $status = $all[$name] ?? 'idle';
+            $row = $reconciled[$name] ?? ['status' => 'idle', 'project_id' => null];
+            $status = (string)$row['status'];
+            $projectId = $row['project_id'];
             $note = '';
             if ($name === 'consultant' && !$consultant['active']) {
                 $status = 'inactive';
                 $note = (string)$consultant['note'];
+                $projectId = null;
             }
             $agents[] = [
                 'name' => $name,
@@ -1142,6 +1149,7 @@ class Api
                 'label' => $labels[$status] ?? $status,
                 'note' => $note,
                 'reason' => $name === 'consultant' ? (string)$consultant['reason'] : '',
+                'project_id' => $projectId,
             ];
         }
         $this->json(['agents' => $agents]);

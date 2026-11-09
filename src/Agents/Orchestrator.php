@@ -17,6 +17,10 @@ class Orchestrator
         if ($projectId > 0 && !$project) {
             throw new RuntimeException('Project not found.');
         }
+        $waitingOnTask = $this->db->taskRunning();
+        if ($waitingOnTask) {
+            $emit(['type' => 'phase', 'phase' => 'scheduled']);
+        }
         $packed = $this->prepare($projectId, $project, true, $shouldStop, false, $emit);
         if (!empty($packed['updated'])) {
             $this->db->addMessage($projectId, 'notice', ContextWindow::NOTICE, 'orchestrator');
@@ -27,6 +31,11 @@ class Orchestrator
         $last = $messages[count($messages) - 1] ?? null;
         if (is_array($last) && $this->toolWasCutOff((string)($last['content'] ?? ''))) {
             $messages[] = ['role' => 'user', 'content' => 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.'];
+        }
+        if ($this->db->taskRunning()) {
+            $emit(['type' => 'phase', 'phase' => 'scheduled']);
+        } elseif ($waitingOnTask) {
+            $emit(['type' => 'phase', 'phase' => '']);
         }
         return $this->runtime->run(
             'orchestrator',
@@ -534,7 +543,7 @@ Tools:
 {$fileTools}
 {$consultLine}- kanban: the task board. args action (list, create, move, or delete).
   list: no other args.
-  create: title, description, agent, status, schedule_time (YYYY-MM-DD HH:MM), recurrence (none, 5min, 15min, 30min, hourly, daily, weekly, or monthly). none means run once. Leave schedule_time empty only when the card should run immediately. A later card needs a real clock time. Do not invent one.
+  create: title, description, agent, status, schedule_time (YYYY-MM-DD HH:MM), recurrence (none, 5min, 15min, 30min, hourly, daily, weekly, or monthly). none means run once. Leave schedule_time empty only when the card should run immediately. A later card needs a real clock time. Do not invent one. Before create, list the board and check for a duplicate or a similar task. Do not add a card for work that is already there. An exact duplicate is not added. The tool returns an error that names the existing card. Use that card.
   move: id, plus any of status, description, result, agent, schedule_time, recurrence.
   delete: id. Removes that card from the board. Use it when a card is wrong, stale, or the user asks you to remove it.
   backlog = later agent work with no schedule. in_progress = work happening now, or a card with a time or a repeat. A repeating card stays in in_progress. review = a finished run-once card waiting for the user; include result. You cannot set done, and you cannot move a repeating card to review.

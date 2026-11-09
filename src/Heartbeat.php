@@ -11,6 +11,7 @@ class Heartbeat
 
     public function beat(): void
     {
+        $this->reconcile();
         foreach ($this->db->dueJobs(self::STALE_SECONDS, self::MAX_ATTEMPTS) as $job) {
             $id = (int)$job['id'];
             $this->db->bumpJob($id);
@@ -26,6 +27,57 @@ class Heartbeat
                 $this->gaveUpTask($job);
             }
         }
+    }
+
+    public function reconcile(): array
+    {
+        $fresh = $this->db->freshJobs(self::STALE_SECONDS);
+        $stored = $this->db->agentStatus();
+        $minutes = (int)max(1, round(self::STALE_SECONDS / 60));
+        $note = 'No job has reported in for ' . $minutes . ' minutes. Marked stuck.';
+        $out = [];
+        foreach (array_keys(Database::idleStatus()) as $name) {
+            $job = $this->liveJob($name, $fresh);
+            $status = (string)($stored[$name] ?? 'idle');
+            $projectId = null;
+            if ($job !== null) {
+                $projectId = $job['project_id'];
+            } elseif ($status === 'thinking' || $status === 'executing_tool') {
+                $this->db->setAgentStatus($name, 'stuck');
+                $this->db->logAgent($name, $this->db->latestJobProject($name), 'error', $note);
+                $status = 'stuck';
+            }
+            $out[$name] = [
+                'status' => $status,
+                'project_id' => $projectId,
+            ];
+        }
+        return $out;
+    }
+
+    private function liveJob(string $name, array $fresh): ?array
+    {
+        if ($name === 'consultant') {
+            if (!$this->db->lockFresh('consultant_lock', self::STALE_SECONDS)) {
+                return null;
+            }
+            foreach ($fresh as $job) {
+                if (in_array((string)$job['kind'], ['chat', 'task'], true)) {
+                    return $job;
+                }
+            }
+            return ['project_id' => null];
+        }
+        foreach ($fresh as $job) {
+            $kind = (string)$job['kind'];
+            if ($name === 'orchestrator' && ($kind === 'chat' || $kind === 'task')) {
+                return $job;
+            }
+            if ($kind === 'subagent' && (string)($job['payload']['agent'] ?? '') === $name) {
+                return $job;
+            }
+        }
+        return null;
     }
 
     public function runTask(array $task, ?int $jobId = null): void

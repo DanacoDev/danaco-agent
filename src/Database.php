@@ -553,6 +553,12 @@ SQL);
         return (bool)$stmt->fetchColumn();
     }
 
+    public function taskRunning(): bool
+    {
+        $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE kind = 'task' AND status = 'running' AND updated_at >= datetime('now', '-3 minutes') LIMIT 1");
+        return (bool)$stmt->fetchColumn();
+    }
+
     public function startJob(string $kind, ?int $projectId, array $payload, ?int $refId = null): int
     {
         $projectId = $projectId && $projectId > 0 ? $projectId : null;
@@ -617,6 +623,43 @@ SQL);
         $stmt = $this->pdo->prepare("SELECT * FROM jobs WHERE status IN ('running', 'error') AND attempts < ? AND updated_at <= datetime('now', ?) ORDER BY id");
         $stmt->execute([$maxAttempts, '-' . $staleSeconds . ' seconds']);
         return $stmt->fetchAll();
+    }
+
+    public function freshJobs(int $staleSeconds): array
+    {
+        $stmt = $this->pdo->prepare("SELECT id, kind, project_id, payload, updated_at FROM jobs WHERE status = 'running' AND updated_at >= datetime('now', ?) ORDER BY updated_at DESC, id DESC");
+        $stmt->execute(['-' . $staleSeconds . ' seconds']);
+        $rows = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $payload = json_decode((string)($row['payload'] ?? ''), true);
+            $row['id'] = (int)$row['id'];
+            $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
+            $row['payload'] = is_array($payload) ? $payload : [];
+            $rows[] = $row;
+        }
+        return $rows;
+    }
+
+    public function lockFresh(string $key, int $staleSeconds): bool
+    {
+        $stamp = (int)$this->getSetting($key, '0');
+        return $stamp !== 0 && (time() - $stamp) < $staleSeconds;
+    }
+
+    public function latestJobProject(string $agent): ?int
+    {
+        if ($agent === 'orchestrator' || $agent === 'consultant') {
+            $value = $this->pdo->query("SELECT project_id FROM jobs WHERE kind IN ('chat', 'task') ORDER BY id DESC LIMIT 1")->fetchColumn();
+            return $value !== false && $value !== null ? (int)$value : null;
+        }
+        $stmt = $this->pdo->query("SELECT project_id, payload FROM jobs WHERE kind = 'subagent' ORDER BY id DESC");
+        foreach ($stmt->fetchAll() as $row) {
+            $payload = json_decode((string)($row['payload'] ?? ''), true);
+            if (is_array($payload) && (string)($payload['agent'] ?? '') === $agent) {
+                return $row['project_id'] !== null ? (int)$row['project_id'] : null;
+            }
+        }
+        return null;
     }
 
     public function skills(): array

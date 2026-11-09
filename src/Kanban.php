@@ -16,12 +16,20 @@ class Kanban
         }
         $schedule = $this->schedule($args['schedule_time'] ?? null);
         $recurrence = $this->recurrence((string)($args['recurrence'] ?? $args['recurrence_interval'] ?? 'none'));
+        $description = mb_substr((string)($args['description'] ?? ''), 0, 20000);
+        $agent = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
+        if (!$byUser) {
+            $duplicate = $this->exactDuplicate($projectId, $title, $description, $agent, $schedule, $recurrence);
+            if ($duplicate) {
+                throw new InvalidArgumentException('Error: Task #' . $duplicate['id'] . ' is already on the board in ' . $this->column($duplicate) . ' and matches this card exactly: ' . $duplicate['title'] . '. It was not added. Use that card.');
+            }
+        }
         return $this->db->insertTask([
             'project_id' => $projectId,
             'title' => $title,
-            'description' => mb_substr((string)($args['description'] ?? ''), 0, 20000),
+            'description' => $description,
             'status' => $this->place((string)($args['status'] ?? 'backlog'), $schedule, $recurrence, $byUser),
-            'assigned_agent' => $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator')),
+            'assigned_agent' => $agent,
             'schedule_time' => $schedule,
             'recurrence_interval' => $recurrence,
         ]);
@@ -165,6 +173,40 @@ class Kanban
             return 'in_progress';
         }
         return $status;
+    }
+
+    private function exactDuplicate(int $projectId, string $title, string $description, string $agent, ?string $schedule, string $recurrence): ?array
+    {
+        foreach ($this->db->tasks($projectId) as $task) {
+            if ($this->column($task) === 'done') {
+                continue;
+            }
+            if (trim((string)($task['title'] ?? '')) !== $title) {
+                continue;
+            }
+            if ((string)($task['description'] ?? '') !== $description) {
+                continue;
+            }
+            if ((string)($task['assigned_agent'] ?? '') !== $agent) {
+                continue;
+            }
+            $existingSchedule = $task['schedule_time'] ?? null;
+            if ($existingSchedule === '') {
+                $existingSchedule = null;
+            }
+            if ($existingSchedule !== $schedule) {
+                continue;
+            }
+            $existingRepeat = strtolower(trim((string)($task['recurrence_interval'] ?? '')));
+            if ($existingRepeat === '') {
+                $existingRepeat = 'none';
+            }
+            if ($existingRepeat !== $recurrence) {
+                continue;
+            }
+            return $task;
+        }
+        return null;
     }
 
     private function shouldDelayRestart(array $existing, string $recurrence): bool

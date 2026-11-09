@@ -2,7 +2,7 @@
 /*
 ---
 name: task_breakdown
-description: Adds backlog cards for agent work or a scheduled action. args project_id, tasks (each has title and agent). Not a user todo.
+description: Adds backlog cards for agent work or a scheduled action. Check the board for a duplicate or a similar task first. An exact duplicate is not added and returns an error. args project_id, tasks (each has title and agent). Not a user todo.
 ---
 */
 $args = json_decode(stream_get_contents(STDIN) ?: '', true);
@@ -85,8 +85,60 @@ if ($projectId <= 0 || !$exists->fetch()) {
     echo json_encode(['status' => 'error', 'message' => 'Project not found.']);
     exit(1);
 }
+$open = $db->prepare("SELECT id, title, description, status, assigned_agent, schedule_time, recurrence_interval FROM tasks WHERE project_id = ? AND status != 'done'");
+$open->execute([$projectId]);
+$existing = $open->fetchAll(PDO::FETCH_ASSOC);
 $insert = $db->prepare("INSERT INTO tasks (project_id, title, description, status, assigned_agent, recurrence_interval) VALUES (?, ?, '', 'backlog', ?, 'none')");
+$added = 0;
+$duplicates = [];
 foreach ($cards as $card) {
+    $match = null;
+    foreach ($existing as $row) {
+        $repeat = strtolower(trim((string)($row['recurrence_interval'] ?? '')));
+        if ($repeat === '') {
+            $repeat = 'none';
+        }
+        $schedule = $row['schedule_time'] ?? null;
+        if ($schedule === '') {
+            $schedule = null;
+        }
+        if (trim((string)($row['title'] ?? '')) !== $card['title']) {
+            continue;
+        }
+        if ((string)($row['description'] ?? '') !== '') {
+            continue;
+        }
+        if ((string)($row['assigned_agent'] ?? '') !== $card['agent']) {
+            continue;
+        }
+        if ($schedule !== null || $repeat !== 'none') {
+            continue;
+        }
+        $match = $row;
+        break;
+    }
+    if ($match) {
+        $duplicates[] = '#' . $match['id'] . ' ' . $match['title'];
+        continue;
+    }
     $insert->execute([$projectId, $card['title'], $card['agent']]);
+    $existing[] = [
+        'id' => (int)$db->lastInsertId(),
+        'title' => $card['title'],
+        'description' => '',
+        'status' => 'backlog',
+        'assigned_agent' => $card['agent'],
+        'schedule_time' => null,
+        'recurrence_interval' => 'none',
+    ];
+    $added++;
 }
-echo json_encode(['status' => 'success', 'message' => count($cards) . ' cards appended to the backlog.']);
+if ($duplicates) {
+    $message = 'Error: These cards are already on the board and were not added: ' . implode('; ', $duplicates) . '. Use those cards.';
+    if ($added > 0) {
+        $message .= ' Added ' . $added . ' other ' . ($added === 1 ? 'card' : 'cards') . '.';
+    }
+    echo json_encode(['status' => $added > 0 ? 'success' : 'error', 'message' => $message]);
+    exit($added > 0 ? 0 : 1);
+}
+echo json_encode(['status' => 'success', 'message' => $added . ' cards appended to the backlog.']);

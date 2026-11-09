@@ -236,7 +236,28 @@ class Projects
         return file_put_contents(self::soulPath($folder), $body) !== false;
     }
 
-    public static function create(Database $db, string $name, string $folder, string $purpose, string $type): array
+    private static function descBody(string $name, string $description, string $goals, string $limitations, string $role): string
+    {
+        $sections = [
+            'Description' => $description,
+            'Intended goals and outcomes' => $goals,
+            'Limitations' => $limitations,
+            'Agent role' => $role,
+        ];
+        $body = '# ' . $name . "\n";
+        foreach ($sections as $heading => $text) {
+            if ($text === '') {
+                continue;
+            }
+            $body .= "\n## " . $heading . "\n\n" . $text . "\n";
+        }
+        if ($body === '# ' . $name . "\n") {
+            $body .= "\n";
+        }
+        return $body;
+    }
+
+    public static function create(Database $db, string $name, string $folder, string $purpose, string $type, string $goals = '', string $limitations = '', string $role = ''): array
     {
         $name = trim($name);
         if ($name === '') {
@@ -245,9 +266,26 @@ class Projects
         if (mb_strlen($name) > 25) {
             throw new InvalidArgumentException('Project name must be 25 characters or fewer.');
         }
-        $folder = self::sanitizeFolder($folder);
+        $purpose = trim($purpose);
+        $goals = trim($goals);
+        $limitations = trim($limitations);
+        $role = trim($role);
+        $folder = trim($folder);
+        if ($folder === '') {
+            try {
+                $folder = self::folderFromName($name);
+            } catch (InvalidArgumentException $e) {
+                $message = $e->getMessage();
+                if (str_contains($message, 'reserved')) {
+                    throw new InvalidArgumentException('That project name is reserved.');
+                }
+                throw new InvalidArgumentException('Project name needs a letter or number so a folder can be created.');
+            }
+        } else {
+            $folder = self::sanitizeFolder($folder);
+        }
         if ($db->projectByFolder($folder)) {
-            throw new InvalidArgumentException('A project with that folder already exists.');
+            throw new InvalidArgumentException('A project with that name already exists.');
         }
         $root = self::root($folder);
         $wiki = $root . '/wiki';
@@ -256,8 +294,7 @@ class Projects
         }
         $desc = $wiki . '/' . self::descFile($folder);
         if (!is_file($desc)) {
-            $text = trim($purpose);
-            $body = '# ' . $name . "\n\n" . ($text !== '' ? $text . "\n" : '');
+            $body = self::descBody($name, $purpose, $goals, $limitations, $role);
             if (file_put_contents($desc, $body) === false) {
                 throw new RuntimeException('Could not create the project description.');
             }
