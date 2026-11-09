@@ -1200,6 +1200,12 @@ SQL);
         return $stmt->fetchAll();
     }
 
+    public function anyRunningJob(): bool
+    {
+        $stmt = $this->pdo->query("SELECT id FROM jobs WHERE status = 'running' LIMIT 1");
+        return $stmt !== false && $stmt->fetch() !== false;
+    }
+
     public function closeStoppedJob(array $job): void
     {
         $projectId = $job['project_id'] !== null ? (int)$job['project_id'] : 0;

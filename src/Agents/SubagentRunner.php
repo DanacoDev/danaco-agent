@@ -37,8 +37,12 @@ class SubagentRunner
             return $shouldStop && $shouldStop();
         };
         try {
-            return $this->finishSubagent($this->runtime->run($agent, $messages, $this->tools($agent, $projectFolder, $projectId, $emit, $watch), $emit, $this->runtime->maxTurns(), $projectId, $watch, false, $scheduled));
+            $result = $this->runtime->run($agent, $messages, $this->tools($agent, $projectFolder, $projectId, $emit, $watch), $emit, $this->runtime->maxTurns(), $projectId, $watch, false, $scheduled);
+            $excerpt = trim(preg_replace('/\s+/', ' ', $result) ?? '');
+            $this->db->loop($agent, 'process', 'Context released · ' . $excerpt);
+            return $this->finishSubagent($result);
         } finally {
+            $this->runtime->releaseLocalModel();
             $this->db->unlock('subagent_lock');
         }
     }

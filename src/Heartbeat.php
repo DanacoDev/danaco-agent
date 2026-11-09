@@ -238,6 +238,7 @@ class Heartbeat
                 }
             }
         } finally {
+            app_services()['llm']->releaseIfIdle();
             $this->db->loopPop();
         }
     }

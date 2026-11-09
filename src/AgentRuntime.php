@@ -372,6 +372,11 @@ class AgentRuntime
         return max(1, (int)app_config()['max_turns']);
     }
 
+    public function releaseLocalModel(): void
+    {
+        $this->llm->releaseLocalModel();
+    }
+
     public function cloudMaxTurns(): int
     {
         $turns = (int)$this->db->getSetting('cloud_max_turns', (string)app_config()['cloud_max_turns']);

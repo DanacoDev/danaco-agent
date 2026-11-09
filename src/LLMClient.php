@@ -42,6 +42,10 @@ class LLMClient
 
     private array $fitCache = [];
 
+    private array $ctxCache = [];
+
+    private ?string $gpuSkip = null;
+
     private bool $omitThink = false;
 
     public function __construct(private Database $db, private HardwareMonitor $hardware)
@@ -73,6 +77,26 @@ class LLMClient
     public function releaseModel(string $model): void
     {
         $this->stopModel($model);
+    }
+
+    public function releaseLocalModel(): void
+    {
+        if ($this->onCpu() || (string)$this->db->getSetting('model_mode', '') !== 'local') {
+            return;
+        }
+        $model = (string)$this->db->getSetting('local_model', app_config()['local_model']);
+        $this->stopModel($model);
+    }
+
+    public function releaseIfIdle(): void
+    {
+        if ($this->db->anyRunningJob()) {
+            return;
+        }
+        $this->releaseLocalModel();
+        if ((string)$this->db->getSetting('model_mode', '') === 'local' && !$this->onCpu()) {
+            $this->db->loop('orchestrator', 'process', 'Context released');
+        }
     }
 
     public function releaseOthers(string $keep): void
@@ -118,29 +142,73 @@ class LLMClient
 
     public function wholeModelOnGpu(string $model): bool
     {
-        $key = strtolower(trim($model));
-        if ($key === '') {
-            return false;
+        return $this->gpuOptions($model, $this->hardware->effectiveContext('local')) !== [];
+    }
+
+    public function gpuOptions(string $model, int $wanted): array
+    {
+        $fitted = $this->fittedContext($model, $wanted);
+        if ($fitted === null) {
+            return [];
         }
-        if (array_key_exists($key, $this->fitCache)) {
-            return $this->fitCache[$key];
+        return ['num_gpu' => 999, 'num_ctx' => $fitted];
+    }
+
+    private function fittedContext(string $model, int $wanted): ?int
+    {
+        $key = strtolower(trim($model));
+        $this->gpuSkip = null;
+        if ($key === '' || $wanted < 512) {
+            $this->gpuSkip = 'size';
+            return null;
+        }
+        $cacheKey = $key . ':' . $wanted;
+        if (array_key_exists($cacheKey, $this->ctxCache)) {
+            $cached = $this->ctxCache[$cacheKey];
+            if (!is_int($cached)) {
+                $this->gpuSkip = is_string($cached) ? $cached : 'size';
+                return null;
+            }
+            return $cached;
+        }
+        $vram = $this->hardware->gpuMemory();
+        $totalMb = is_array($vram) ? (int)($vram['total_mb'] ?? 0) : 0;
+        $bytes = $this->modelBytes($model);
+        if ($bytes <= 0) {
+            $row = $this->modelRow($model);
+            $bytes = is_array($row) ? (int)($row['size'] ?? 0) : 0;
+        }
+        if ($totalMb <= 0 || $bytes <= 0) {
+            $this->gpuSkip = $totalMb <= 0 ? 'no vram' : 'size';
+            return null;
+        }
+        $modelMb = (int)ceil($bytes / 1048576);
+        $budgetMb = (int)floor($totalMb * 0.9) - $modelMb - 768;
+        if ($budgetMb < 512) {
+            $this->ctxCache[$cacheKey] = 'larger';
+            $this->gpuSkip = 'larger';
+            return null;
+        }
+        $maxCtx = (int)(floor(($budgetMb / 154) * 1024 / 1024) * 1024);
+        if ($maxCtx < 2048) {
+            $this->ctxCache[$cacheKey] = 'context';
+            $this->gpuSkip = 'context';
+            return null;
         }
         if ($this->sameModel((string)$this->db->getSetting('gpu_split_model', ''), $model)) {
-            $this->fitCache[$key] = false;
-            return false;
+            $row = $this->modelRow($model);
+            $loaded = is_array($row) ? (int)($row['size'] ?? 0) : 0;
+            $vramBytes = is_array($row) ? (int)($row['size_vram'] ?? 0) : 0;
+            if ($loaded <= 0 || $vramBytes < (int)($loaded * 0.9)) {
+                $this->ctxCache[$cacheKey] = 'split';
+                $this->gpuSkip = 'split';
+                return null;
+            }
+            $this->db->setSetting('gpu_split_model', '');
         }
-        $fits = false;
-        $bytes = $this->modelBytes($model);
-        $gpu = $this->hardware->snapshot()['gpu'] ?? null;
-        $totalMb = is_array($gpu) ? (int)($gpu['total_mb'] ?? 0) : 0;
-        if ($bytes > 0 && $totalMb > 0) {
-            $ctx = $this->hardware->effectiveContext('local');
-            $reserveMb = (int)min((int)floor($totalMb * 0.25), (int)ceil($ctx / 1024 * 154));
-            $roomMb = (int)floor($totalMb * 0.9) - $reserveMb;
-            $fits = $roomMb > 0 && $bytes < ($roomMb * 1048576);
-        }
-        $this->fitCache[$key] = $fits;
-        return $fits;
+        $ctx = min($wanted, $maxCtx);
+        $this->ctxCache[$cacheKey] = $ctx;
+        return $ctx;
     }
 
     public function keepSplit(string $model): void
@@ -150,6 +218,11 @@ class LLMClient
             return;
         }
         $this->fitCache[$key] = false;
+        foreach (array_keys($this->ctxCache) as $cacheKey) {
+            if (str_starts_with((string)$cacheKey, $key . ':')) {
+                $this->ctxCache[$cacheKey] = 'split';
+            }
+        }
         if ($this->usableModel($model)) {
             $this->db->setSetting('gpu_split_model', $model);
         }
@@ -445,9 +518,16 @@ class LLMClient
         $ask = 'auto';
         if ($mode === 'cpu_failsafe') {
             $ask = 'cpu';
-        } elseif ($mode === 'local' && $this->wholeModelOnGpu($model)) {
-            $options['num_gpu'] = 999;
-            $ask = 'gpu';
+        } elseif ($mode === 'local') {
+            $gpu = $this->gpuOptions($model, $numCtx);
+            if ($gpu !== []) {
+                $options['num_gpu'] = 999;
+                $options['num_ctx'] = $gpu['num_ctx'];
+                $numCtx = $gpu['num_ctx'];
+                $ask = 'gpu';
+            } elseif ($this->gpuSkip) {
+                $ask = 'auto · ' . $this->gpuSkip;
+            }
         }
         $body = [
             'model' => $model,
@@ -856,8 +936,9 @@ class LLMClient
             $this->stopModel($model);
         }
         $options = ['num_predict' => 1];
-        if ($this->wholeModelOnGpu($model)) {
-            $options['num_gpu'] = 999;
+        $gpu = $this->gpuOptions($model, $this->hardware->effectiveContext('local'));
+        if ($gpu !== []) {
+            $options = array_merge($options, $gpu);
         }
         $payload = json_encode([
             'model' => $model,
@@ -947,6 +1028,9 @@ class LLMClient
             return 0;
         }
         $json = $this->ollamaCall('POST', '/api/show', $payload, 8);
+        if (!is_array($json)) {
+            return 0;
+        }
         return (int)($json['size'] ?? 0);
     }
 
@@ -962,8 +1046,9 @@ class LLMClient
             ? (string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model'])
             : (string)$this->db->getSetting('local_model', app_config()['local_model']);
         $base = rtrim((string)$this->db->getSetting('ollama_url', app_config()['ollama_url']), '/');
+        $wanted = $this->hardware->effectiveContext($mode);
         $options = [
-            'num_ctx' => $this->hardware->effectiveContext($mode),
+            'num_ctx' => $wanted,
             'num_predict' => 8,
             'use_mmap' => true,
             'use_mlock' => false,
@@ -971,9 +1056,15 @@ class LLMClient
         $ask = 'auto';
         if ($mode === 'cpu_failsafe') {
             $ask = 'cpu';
-        } elseif ($mode === 'local' && $this->wholeModelOnGpu($model)) {
-            $options['num_gpu'] = 999;
-            $ask = 'gpu';
+        } elseif ($mode === 'local') {
+            $gpu = $this->gpuOptions($model, $wanted);
+            if ($gpu !== []) {
+                $options['num_gpu'] = 999;
+                $options['num_ctx'] = $gpu['num_ctx'];
+                $ask = 'gpu';
+            } elseif ($this->gpuSkip) {
+                $ask = 'auto · ' . $this->gpuSkip;
+            }
         }
         $this->db->loop('orchestrator', 'model', 'yesno · ask ' . $ask . ' · ' . $model . ' · ' . $this->loadedSummary());
         $this->noteMachine('orchestrator');
@@ -1074,14 +1165,19 @@ class LLMClient
     {
         $model = (string)$this->db->getSetting('local_model', app_config()['local_model']);
         $base = rtrim((string)$this->db->getSetting('ollama_url', app_config()['ollama_url']), '/');
+        $wanted = $this->hardware->effectiveContext($mode);
         $options = [
-            'num_ctx' => $this->hardware->effectiveContext($mode),
+            'num_ctx' => $wanted,
             'num_predict' => 900,
             'use_mmap' => true,
             'use_mlock' => false,
         ];
-        if ($mode === 'local' && $this->wholeModelOnGpu($model)) {
-            $options['num_gpu'] = 999;
+        if ($mode === 'local') {
+            $gpu = $this->gpuOptions($model, $wanted);
+            if ($gpu !== []) {
+                $options['num_gpu'] = 999;
+                $options['num_ctx'] = $gpu['num_ctx'];
+            }
         }
         $body = [
             'model' => $model,

@@ -68,6 +68,11 @@ class HardwareMonitor
         return implode(' · ', $parts);
     }
 
+    public function gpuMemory(): ?array
+    {
+        return $this->vramUsage();
+    }
+
     public function recommendContext(string $mode): int
     {
         if ($mode === 'cloud') {

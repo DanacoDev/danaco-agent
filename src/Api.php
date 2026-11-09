@@ -649,6 +649,7 @@ class Api
                 $this->sse('error', ['text' => $error]);
             }
         } finally {
+            app_services()['llm']->releaseIfIdle();
             $this->db->loopPop();
         }
     }
@@ -2077,6 +2078,9 @@ class Api
         }
         $modeNow = (string)$this->db->getSetting('model_mode', '');
         $localNow = (string)$this->db->getSetting('local_model', '');
+        if ($localNow !== '' && $localNow !== $previousLocal) {
+            $this->db->setSetting('gpu_split_model', '');
+        }
         if ($modeNow === 'local' && $localNow !== '' && ($modeNow !== $previousMode || $localNow !== $previousLocal)) {
             $this->db->setSetting('model_hold', '0');
             $this->clearModelLoad();
@@ -2501,8 +2505,12 @@ class Api
             return $blank;
         }
         $options = ['num_predict' => 1];
-        if ((string)$this->db->getSetting('model_mode', '') === 'local' && app_services()['llm']->wholeModelOnGpu($model)) {
-            $options['num_gpu'] = 999;
+        if ((string)$this->db->getSetting('model_mode', '') === 'local') {
+            $wanted = app_services()['hardware']->effectiveContext('local');
+            $gpu = app_services()['llm']->gpuOptions($model, $wanted);
+            if ($gpu !== []) {
+                $options = array_merge($options, $gpu);
+            }
         }
         $payload = json_encode([
             'model' => $model,
