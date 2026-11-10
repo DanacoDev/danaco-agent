@@ -188,9 +188,9 @@ class Heartbeat
                 $answer = $turn->run($projectId, static function (): void {
                 }, function () use ($jobId, $projectId): bool {
                     $this->db->touchJob($jobId);
-                    return $this->db->runStopRequested($projectId);
+                    return $this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($jobId);
                 });
-                if ($this->db->runStopRequested($projectId)) {
+                if ($this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($jobId)) {
                     throw new ChatStopped('Stopped.');
                 }
                 $detail = ChatTurn::encodeDetail($turn->detail);
@@ -275,9 +275,9 @@ class Heartbeat
                 $result = app_services()['subagents']->run($agent, $folder, $instruction, static function (): void {
                 }, $projectId, function () use ($id, $projectId): bool {
                     $this->db->touchJob($id);
-                    return $this->db->runStopRequested($projectId);
+                    return $this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($id);
                 }, !empty($payload['scheduled']));
-                if ($this->db->runStopRequested($projectId)) {
+                if ($this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($id)) {
                     throw new ChatStopped('Stopped.');
                 }
                 if (trim($result) !== '') {
@@ -298,9 +298,9 @@ class Heartbeat
                 $answer = $turn->run($projectId, static function (): void {
                 }, function () use ($id, $projectId): bool {
                     $this->db->touchJob($id);
-                    return $this->db->runStopRequested($projectId);
+                    return $this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($id);
                 });
-                if ($this->db->runStopRequested($projectId)) {
+                if ($this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($id)) {
                     throw new ChatStopped('Stopped.');
                 }
             } catch (Throwable $e) {

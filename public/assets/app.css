@@ -72,6 +72,11 @@ svg.sprite { position: absolute; width: 0; height: 0; }
 .btn-ghost { background: transparent; border: 1px solid var(--line); }
 a.btn { display: inline-block; color: inherit; text-decoration: none; }
 .btn:disabled { opacity: 0.55; cursor: default; }
+.btn-stop {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: #c44747; color: #fff; font-weight: 650;
+}
+.btn-stop .ico { width: 16px; height: 16px; flex: 0 0 auto; }
 .form-error { color: var(--danger); min-height: 1.2em; }
 .form-ok { color: var(--ok); }
 

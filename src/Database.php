@@ -1158,6 +1158,40 @@ SQL);
         return $this->runStopAge($projectId) !== null;
     }
 
+    public function jobIsRunning(int $id): bool
+    {
+        $job = $this->job($id);
+        return is_array($job) && (string)($job['status'] ?? '') === 'running';
+    }
+
+    public function runStillStopping(int $projectId): bool
+    {
+        $age = $this->runStopAge($projectId);
+        if ($age === null) {
+            return false;
+        }
+        foreach ($this->runStopJobIds($projectId) as $id) {
+            if (!$this->jobIsRunning($id)) {
+                continue;
+            }
+            $job = $this->job($id);
+            $updated = strtotime((string)($job['updated_at'] ?? '') . ' UTC');
+            if ($updated !== false && (time() - $updated) < 90) {
+                return true;
+            }
+        }
+        if ($age < 2) {
+            return true;
+        }
+        foreach ($this->runStopJobIds($projectId) as $id) {
+            if ($this->jobIsRunning($id)) {
+                $this->finishJob($id);
+            }
+        }
+        $this->clearRunStop($projectId);
+        return false;
+    }
+
     public function runStopAge(int $projectId): ?int
     {
         $value = (string)$this->getSetting($this->runStopKey($projectId), '0');
@@ -1176,8 +1210,14 @@ SQL);
         if ($jobId > 0) {
             $ids = array_values(array_diff($ids, [$jobId]));
         }
-        if ($ids) {
-            $this->setSetting($this->runStopJobsKey($projectId), implode(',', $ids));
+        $left = [];
+        foreach ($ids as $id) {
+            if ($this->jobIsRunning($id)) {
+                $left[] = $id;
+            }
+        }
+        if ($left) {
+            $this->setSetting($this->runStopJobsKey($projectId), implode(',', $left));
             return;
         }
         $this->clearRunStop($projectId);

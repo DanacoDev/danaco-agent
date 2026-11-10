@@ -404,6 +404,9 @@
           const projectId = this.projectId || 0;
           return this.agents.some((agent) => this.agentBusy(agent) && (agent.project_id || 0) === projectId);
         },
+        stopReady() {
+          return (this.agentsBusy || this.sending) && !this.stopBusy && !this.stopModal;
+        },
         stopSettled() {
           return !this.agentsBusy && !this.runStopping && !this.sending;
         },

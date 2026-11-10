@@ -537,7 +537,7 @@ class Api
             $this->json(['error' => 'Message is required.'], 422);
             return;
         }
-        if ($this->db->runStopRequested($projectId)) {
+        if ($this->db->runStillStopping($projectId)) {
             $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'heartbeat', 'process', 'Chat refused · run still stopping');
             $this->json(['error' => 'The run is still stopping.'], 409);
             return;
@@ -577,7 +577,7 @@ class Api
             $lastStopCheck = $now;
             try {
                 $this->db->touchJob($jobId);
-                $stopCached = $this->db->chatStopRequested($projectId) || $this->db->runStopRequested($projectId);
+                $stopCached = $this->db->chatStopRequested($projectId) || $this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($jobId);
             } catch (Throwable $e) {
                 return $stopCached;
             }
@@ -603,11 +603,12 @@ class Api
                 $this->db->finishJob($jobId);
                 $this->sse('done', ['message' => $saved]);
             } catch (ChatStopped $e) {
-                $this->db->finishJob($jobId);
                 $text = trim($turn->streamed);
                 $runStop = $this->db->runStopRequested($projectId);
+                $closed = !$this->db->jobIsRunning($jobId);
                 $asked = $this->db->chatStopRequested($projectId);
-                if ($runStop) {
+                $this->db->finishJob($jobId);
+                if ($runStop || $closed) {
                     $this->db->acknowledgeRunStop($projectId, $jobId);
                     $this->db->loop('orchestrator', 'process', 'Stopped by user · job ' . $jobId . ' finished');
                     if ($text !== '') {
@@ -677,7 +678,7 @@ class Api
             return;
         }
         $jobs = $this->db->runningJobs($projectId);
-        if (!$jobs && $this->db->runStopRequested($projectId)) {
+        if (!$jobs && $this->db->runStillStopping($projectId)) {
             $held = [];
             if ($projectId > 0) {
                 foreach ($this->db->tasks($projectId) as $task) {
@@ -692,7 +693,12 @@ class Api
         $held = [];
         $ids = [];
         foreach ($jobs as $row) {
-            $ids[] = (int)$row['id'];
+            $id = (int)$row['id'];
+            if ((string)($row['status'] ?? '') !== 'running') {
+                $this->db->finishJob($id);
+                continue;
+            }
+            $ids[] = $id;
             if ((string)$row['kind'] !== 'task') {
                 continue;
             }
@@ -1306,7 +1312,7 @@ class Api
             ];
         }
         $projectId = (int)($_GET['project_id'] ?? 0);
-        $this->json(['agents' => $agents, 'stopping' => $this->db->runStopRequested($projectId)]);
+        $this->json(['agents' => $agents, 'stopping' => $this->db->runStillStopping($projectId)]);
     }
 
     private function agentLogs(): void
