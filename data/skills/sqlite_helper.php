@@ -2,13 +2,13 @@
 /*
 ---
 name: sqlite_helper
-description: Pass database as the filename only, such as link_database.db. Not locked to one file. count, inspect, insert, and drop use that file.
+description: Pass database as link_database.db or database/link_database.db. Not locked to one file. count, inspect, insert, and drop use that file.
 ---
 */
 
 /*
 Usage:
-  database is the filename only, such as link_database.db. The file is in the database folder. The helper is not locked to regulations.db. Pass that filename on count, inspect, insert, query, drop, and ensure.
+  database is the filename or the path, such as link_database.db or database/link_database.db. The helper is not locked to regulations.db. action, or command, is count, inspect, insert, query, drop, or ensure.
   Create workflow: always check the database and table first. If either already exists, do not recreate it. The schema is returned so you can compare columns.
   ensure: {"database":"link_database.sqlite","table":"links","columns":["url TEXT","title TEXT"]} or one CREATE TABLE statement in sql.
   When the table exists, read columns, missing_columns, and extra_columns. Add a column with execute and ALTER TABLE links ADD COLUMN name TYPE. Remove one with ALTER TABLE links DROP COLUMN name. Do not CREATE TABLE again.
@@ -29,9 +29,32 @@ if (!is_array($args)) {
 }
 
 $root = realpath(getcwd() ?: '.');
-$relativeDir = trim((string)($args['db_dir'] ?? 'database'));
-$database = trim((string)($args['database'] ?? ''));
+$relativeDir = trim((string)($args['db_dir'] ?? ''));
+$database = str_replace('\\', '/', trim((string)($args['database'] ?? '')));
 $action = strtolower(trim((string)($args['action'] ?? '')));
+if ($action === '') {
+    $action = strtolower(trim((string)($args['command'] ?? '')));
+}
+if ($database !== '' && $database !== 'all' && str_contains($database, '/')) {
+    if (preg_match('#(^|/)\.\.(/|$)#', $database)) {
+        echo json_encode(['status' => 'error', 'action' => $action, 'message' => 'Database path must stay inside the project.']);
+        exit(1);
+    }
+    $dirPart = trim(dirname($database), '/');
+    $database = basename($database);
+    if ($dirPart !== '' && $dirPart !== '.') {
+        $givenDir = trim(str_replace('\\', '/', $relativeDir), '/');
+        if ($givenDir === '' || $givenDir === 'database') {
+            $relativeDir = $dirPart;
+        } elseif ($givenDir !== $dirPart) {
+            echo json_encode(['status' => 'error', 'action' => $action, 'message' => 'Database path does not match db_dir.']);
+            exit(1);
+        }
+    }
+}
+if ($relativeDir === '') {
+    $relativeDir = 'database';
+}
 if ($action === '' || $action === 'create') {
     $hasDefinition = trim((string)($args['table'] ?? '')) !== ''
         || trim((string)($args['sql'] ?? '')) !== ''
@@ -39,7 +62,7 @@ if ($action === '' || $action === 'create') {
     $action = $hasDefinition ? 'ensure' : 'init';
 }
 if ($database === '') {
-    echo json_encode(['status' => 'error', 'action' => $action, 'message' => 'Pass database as the filename only, such as link_database.db. The helper is not locked to one file. Do not use sqlite3.']);
+    echo json_encode(['status' => 'error', 'action' => $action, 'message' => 'Pass database as link_database.db or database/link_database.db. The helper is not locked to one file. Do not use sqlite3.']);
     exit(1);
 }
 
@@ -67,7 +90,7 @@ $dbPath = $dbDir . '/' . ($database !== '' ? $database : 'regulations.db');
 
 if ($action !== 'inspect' || $database !== 'all') {
     if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:db|sqlite|sqlite3)$/', $database)) {
-        echo json_encode(['status' => 'error', 'message' => 'Database must be a .db, .sqlite, or .sqlite3 filename.']);
+        echo json_encode(['status' => 'error', 'message' => 'Database must be a .db, .sqlite, or .sqlite3 file, such as link_database.db or database/link_database.db.']);
         exit(1);
     }
 }
