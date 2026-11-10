@@ -300,7 +300,7 @@ header('X-Danaco: 1');
                   <div class="task-tags">
                     <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
                     <span class="task-tag">#{{ task.id }}</span>
-                    <span class="task-when">{{ task.schedule_time || 'immediately' }} · {{ repeatLabel(task.recurrence_interval) }}</span>
+                    <span class="task-when">{{ taskWhen(task) }} · {{ repeatLabel(task.recurrence_interval) }}</span>
                   </div>
                   <p v-if="task.result" class="task-result">{{ task.result }}</p>
                   <label v-if="!taskRepeats(task)" class="field move-field">Move
@@ -314,7 +314,7 @@ header('X-Danaco: 1');
                   <form v-if="openTask === task.id" @submit.prevent="saveTask(task)">
                     <label class="field">Title<input v-model="taskEdit.title"></label>
                     <label class="field">{{ column.id==='review' ? 'New instructions' : 'Instructions' }}<textarea v-model="taskEdit.description" rows="5" :placeholder="column.id==='review' ? 'What should be done differently' : ''"></textarea></label>
-                    <p v-if="column.id==='review'" class="hint">Saving new instructions moves this back to In progress. The agent starts in 3 minutes.</p>
+                    <p v-if="column.id==='review' && taskEdit.when!=='never'" class="hint">Saving new instructions moves this back to In progress. The agent starts in 3 minutes.</p>
                     <label class="field">Agent
                       <select v-model="taskEdit.assigned_agent">
                         <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
@@ -324,6 +324,7 @@ header('X-Danaco: 1');
                       <select v-model="taskEdit.when">
                         <option value="immediately">immediately</option>
                         <option value="at">at a time</option>
+                        <option value="never">Never (inactivated)</option>
                       </select>
                     </label>
                     <label v-if="taskEdit.when==='at'" class="field">When<input type="datetime-local" v-model="taskEdit.schedule_time"></label>

@@ -2476,9 +2476,6 @@ class Api
 
     private function startModelLoad(string $model, ?array $previous): array
     {
-        if ((string)$this->db->getSetting('model_mode', '') === 'local') {
-            app_services()['llm']->releaseOthers($model);
-        }
         $shown = (int)($previous['shown'] ?? 0);
         $blank = [
             'model' => $model,
@@ -2490,6 +2487,11 @@ class Api
             'error' => '',
             'retry_at' => time() + 12,
         ];
+        if ((string)$this->db->getSetting('model_mode', '') === 'local' && !app_services()['llm']->releaseOthers($model)) {
+            $blank['error'] = 'The previous model is still on the GPU.';
+            $blank['retry_at'] = time() + 5;
+            return $blank;
+        }
         $base = $this->ollamaBase();
         if ($base === null) {
             $blank['error'] = 'The Ollama URL in Setup is not valid.';
@@ -2660,9 +2662,28 @@ class Api
     private function clearModelLoad(): void
     {
         $path = app_config()['data_dir'] . '/model-load.json';
-        if (is_file($path)) {
-            file_put_contents($path, '');
+        if (!is_file($path)) {
+            return;
         }
+        $state = json_decode((string)file_get_contents($path), true);
+        $pid = is_array($state) ? (int)($state['pid'] ?? 0) : 0;
+        if ($pid > 0 && $this->pidRunning($pid) && $this->modelLoadCurl($pid)) {
+            Process::run(['kill', (string)$pid], null, null, 3);
+            $deadline = microtime(true) + 3;
+            while ($this->pidRunning($pid) && microtime(true) < $deadline) {
+                usleep(100000);
+            }
+            if ($this->pidRunning($pid)) {
+                Process::run(['kill', '-9', (string)$pid], null, null, 3);
+            }
+        }
+        file_put_contents($path, '');
+    }
+
+    private function modelLoadCurl(int $pid): bool
+    {
+        $result = Process::run(['ps', '-ww', '-p', (string)$pid, '-o', 'command='], null, null, 3);
+        return str_contains((string)($result['stdout'] ?? ''), '/api/generate');
     }
 
     private function rememberModelWarm(string $model): void

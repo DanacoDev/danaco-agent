@@ -565,14 +565,14 @@ Do not print a tool call in the reply. Draft XML such as <delegate> is thinking,
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_write or write_file first, then answer.
 
 Tools:
-- delegate: args agent (researcher, writer, coder, analyst, or marketer), instruction, project, task_id. One subagent at a time. Pick the agent from the team section. Delegating a card moves it to in_progress. Pass task_id when that card already exists. When it returns, list the kanban and update the matching cards before the next step, even if you have no recollection of any tasks.
+- delegate: args agent (researcher, writer, coder, analyst, or marketer), instruction, project, task_id. One subagent at a time. Pick the agent from the team section. Delegating a card moves it to in_progress. Pass task_id when that card already exists. A subagent can only add a result to that card. When it returns, list the kanban, check that the work was done, and you move or update the card before the next step, even if you have no recollection of any tasks.
 {$fileTools}
 {$consultLine}- kanban: the task board. args action (list, create, move, or delete).
   list: no other args.
-  create: title, description, agent, status, schedule_time (YYYY-MM-DD HH:MM), recurrence (none, 5min, 15min, 30min, hourly, daily, weekly, or monthly). none means run once. Leave schedule_time empty only when the card should run immediately. A later card needs a real clock time. Do not invent one. Before create, list the board and check for a duplicate or a similar task. Do not add a card for work that is already there. An exact duplicate is not added. The tool returns an error that names the existing card. Use that card.
-  move: id, plus any of status, description, result, agent, schedule_time, recurrence. A card marked held was stopped by the user. Leave it held unless the user asked you to change, resume, or end it. A new schedule or repeat resumes it. Moving a run-once card to review ends it.
+  create: title, description, agent, status, schedule_time (YYYY-MM-DD HH:MM), recurrence (none, 5min, 15min, 30min, hourly, daily, weekly, or monthly). none means run once. Leave schedule_time empty only when the card should run immediately. A later card needs a real clock time. Do not invent one. Set schedule_time to never to inactivate a card and keep it. That card stays on the board and does not run. Before create, list the board and check for a duplicate or a similar task. Do not add a card for work that is already there. An exact duplicate is not added. The tool returns an error that names the existing card. Use that card.
+  move: id, plus any of status, description, result, agent, schedule_time, recurrence. A card marked held was stopped by the user. Leave it held unless the user asked you to change, resume, or end it. A new schedule or repeat resumes it. Set schedule_time to never to inactivate a card and keep it, almost like a backlog. It stays in in_progress and does not run. A real time, or an empty time, turns it back on. Moving a run-once card to review ends it.
   delete: id. Removes that card from the board. Use it when a card is wrong, stale, or the user asks you to remove it.
-  The board has two columns. in_progress = work happening now, or a card with a time or a repeat. A repeating card stays in in_progress. review = a finished run-once card waiting for the user; include result. There is no backlog. An idea for later is not a card. Write it in the project wiki. You cannot set done, and you cannot move a repeating card to review.
+  The board has two columns. in_progress = work happening now, a card with a time or a repeat, or a card set to never. A repeating card stays in in_progress. review = a finished run-once card waiting for the user; include result. There is no backlog. Never (inactivated) is how you disable a card and keep it. An idea for later is not a card. Write it in the project wiki. Only you create, move, edit, or delete cards. A subagent can only add a result. You check that result, then move or update the card. You cannot set done, and you cannot move a repeating card to review.
   Cards are for an agent, or a reminder that will send something or take an action. Not a static todo for the user.
   After the user has chosen now or scheduled, every future event needs its own card. A scheduled card needs schedule_time. Saying you will do it later does not schedule it. Split several events into separate cards. When the work repeats, set recurrence and have the coder register a PHP or Python skill with write_skill for the repeated steps when that is possible. Name that skill in the card description. A file in the project is not a skill.
   A result is assigned to the subagent who produces it. Planning with the user is assigned to orchestrator.
@@ -778,11 +778,15 @@ TXT;
                 } catch (Throwable $e) {
                     $note = '';
                 }
+                $runInstruction = $instruction;
+                if (preg_match('/Task #(\d+)/', $note, $card)) {
+                    $runInstruction .= "\n\nThis is card #" . $card[1] . ". When you finish, add a short result to that card with the kanban tool. Do not move or edit the card.";
+                }
                 $emit(['type' => 'delegation', 'agent' => $agent, 'project' => $shownProject, 'text' => $instruction]);
                 $jobId = $this->db->startJob('subagent', $projectId > 0 ? $projectId : null, [
                     'agent' => $agent,
                     'folder' => $folder,
-                    'instruction' => $instruction,
+                    'instruction' => $runInstruction,
                     'scheduled' => $scheduled,
                 ]);
                 $this->db->loopPush($jobId, $projectId > 0 ? $projectId : null);
@@ -793,7 +797,7 @@ TXT;
                 try {
                     $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' started');
                     try {
-                        $result = $this->subagents->run($agent, $folder, $instruction, $emit, $projectId, $watch, $scheduled);
+                        $result = $this->subagents->run($agent, $folder, $runInstruction, $emit, $projectId, $watch, $scheduled);
                         $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' finished');
                         $this->db->finishJob($jobId);
                         return $result . $note;

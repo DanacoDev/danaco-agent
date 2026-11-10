@@ -157,6 +157,7 @@ TXT;
             '- restore_file: args kind, stored_as',
             '- wiki_search: args query',
             '- wiki_write: args content, append, and optional name. name is a markdown filename in wiki/. Omit it only to update the general description: what the project is, contributors, credentials, and main goals. Pass a new name for research, findings, and specific data.',
+            '- kanban: args action (list or result). list shows the board. result needs id and result, and that is the only change you can make. You cannot create, move, edit, or delete a card. The main agent checks the result and then moves or updates the card.',
         ];
         if ($agent === 'coder') {
             $toolLines[] = '- write_skill: args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there.';
@@ -178,7 +179,7 @@ TXT;
         }
         $rules = <<<TXT
 {$identity}
-Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/{$projectFolder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/notes.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up. Do not edit soul.md. Only the main agent changes how to act in this project.
+Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/{$projectFolder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card. You cannot create, move, edit, or delete a kanban card, and you do not call task_breakdown. When the instruction names a card, add a short result to it with the kanban tool before you finish. The main agent checks that work and then moves or updates the card. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/notes.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up. Do not edit soul.md. Only the main agent changes how to act in this project.
 
 Do not install software or dependencies. If something is missing, say what it is and stop. The main agent asks the user and installs it.
 
@@ -264,6 +265,29 @@ TXT;
         return $result;
     }
 
+    private function kanbanResult(int $projectId, array $args): string
+    {
+        $board = new Kanban($this->db);
+        $action = strtolower(trim((string)($args['action'] ?? 'list')));
+        if ($projectId <= 0) {
+            return $action === 'list' ? 'Open a project to see its tasks.' : 'Tasks belong to a project.';
+        }
+        if ($action === 'list') {
+            return $board->listing($projectId);
+        }
+        if ($action === 'result') {
+            try {
+                $task = $board->recordResult($projectId > 0 ? (int)($args['id'] ?? 0) : 0, $projectId, (string)($args['result'] ?? ''));
+            } catch (InvalidArgumentException $e) {
+                return $e->getMessage();
+            } catch (RuntimeException $e) {
+                return $e->getMessage();
+            }
+            return 'Added a result to task #' . $task['id'] . ': ' . $task['title'] . '. The main agent checks this and moves or updates the card.';
+        }
+        return 'Only the main agent can move or edit a card. You can list the board, or add a result with action result, id, and result.';
+    }
+
     private function tools(string $agent, string $projectFolder, int $projectId, callable $emit, ?callable $shouldStop = null): array
     {
         $tools = [
@@ -314,6 +338,9 @@ TXT;
             },
             'wiki_search' => function (array $args) use ($projectFolder): string {
                 return $this->memory->search((string)($args['query'] ?? ''), $projectFolder);
+            },
+            'kanban' => function (array $args) use ($projectId): string {
+                return $this->kanbanResult($projectId, $args);
             },
             'wiki_write' => function (array $args) use ($projectFolder): string {
                 try {
@@ -389,6 +416,12 @@ TXT;
             $tools[$name] = $handler;
         }
         foreach ($this->skills->activeHandlers($projectFolder) as $name => $handler) {
+            if ($name === 'task_breakdown') {
+                $tools[$name] = function (): string {
+                    return 'Only the main agent can add kanban cards. Add a result to the card you were given.';
+                };
+                continue;
+            }
             if (!isset($tools[$name])) {
                 $tools[$name] = $handler;
             }

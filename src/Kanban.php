@@ -14,7 +14,8 @@ class Kanban
         if ($title === '' || strlen($title) > 200) {
             throw new InvalidArgumentException('Task title is required.');
         }
-        $schedule = $this->schedule($args['schedule_time'] ?? null);
+        $inactivate = $this->inactivated($args['schedule_time'] ?? null);
+        $schedule = $inactivate ? null : $this->schedule($args['schedule_time'] ?? null);
         $recurrence = $this->recurrence((string)($args['recurrence'] ?? $args['recurrence_interval'] ?? 'none'));
         $this->rejectIdea($args, $schedule, $recurrence, $byUser);
         $description = mb_substr((string)($args['description'] ?? ''), 0, 20000);
@@ -25,15 +26,36 @@ class Kanban
                 throw new InvalidArgumentException('Error: Task #' . $duplicate['id'] . ' is already on the board in ' . $this->column($duplicate) . ' and matches this card exactly: ' . $duplicate['title'] . '. It was not added. Use that card.');
             }
         }
-        return $this->db->insertTask([
+        $task = $this->db->insertTask([
             'project_id' => $projectId,
             'title' => $title,
             'description' => $description,
-            'status' => $this->place((string)($args['status'] ?? 'in_progress'), $schedule, $recurrence, $byUser),
+            'status' => $inactivate ? 'in_progress' : $this->place((string)($args['status'] ?? 'in_progress'), $schedule, $recurrence, $byUser),
             'assigned_agent' => $agent,
             'schedule_time' => $schedule,
             'recurrence_interval' => $recurrence,
         ]);
+        if ($inactivate) {
+            $task = $this->db->updateTask((int)$task['id'], ['held' => 1, 'schedule_time' => null, 'status' => 'in_progress']);
+        }
+        return $task;
+    }
+
+    public function recordResult(int $id, int $projectId, string $result): array
+    {
+        $existing = $this->db->task($id);
+        if (!$existing || (int)$existing['project_id'] !== $projectId) {
+            throw new RuntimeException('Task not found.');
+        }
+        $result = trim($result);
+        if ($result === '') {
+            throw new InvalidArgumentException('A result is required.');
+        }
+        $saved = $this->db->updateTask($id, ['result' => clip_text($result, 2000)]);
+        if (!$saved) {
+            throw new RuntimeException('Task not found.');
+        }
+        return $saved;
     }
 
     public function move(int $id, array $args, bool $byUser): array
@@ -59,11 +81,12 @@ class Kanban
         if (array_key_exists('agent', $args) || array_key_exists('assigned_agent', $args)) {
             $fields['assigned_agent'] = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
         }
-        $schedule = array_key_exists('schedule_time', $args) ? $this->schedule($args['schedule_time'], $byUser) : ($existing['schedule_time'] ?? null);
+        $inactivate = array_key_exists('schedule_time', $args) && $this->inactivated($args['schedule_time']);
+        $schedule = $inactivate ? null : (array_key_exists('schedule_time', $args) ? $this->schedule($args['schedule_time'], $byUser) : ($existing['schedule_time'] ?? null));
         $recurrence = array_key_exists('recurrence', $args) || array_key_exists('recurrence_interval', $args)
             ? $this->recurrence((string)($args['recurrence'] ?? $args['recurrence_interval'] ?? 'none'))
             : (string)($existing['recurrence_interval'] ?? 'none');
-        if ($byUser && array_key_exists('description', $args)) {
+        if (!$inactivate && $byUser && array_key_exists('description', $args)) {
             $newDescription = trim((string)($fields['description'] ?? ''));
             $oldDescription = trim((string)($existing['description'] ?? ''));
             if ($newDescription !== '' && $newDescription !== $oldDescription && $this->shouldDelayRestart($existing, $recurrence)) {
@@ -89,7 +112,11 @@ class Kanban
             }
         }
         $placed = (string)($fields['status'] ?? $existing['status'] ?? '');
-        if ($byUser) {
+        if ($inactivate) {
+            $fields['held'] = 1;
+            $fields['schedule_time'] = null;
+            $fields['status'] = 'in_progress';
+        } elseif ($byUser) {
             $fields['held'] = 0;
         } elseif ((int)($existing['held'] ?? 0) === 1 && $this->agentReleasesHold($args, $existing, $schedule, $recurrence, $placed)) {
             $fields['held'] = 0;
@@ -125,7 +152,9 @@ class Kanban
                 continue;
             }
             $line = '#' . $task['id'] . ' [' . $this->column($task) . '] ' . $task['title'] . ' (' . $task['assigned_agent'] . ')';
-            if (!empty($task['schedule_time'])) {
+            if ((int)($task['held'] ?? 0) === 1 && empty($task['schedule_time'])) {
+                $line .= ' never';
+            } elseif (!empty($task['schedule_time'])) {
                 $line .= ' at ' . $task['schedule_time'];
             } else {
                 $line .= ' immediately';
@@ -135,7 +164,7 @@ class Kanban
             } else {
                 $line .= ' run once';
             }
-            if ((int)($task['held'] ?? 0) === 1) {
+            if ((int)($task['held'] ?? 0) === 1 && !empty($task['schedule_time'])) {
                 $line .= ' held';
             }
             $result = trim((string)($task['result'] ?? ''));
@@ -196,7 +225,7 @@ class Kanban
 
     private function rejectIdea(array $args, ?string $schedule, string $recurrence, bool $byUser): void
     {
-        if ($byUser || !array_key_exists('status', $args)) {
+        if ($byUser || !array_key_exists('status', $args) || $this->inactivated($args['schedule_time'] ?? null)) {
             return;
         }
         $status = strtolower(trim(str_replace(['-', ' '], '_', (string)$args['status'])));
@@ -206,7 +235,7 @@ class Kanban
         if ($this->isScheduled($schedule, $recurrence)) {
             return;
         }
-        throw new InvalidArgumentException('There is no backlog. Do not put an idea on the board. Write it in the project wiki. A card runs now, or it has a schedule_time.');
+        throw new InvalidArgumentException('There is no backlog. To keep a card without running it, set schedule_time to never. That inactivates it. A card runs now, or it has a real clock time.');
     }
 
     private function exactDuplicate(int $projectId, string $title, string $description, string $agent, ?string $schedule, string $recurrence): ?array
@@ -262,6 +291,15 @@ class Kanban
         }
         $now = time();
         return $at > $now && $at <= $now + self::RESTART_DELAY;
+    }
+
+    private function inactivated(mixed $value): bool
+    {
+        if (!is_string($value)) {
+            return false;
+        }
+        $value = strtolower(trim($value));
+        return in_array($value, ['never', 'inactivated', 'inactive', 'never (inactivated)'], true);
     }
 
     private function repeats(string $recurrence): bool

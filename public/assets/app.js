@@ -1771,7 +1771,7 @@
             title: task.title,
             description: task.description || '',
             assigned_agent: task.assigned_agent,
-            when: stamp ? 'at' : 'immediately',
+            when: Number(task.held) === 1 && !stamp ? 'never' : (stamp ? 'at' : 'immediately'),
             schedule_time: stamp,
             recurrence_interval: task.recurrence_interval || 'none'
           };
@@ -1781,8 +1781,13 @@
           if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(text)) text += ':00';
           return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text) ? text : '';
         },
+        taskWhen(task) {
+          if (Number(task.held) === 1 && !task.schedule_time) return 'never';
+          return task.schedule_time || 'immediately';
+        },
         async saveTask(task) {
           this.taskError = '';
+          const never = this.taskEdit.when === 'never';
           const scheduled = this.taskEdit.when === 'at';
           const stamp = scheduled ? this.taskScheduleStamp(this.taskEdit.schedule_time) : '';
           if (scheduled && !stamp) {
@@ -1793,7 +1798,7 @@
             title: this.taskEdit.title,
             description: this.taskEdit.description,
             assigned_agent: this.taskEdit.assigned_agent,
-            schedule_time: stamp || null,
+            schedule_time: never ? 'never' : (stamp || null),
             recurrence_interval: this.taskEdit.recurrence_interval
           };
           if (task.status === 'review' && (this.taskEdit.description || '').trim() !== (task.description || '').trim() && (this.taskEdit.description || '').trim() !== '') {

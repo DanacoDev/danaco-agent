@@ -99,17 +99,27 @@ class LLMClient
         }
     }
 
-    public function releaseOthers(string $keep): void
+    public function releaseOthers(string $keep): bool
     {
         if (!$this->usableModel($keep)) {
-            return;
+            return false;
         }
-        foreach ($this->runningModels() as $row) {
-            if ($this->sameModel($row['name'], $keep)) {
-                continue;
+        $holding = $this->gpuHolders($keep);
+        if ($holding === null || $holding === []) {
+            return true;
+        }
+        foreach ($holding as $name) {
+            $this->stopModel($name);
+        }
+        $deadline = microtime(true) + 60;
+        while (microtime(true) < $deadline) {
+            $holding = $this->gpuHolders($keep);
+            if ($holding === []) {
+                return true;
             }
-            $this->stopModel($row['name']);
+            usleep(400000);
         }
+        return $this->gpuHolders($keep) === [];
     }
 
     public function runningModels(): array
@@ -959,15 +969,58 @@ class LLMClient
         if (!$this->usableModel($model)) {
             return;
         }
-        $payload = json_encode(['model' => $model, 'keep_alive' => 0, 'prompt' => '', 'stream' => false]);
-        $chat = json_encode(['model' => $model, 'keep_alive' => 0, 'messages' => [], 'stream' => false]);
-        if (is_string($chat)) {
-            $this->ollamaCall('POST', '/api/chat', $chat, 20);
+        $payload = json_encode(['model' => $model, 'keep_alive' => 0]);
+        if (is_string($payload)) {
+            $this->ollamaCall('POST', '/api/generate', $payload, 30);
         }
-        if (!is_string($payload)) {
+        $this->ollamaStop($model);
+    }
+
+    private function gpuHolders(string $keep): ?array
+    {
+        $json = $this->ollamaCall('GET', '/api/ps', null, 4);
+        if ($json === null) {
+            return null;
+        }
+        $names = [];
+        foreach ($json['models'] ?? [] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $name = trim((string)($row['name'] ?? $row['model'] ?? ''));
+            if (!$this->usableModel($name) || $this->sameModel($name, $keep)) {
+                continue;
+            }
+            if ((int)($row['size_vram'] ?? 0) <= 0) {
+                continue;
+            }
+            $names[] = $name;
+        }
+        return $names;
+    }
+
+    private function ollamaStop(string $model): void
+    {
+        $ollama = $this->ollamaBin();
+        if ($ollama === '') {
             return;
         }
-        $this->ollamaCall('POST', '/api/generate', $payload, 20);
+        Process::run([$ollama, 'stop', $model], null, null, 30);
+    }
+
+    private function ollamaBin(): string
+    {
+        foreach (['/opt/homebrew/bin/ollama', '/usr/local/bin/ollama', '/usr/bin/ollama'] as $path) {
+            if (is_executable($path)) {
+                return $path;
+            }
+        }
+        if (!Process::commandExists('ollama')) {
+            return '';
+        }
+        $found = Process::run(['/bin/sh', '-c', 'command -v ollama'], null, null, 5);
+        $path = trim($found['stdout']);
+        return $path !== '' && is_executable($path) ? $path : '';
     }
 
     private function ollamaCall(string $method, string $path, ?string $body, int $timeout): ?array
