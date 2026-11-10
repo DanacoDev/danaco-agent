@@ -193,7 +193,7 @@ class Heartbeat
                 }, function () use ($jobId, $projectId): bool {
                     $this->db->touchJob($jobId);
                     return $this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($jobId);
-                });
+                }, true);
                 if ($this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($jobId)) {
                     throw new ChatStopped('Stopped.');
                 }

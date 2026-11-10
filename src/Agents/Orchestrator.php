@@ -11,7 +11,7 @@ class Orchestrator
     ) {
     }
 
-    public function handle(int $projectId, callable $emit, ?callable $shouldStop = null): string
+    public function handle(int $projectId, callable $emit, ?callable $shouldStop = null, bool $scheduled = false): string
     {
         $project = $projectId > 0 ? $this->db->project($projectId) : null;
         if ($projectId > 0 && !$project) {
@@ -41,7 +41,6 @@ class Orchestrator
         } elseif ($waitingOnTask) {
             $emit(['type' => 'phase', 'phase' => '']);
         }
-        $scheduled = $this->scheduledRequest($messages);
         return $this->runtime->run(
             'orchestrator',
             $messages,
@@ -500,15 +499,9 @@ TXT;
 - read_pdf: args path, optional question. Reads the text of a PDF in this project. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay. Do not ask the user to type the page out.
 - read_image: args path, optional question. Looks at a png, jpg, gif, or webp in this project. The GPU model can see the picture, including text in it. Use it for a screenshot, photo, or image upload. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.
 - screenshot: args path or url, optional save, width, height. Takes a picture of a page in this project or a public page. path is an html, htm, or php file, or a folder with an index page. url is a public http or https address. Saves a png under screenshots/ unless save is set. Cite that path alone on a line so the user sees the picture. Call read_image on it when you need to see what is wrong.
-- write_file: args path, content. Creates or overwrites a file in this project. It can create folders in the path. Markdown belongs in wiki/. A skill is not a project file. Use write_skill.
-- delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.
-- move_file: args from, to. Moves a file or folder inside this project. It can create folders in the path.
 A PDF is not written in this chat. Delegate it to the writer with the file name and the brief. The coder does not make PDFs.
 
 TXT;
-            if ($full) {
-                $fileTools .= "- run_command: args command. May use sudo. A path that starts with / is anywhere on this computer.\n";
-            }
         } else {
             if ($full) {
                 $fileTools = <<<TXT
@@ -516,10 +509,6 @@ TXT;
 - read_file: args path. A file under uploads/, such as uploads/notes.txt, or a full path.
 - read_pdf: args path, optional question. A PDF under uploads/, or a full path. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay. Do not ask the user to type the page out.
 - read_image: args path, optional question. A png, jpg, gif, or webp under uploads/, or a full path. The GPU model can see the picture, including text in it. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.
-- write_file: args path, content. A full path. Creates or overwrites that file. It can create folders in the path.
-- delete_file: args path. A full path. Moves that file or folder to the trash.
-- move_file: args from, to. Both full paths. It can create folders in the path.
-- run_command: args command. May use sudo.
 
 TXT;
             } else {
@@ -548,14 +537,10 @@ Other correct examples:
 {"name":"wiki_read","args":{}}
 <<end>>
 <<tool>>
-{"name":"delete_file","args":{"path":"website"}}
-<<end>>
-<<tool>>
 {"name":"kanban","args":{"action":"list"}}
 <<end>>
 Never invent another call format. These do nothing:
 : list_files
-: delete_file
 : wiki/notes.md
 list_files
 <task_breakdown>...</task_breakdown>
@@ -638,17 +623,6 @@ TXT;
             return;
         }
         $this->db->setSetting('reread_desc_' . $projectId, '0');
-    }
-
-    private function scheduledRequest(array $messages): bool
-    {
-        for ($i = count($messages) - 1; $i >= 0; $i--) {
-            if (($messages[$i]['role'] ?? '') !== 'user') {
-                continue;
-            }
-            return str_starts_with(ltrim((string)($messages[$i]['content'] ?? '')), 'Scheduled task:');
-        }
-        return false;
     }
 
     private function stamped(array $row): string
@@ -928,66 +902,6 @@ TXT;
                     return 'Open a project before creating a PDF.';
                 }
                 return 'Do not write the PDF in this chat. Delegate it to the writer with the file name and the brief. The writer calls create_pdf in its own context, so a long document does not fill this chat. The coder is for software, not for PDFs.';
-            },
-            'write_file' => function (array $args) use ($folder): string {
-                $path = (string)($args['path'] ?? '');
-                $blocked = $this->needsProject($folder, $path, 'Open a project before writing its files.');
-                if ($blocked !== null) {
-                    return $blocked;
-                }
-                $written = (new SafetyInterceptor(app_config()['data_dir']))->writeFile($folder, $path, (string)($args['content'] ?? ''));
-                return 'Wrote ' . $written['path'] . ($written['backed_up'] ? ' (previous version backed up).' : '.');
-            },
-            'delete_file' => function (array $args) use ($folder): string {
-                $path = (string)($args['path'] ?? '');
-                $blocked = $this->needsProject($folder, $path, 'Open a project before deleting its files.');
-                if ($blocked !== null) {
-                    return $blocked;
-                }
-                $meta = (new SafetyInterceptor(app_config()['data_dir']))->deleteFile($folder, $path);
-                $kind = !empty($meta['is_dir']) ? 'folder ' : '';
-                $where = str_starts_with((string)$meta['relative_path'], '/') ? 'the trash.' : 'the trash above the project.';
-                return 'Moved ' . $kind . $meta['relative_path'] . ' to ' . $where;
-            },
-            'move_file' => function (array $args) use ($folder): string {
-                $from = (string)($args['from'] ?? '');
-                $blocked = $this->needsProject($folder, $from, 'Open a project before moving its files.');
-                if ($blocked !== null) {
-                    return $blocked;
-                }
-                $moved = (new SafetyInterceptor(app_config()['data_dir']))->moveFile($folder, $from, (string)($args['to'] ?? ''));
-                return 'Moved ' . $moved['from'] . ' to ' . $moved['to'] . '.';
-            },
-            'run_command' => function (array $args) use ($folder, $emit, $shouldStop, $projectId): string {
-                $command = trim((string)($args['command'] ?? ''));
-                if (!$this->db->fullSystemControl()) {
-                    return 'Full system control is off.';
-                }
-                $tools = new CapabilityTools($this->db);
-                if ($tools->isInstallCommand($command)) {
-                    if (PHP_SAPI === 'cli') {
-                        return 'Install stopped. A scheduled run cannot ask the user. Do not install it.';
-                    }
-                    if (!$this->confirmInstall($command, $emit, $shouldStop, $projectId > 0 ? $projectId : null)) {
-                        return 'The user did not allow this install. Do not install it.';
-                    }
-                    $result = $tools->handlers($folder, 0, true)['run_command']($args);
-                    $this->db->logCompliance('tool_install', 'agent', 'Install: ' . $command, null, $projectId > 0 ? $projectId : null);
-                    return $result;
-                }
-                if ($this->db->hitlExternalActions()) {
-                    return $this->gateExternal(
-                        'shell',
-                        'Shell: ' . clip_text($command, 200),
-                        fn(): string => $tools->handlers($folder)['run_command']($args),
-                        $emit,
-                        $shouldStop,
-                        $projectId > 0 ? $projectId : null
-                    );
-                }
-                $result = $tools->handlers($folder)['run_command']($args);
-                $this->db->logCompliance('tool_shell', 'agent', 'Shell: ' . clip_text($command, 200), null, $projectId > 0 ? $projectId : null);
-                return $result;
             },
             'create_project' => function (array $args): string {
                 return 'You cannot create a project. Tell the user to create it manually from the menu.';

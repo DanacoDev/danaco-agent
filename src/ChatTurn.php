@@ -6,7 +6,7 @@ class ChatTurn
     public array $detail = ['thinking' => [], 'tools' => []];
     public array $notices = [];
 
-    public function run(int $projectId, callable $emit, ?callable $shouldStop = null): string
+    public function run(int $projectId, callable $emit, ?callable $shouldStop = null, bool $scheduled = false): string
     {
         $this->streamed = '';
         $this->detail = ['thinking' => [], 'tools' => []];
@@ -46,7 +46,7 @@ class ChatTurn
             }
             $emit($event);
         };
-        $returned = app_services()['orchestrator']->handle($projectId, $wrapped, $shouldStop);
+        $returned = app_services()['orchestrator']->handle($projectId, $wrapped, $shouldStop, $scheduled);
         $answer = trim($returned);
         if ($answer === '') {
             $answer = trim($this->streamed);
