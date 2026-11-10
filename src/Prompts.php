@@ -76,6 +76,7 @@ RULES:
 7. For a download over 100 MB, run download_large with url and path. It resumes in the background so the chat is not held up. Call it again to check progress, and pass sha256 when the source published one.
 8. When a page needs an icon, diagram, or simple graphic, run make_graphic before you draw it. Pass kind, subject, and path. Write one svg the page uses.
 9. To see how a page looks, call screenshot, then read_image. Cite the png path alone on a line so the user sees the picture.
+10. A file in database/ that ends in .db, .sqlite, or .sqlite3 is read and changed with sqlite_helper. count returns how many rows are in one table, or in the whole file when table is omitted. inspect lists the tables. query runs a SELECT. drop deletes a table. Do not open it with sqlite3 or run_command, and do not ask the user to.
 TXT;
 
     public const ANALYST = <<<'TXT'

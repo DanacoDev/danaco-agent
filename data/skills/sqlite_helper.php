@@ -2,7 +2,7 @@
 /*
 ---
 name: sqlite_helper
-description: Always checks whether a SQLite database and table exist before creating them. If they exist, returns the schema so you add or remove columns. action ensure.
+description: SQLite in database/. count returns how many rows are in one table or the whole file. drop deletes a table. ensure creates a missing table.
 ---
 */
 
@@ -11,12 +11,14 @@ Usage:
   Create workflow: always check the database and table first. If either already exists, do not recreate it. The schema is returned so you can compare columns.
   ensure: {"database":"link_database.sqlite","table":"links","columns":["url TEXT","title TEXT"]} or one CREATE TABLE statement in sql.
   When the table exists, read columns, missing_columns, and extra_columns. Add a column with execute and ALTER TABLE links ADD COLUMN name TYPE. Remove one with ALTER TABLE links DROP COLUMN name. Do not CREATE TABLE again.
-  inspect: read schemas, indexes, row counts, and sample rows.
+  count: {"database":"link_database.db"} returns each table and the total. Add table to count one table.
+  inspect: read schemas, indexes, row counts, and sample rows. database may be the filename or all.
   query: run a read-only SELECT, WITH, or PRAGMA statement with params.
   insert: add a row with table and values.
-  execute: run a parameterized write. CREATE TABLE is checked first and is not run when that table exists.
+  drop: {"database":"link_database.db","table":"links"} deletes that table. if_exists true leaves a missing table alone.
+  execute: run a parameterized write. CREATE TABLE is checked first and is not run when that table exists. DROP TABLE is the drop action.
   init: create database/regulations.db and materials.db only when those tables are missing. Existing tables return their schema.
-Do not use the sqlite3 CLI to CREATE TABLE.
+Do not use the sqlite3 CLI. Do not ask anyone to open the database file.
 */
 
 $args = json_decode(stream_get_contents(STDIN) ?: '', true);
@@ -221,6 +223,16 @@ try {
     $db->exec('PRAGMA foreign_keys = ON');
     $db->exec('PRAGMA busy_timeout = 5000');
 
+    if ($action === 'drop' || $action === 'delete' || ($action === 'execute' && preg_match('/^\s*DROP\s+TABLE\b/i', trim((string)($args['sql'] ?? ''))))) {
+        echo json_encode(sqlite_drop_action($db, $args, $database));
+        exit(0);
+    }
+
+    if ($action === 'count') {
+        echo json_encode(sqlite_count_action($db, $args, $database));
+        exit(0);
+    }
+
     if ($action === 'tables') {
         $tables = $db->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN);
         echo json_encode(['status' => 'success', 'action' => 'tables', 'database' => $database, 'tables' => $tables]);
@@ -269,7 +281,7 @@ try {
         exit(0);
     }
 
-    throw new InvalidArgumentException('Unknown action. Use ensure, init, inspect, tables, query, insert, or execute.');
+    throw new InvalidArgumentException('Unknown action. Use ensure, init, inspect, tables, count, query, insert, drop, or execute.');
 } catch (Throwable $e) {
     echo json_encode(['status' => 'error', 'action' => $action, 'message' => $e->getMessage()]);
     exit(1);
@@ -292,6 +304,111 @@ function sqlite_table_exists(PDO $db, string $table): bool
     $stmt = $db->prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?");
     $stmt->execute([$table]);
     return (bool)$stmt->fetchColumn();
+}
+
+function sqlite_drop_table_name(string $sql): ?array
+{
+    $body = rtrim(trim($sql), " \t\r\n;");
+    if (!preg_match('/^\s*DROP\s+TABLE\s+(IF\s+EXISTS\s+)?(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_]*))\s*$/i', $body, $m)) {
+        return null;
+    }
+    $name = '';
+    foreach ([2, 3, 4, 5] as $i) {
+        if (($m[$i] ?? '') !== '') {
+            $name = $m[$i];
+            break;
+        }
+    }
+    if ($name === '') {
+        return null;
+    }
+    return ['table' => $name, 'if_exists' => trim((string)($m[1] ?? '')) !== ''];
+}
+
+function sqlite_count_action(PDO $db, array $args, string $database): array
+{
+    $table = trim((string)($args['table'] ?? ''));
+    $names = $db->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN);
+    if ($table !== '') {
+        if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $table)) {
+            throw new InvalidArgumentException('Table names may contain only letters, numbers, and underscores.');
+        }
+        if (!in_array($table, $names, true)) {
+            throw new RuntimeException('Table ' . $table . ' is not in ' . $database . '.');
+        }
+        $count = sqlite_row_count($db, $table);
+        return [
+            'status' => 'success',
+            'action' => 'count',
+            'database' => $database,
+            'table' => $table,
+            'rows' => $count,
+            'message' => $table . ' has ' . $count . ' ' . ($count === 1 ? 'row' : 'rows') . ' in ' . $database . '.',
+        ];
+    }
+    $tables = [];
+    $total = 0;
+    foreach ($names as $name) {
+        $count = sqlite_row_count($db, (string)$name);
+        $tables[] = ['table' => (string)$name, 'rows' => $count];
+        $total += $count;
+    }
+    $tableWord = count($tables) === 1 ? 'table' : 'tables';
+    return [
+        'status' => 'success',
+        'action' => 'count',
+        'database' => $database,
+        'rows' => $total,
+        'tables' => $tables,
+        'message' => $database . ' has ' . $total . ' ' . ($total === 1 ? 'row' : 'rows') . ' across ' . count($tables) . ' ' . $tableWord . '.',
+    ];
+}
+
+function sqlite_row_count(PDO $db, string $table): int
+{
+    $quoted = '"' . str_replace('"', '""', $table) . '"';
+    return (int)$db->query('SELECT COUNT(*) FROM ' . $quoted)->fetchColumn();
+}
+
+function sqlite_drop_action(PDO $db, array $args, string $database): array
+{
+    $ifExists = in_array(strtolower(trim((string)($args['if_exists'] ?? ''))), ['1', 'true', 'yes'], true);
+    $table = trim((string)($args['table'] ?? ''));
+    $sql = trim((string)($args['sql'] ?? ''));
+    if ($sql !== '') {
+        $parsed = sqlite_drop_table_name($sql);
+        if ($parsed === null) {
+            throw new InvalidArgumentException('Pass one DROP TABLE statement, or action drop with table.');
+        }
+        if ($table === '') {
+            $table = $parsed['table'];
+        } elseif (strcasecmp($table, $parsed['table']) !== 0) {
+            throw new InvalidArgumentException('table does not match the DROP TABLE statement.');
+        }
+        $ifExists = $ifExists || $parsed['if_exists'];
+    }
+    if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $table)) {
+        throw new InvalidArgumentException('Drop requires a table name. Table names may contain only letters, numbers, and underscores.');
+    }
+    $existed = sqlite_table_exists($db, $table);
+    if (!$existed && !$ifExists) {
+        throw new RuntimeException('Table ' . $table . ' is not in ' . $database . '.');
+    }
+    if ($existed) {
+        $db->exec('DROP TABLE "' . str_replace('"', '""', $table) . '"');
+    }
+    $tables = $db->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN);
+    return [
+        'status' => 'success',
+        'action' => 'drop',
+        'database' => $database,
+        'table' => $table,
+        'dropped' => $existed,
+        'tables' => $tables,
+        'message' => $existed
+            ? 'Dropped table ' . $table . ' from ' . $database . '.'
+            : 'Table ' . $table . ' was not in ' . $database . '.',
+    ];
 }
 
 function sqlite_schema(PDO $db, string $table): array
@@ -461,7 +578,7 @@ function sqlite_compare_columns(array $existing, array $wanted): array
 
 function sqlite_exists_message(string $database, string $table, ?array $compare): string
 {
-    $base = 'Table ' . $table . ' already exists in ' . $database . '. It was not recreated. The schema is in columns.';
+    $base = 'Table ' . $table . ' already exists in ' . $database . '. It was not recreated. The schema is in columns. Drop it with action drop and table ' . $table . '.';
     if ($compare === null) {
         return $base . ' Compare it with the columns you need. Add a column with action execute and sql ALTER TABLE ' . $table . ' ADD COLUMN name TYPE. Remove a column with ALTER TABLE ' . $table . ' DROP COLUMN name.';
     }
