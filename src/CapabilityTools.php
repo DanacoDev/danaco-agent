@@ -34,7 +34,7 @@ class CapabilityTools
         $lines[] = '- browse_url: args url. Opens a public page in the headless browser so scripts run, then returns the text and links. Use it when fetch_url shows an empty or unfinished page.';
         $lines[] = $this->db->fullSystemControl()
             ? '- run_command: args command. May use sudo. Starts in the project folder when there is one. A path that starts with / is anywhere on this computer. Do not install software. Only the main agent can install a dependency, and the user is asked first.'
-            : '- run_command: args command. Runs inside the project folder. Do not install software. Only the main agent can install a dependency, and the user is asked first.';
+            : '- run_command: unavailable while full system control is off. Use the available tools or registered skills instead.';
         if ($projectId > 0 && ($accounts = $this->db->emailAccounts($projectId))) {
             if (count($accounts) === 1) {
                 $row = $accounts[0];
@@ -894,6 +894,12 @@ class CapabilityTools
         $command = trim($command);
         if ($command === '' || strlen($command) > 2000) {
             return 'Command is empty or too long.';
+        }
+        if (!$this->db->fullSystemControl()) {
+            return 'Full system control is off.';
+        }
+        if (preg_match('/(?:^|[\/\s\'"])[A-Za-z0-9._-]+\.(?:db|sqlite|sqlite3)(?:$|[\s\'"])/i', $command)) {
+            return 'Database commands are blocked in run_command. Use sqlite_helper so the database filename is explicit and a recoverable backup is created before a write.';
         }
         if ($this->isInstallCommand($command) && !$allowInstall) {
             $this->blockedInstalls[] = $command;

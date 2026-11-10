@@ -562,7 +562,9 @@ class SafetyInterceptor
         $lines = [];
         foreach (array_merge($this->listBackups(), $this->listTrash()) as $item) {
             $when = (string)($item['deleted_at'] ?? $item['backed_up_at'] ?? '');
-            $lines[] = (string)($item['kind'] ?? '') . ' ' . (string)($item['stored_as'] ?? '') . ' ' . (string)($item['original'] ?? '') . ($when !== '' ? ' ' . $when : '');
+            $storedAs = (string)($item['stored_as'] ?? '');
+            $size = $storedAs !== '' ? $this->vaultSize((string)($item['kind'] ?? ''), $storedAs) : 0;
+            $lines[] = (string)($item['kind'] ?? '') . ' ' . $storedAs . ' ' . (string)($item['original'] ?? '') . ' size_bytes=' . $size . ($when !== '' ? ' ' . $when : '');
         }
         return $lines ? implode("\n", $lines) : 'No backups or trash.';
     }
@@ -750,6 +752,27 @@ class SafetyInterceptor
             return strcmp((string)($b['deleted_at'] ?? $b['backed_up_at'] ?? ''), (string)($a['deleted_at'] ?? $a['backed_up_at'] ?? ''));
         });
         return $items;
+    }
+
+    private function vaultSize(string $kind, string $storedAs): int
+    {
+        $path = $this->vaultDir($kind) . '/' . $storedAs;
+        if (is_file($path)) {
+            return (int)(filesize($path) ?: 0);
+        }
+        if (!is_dir($path) || is_link($path)) {
+            return 0;
+        }
+        $size = 0;
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($iterator as $file) {
+            if ($file->isFile() && !$file->isLink()) {
+                $size += (int)$file->getSize();
+            }
+        }
+        return $size;
     }
 
     private function uniqueName(string $dir, string $filename): string

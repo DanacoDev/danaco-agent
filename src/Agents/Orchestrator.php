@@ -582,7 +582,7 @@ Tools:
 - wiki_read: args name. Reads one project wiki file. Omit name to read wiki/<folder>_desc.md, which is only the general description. General chat has no project wiki.
 - wiki_write: args name, content, append. Writes wiki/<name>.md in the current project. Omit name only to edit the general description: what the project is, contributors, credentials, and main goals. Pass name for research, findings, and specific data. Read the file first when you are changing it. Use append to add to what is already there. When the chat has reached conclusions, update the matching wiki file in this same turn.
 - wiki_reindex: no args
-- list_vault: no args. Backups and trash. Read or restore only. Never delete them.
+- list_vault: no args. Backups and trash with exact size_bytes for each item. Read or restore only. Never delete them.
 - read_vault: args kind (backup or trash), stored_as
 - restore_file: args kind, stored_as
 - write_skill: args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there. Delegate this to the coder. Call it yourself when the coder cannot finish.
@@ -960,6 +960,9 @@ TXT;
             },
             'run_command' => function (array $args) use ($folder, $emit, $shouldStop, $projectId): string {
                 $command = trim((string)($args['command'] ?? ''));
+                if (!$this->db->fullSystemControl()) {
+                    return 'Full system control is off.';
+                }
                 $tools = new CapabilityTools($this->db);
                 if ($tools->isInstallCommand($command)) {
                     if (PHP_SAPI === 'cli') {
@@ -971,9 +974,6 @@ TXT;
                     $result = $tools->handlers($folder, 0, true)['run_command']($args);
                     $this->db->logCompliance('tool_install', 'agent', 'Install: ' . $command, null, $projectId > 0 ? $projectId : null);
                     return $result;
-                }
-                if (!$this->db->fullSystemControl()) {
-                    return 'Full system control is off.';
                 }
                 if ($this->db->hitlExternalActions()) {
                     return $this->gateExternal(
@@ -1141,6 +1141,25 @@ TXT;
         if ($folder !== '') {
             foreach ($this->skills->activeHandlers($folder) as $name => $handler) {
                 if (!isset($tools[$name])) {
+                    if ($name === 'sqlite_helper') {
+                        $tools[$name] = function (array $args) use ($handler, $emit, $shouldStop, $projectId): string {
+                            $action = strtolower(trim((string)($args['action'] ?? '')));
+                            $sql = trim((string)($args['sql'] ?? ''));
+                            $destructive = in_array($action, ['drop', 'delete'], true)
+                                || ($action === 'execute' && preg_match('/^\s*DROP\s+TABLE\b/i', $sql));
+                            if (!$destructive) {
+                                return $handler($args);
+                            }
+                            $database = trim((string)($args['database'] ?? ''));
+                            $table = trim((string)($args['table'] ?? ''));
+                            $summary = 'Drop SQLite table ' . ($table !== '' ? $table : '(unspecified)') . ' from ' . ($database !== '' ? $database : '(unspecified)');
+                            if (!$this->confirmAction('database_drop', $summary, $emit, $shouldStop, $projectId > 0 ? $projectId : null)) {
+                                return 'The user did not approve this database table drop.';
+                            }
+                            return $handler($args);
+                        };
+                        continue;
+                    }
                     $tools[$name] = $handler;
                 }
             }

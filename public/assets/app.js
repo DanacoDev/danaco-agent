@@ -2642,9 +2642,9 @@
             if (event === 'error') throw new Error(data.error || 'Could not install the model.');
             if (event === 'done') finished = true;
             if (event === 'progress') {
-              let text = data.status || 'Working';
+              let text = 'Downloading…';
               if (data.total && data.completed != null) {
-                text += ' ' + Math.min(100, Math.round(data.completed / data.total * 100)) + '%';
+                text = 'Downloading ' + Math.min(100, Math.round(data.completed / data.total * 100)) + '%';
               }
               this.ollamaProgress = text;
             }

@@ -18,7 +18,8 @@ Usage:
   insert: add a row with table and values.
   drop: {"database":"link_database.db","table":"links"} deletes that table. if_exists true leaves a missing table alone.
   execute: run a parameterized write. CREATE TABLE is checked first and is not run when that table exists. DROP TABLE is the drop action.
-  init: create database/regulations.db and materials.db only when those tables are missing. Existing tables return their schema.
+  init: create one explicitly named regulations.db or materials.db only when its tables are missing. Existing tables return their schema.
+  Every existing database is snapshotted in the project backup vault before a write.
 Do not use the sqlite3 CLI. Do not ask anyone to open the database file.
 */
 
@@ -37,12 +38,9 @@ if ($action === '' || $action === 'create') {
         || (isset($args['columns']) && $args['columns'] !== [] && $args['columns'] !== '');
     $action = $hasDefinition ? 'ensure' : 'init';
 }
-if ($database === '' && $action !== 'init') {
+if ($database === '') {
     echo json_encode(['status' => 'error', 'action' => $action, 'message' => 'Pass database as the filename only, such as link_database.db. The helper is not locked to one file. Do not use sqlite3.']);
     exit(1);
-}
-if ($database === '') {
-    $database = 'regulations.db';
 }
 
 if ($action === 'requirements') {
@@ -120,11 +118,18 @@ try {
                 "CREATE INDEX IF NOT EXISTS idx_materials_name ON materials(name)",
             ],
         ];
+        if (!isset($databases[$database])) {
+            throw new InvalidArgumentException('init supports regulations.db or materials.db. Pass a specific database filename.');
+        }
+        $databases = [$database => $databases[$database]];
         $created = [];
         $anyExisted = false;
         foreach ($databases as $name => $schema) {
             $path = $dbDir . '/' . $name;
             $wasNew = !is_file($path);
+            if (!$wasNew) {
+                sqlite_snapshot($path, $name, $root);
+            }
             $db = sqlite_open($path);
             $reports = [];
             $skipIndexFor = [];
@@ -180,8 +185,8 @@ try {
         }
         $payload = ['status' => 'success', 'action' => 'init', 'directory' => $relativeDir, 'databases' => $created];
         $payload['message'] = $anyExisted
-            ? 'Existing tables were left in place and their schemas are below. Compare columns before you add or remove any. This action only covers regulations.db and materials.db. For another file, pass database as its filename, such as link_database.db.'
-            : 'Created the missing tables in regulations.db and materials.db. For another file, pass database as its filename, such as link_database.db.';
+            ? 'Existing tables were left in place and their schemas are below. Compare columns before you add or remove any.'
+            : 'Created the missing tables in ' . $database . '.';
         echo json_encode($payload);
         exit(0);
     }
@@ -245,6 +250,7 @@ try {
     $db->exec('PRAGMA busy_timeout = 5000');
 
     if ($action === 'drop' || $action === 'delete' || ($action === 'execute' && preg_match('/^\s*DROP\s+TABLE\b/i', trim((string)($args['sql'] ?? ''))))) {
+        sqlite_snapshot($dbPath, $database, $root);
         echo json_encode(sqlite_drop_action($db, $args, $database));
         exit(0);
     }
@@ -277,6 +283,7 @@ try {
         if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $table) || !is_array($values) || $values === []) {
             throw new InvalidArgumentException('Insert requires a table and a non-empty values object.');
         }
+        sqlite_snapshot($dbPath, $database, $root);
         $columns = array_keys($values);
         foreach ($columns as $column) {
             if (!is_string($column) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $column)) {
@@ -296,6 +303,7 @@ try {
         if ($sql === '' || preg_match('/^\s*(SELECT|WITH|PRAGMA)\b/i', $sql)) {
             throw new InvalidArgumentException('Execute requires a non-read SQL statement.');
         }
+        sqlite_snapshot($dbPath, $database, $root);
         $statement = $db->prepare($sql);
         $statement->execute(is_array($args['params'] ?? null) ? $args['params'] : []);
         echo json_encode(['status' => 'success', 'action' => 'execute', 'database' => $database, 'changes' => $statement->rowCount()]);
@@ -318,6 +326,37 @@ function sqlite_open(string $path): PDO
     $db->exec('PRAGMA foreign_keys = ON');
     $db->exec('PRAGMA busy_timeout = 5000');
     return $db;
+}
+
+function sqlite_snapshot(string $path, string $database, string $root): void
+{
+    if (!is_file($path)) {
+        return;
+    }
+    $backupDir = dirname($root) . '/.backups';
+    if (!is_dir($backupDir) && !mkdir($backupDir, 0775, true) && !is_dir($backupDir)) {
+        throw new RuntimeException('Could not create the database backup folder.');
+    }
+    $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', basename($database)) ?: 'database.db';
+    $stored = date('Ymd_His') . '_' . $safe;
+    if (file_exists($backupDir . '/' . $stored)) {
+        $stored = date('Ymd_His') . '_' . substr(uniqid(), -4) . '_' . $safe;
+    }
+    if (!copy($path, $backupDir . '/' . $stored)) {
+        throw new RuntimeException('Could not back up ' . $database . ' before changing it.');
+    }
+    $meta = [
+        'original' => basename($root) . '/database/' . basename($database),
+        'project_folder' => basename($root),
+        'relative_path' => 'database/' . basename($database),
+        'backed_up_at' => date('c'),
+        'filename' => basename($database),
+        'stored_as' => $stored,
+    ];
+    if (file_put_contents($backupDir . '/' . $stored . '.json', json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)) === false) {
+        @unlink($backupDir . '/' . $stored);
+        throw new RuntimeException('Could not save the database backup metadata.');
+    }
 }
 
 function sqlite_table_exists(PDO $db, string $table): bool
@@ -618,6 +657,10 @@ function sqlite_exists_message(string $database, string $table, ?array $compare)
 
 function sqlite_ensure(string $relativeDir, string $database, string $dbPath, array $args, string $action): array
 {
+    $root = realpath(getcwd() ?: '.');
+    if ($root === false) {
+        throw new RuntimeException('Could not resolve the project folder.');
+    }
     $fileExisted = is_file($dbPath);
     $table = trim((string)($args['table'] ?? ''));
     $rawSql = trim((string)($args['sql'] ?? ''));
@@ -690,6 +733,7 @@ function sqlite_ensure(string $relativeDir, string $database, string $dbPath, ar
     if ($createSql === '' && $wanted === []) {
         throw new InvalidArgumentException('Table ' . $table . ' does not exist. Pass columns or sql to create it.');
     }
+    sqlite_snapshot($dbPath, $database, $root);
     $statement = $createSql !== '' && !$hasColumns ? $createSql : sqlite_create_sql($table, $wanted);
     $db->exec($statement);
     $schema = sqlite_schema($db, $table);

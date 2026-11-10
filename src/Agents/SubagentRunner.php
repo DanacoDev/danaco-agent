@@ -152,7 +152,7 @@ TXT;
             '- delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.',
             '- move_file: args from, to. Moves a file or folder to another path in this project. It can create folders in the path.',
             '- list_files: args path, optional',
-            '- list_vault: no args. Backups and trash you can read or restore.',
+            '- list_vault: no args. Backups and trash you can read or restore, with exact size_bytes for each item.',
             '- read_vault: args kind (backup or trash), stored_as',
             '- restore_file: args kind, stored_as',
             '- wiki_search: args query',
@@ -416,6 +416,19 @@ TXT;
             $tools[$name] = $handler;
         }
         foreach ($this->skills->activeHandlers($projectFolder) as $name => $handler) {
+            if ($name === 'sqlite_helper') {
+                $tools[$name] = function (array $args) use ($handler): string {
+                    $action = strtolower(trim((string)($args['action'] ?? '')));
+                    $sql = trim((string)($args['sql'] ?? ''));
+                    $destructive = in_array($action, ['drop', 'delete'], true)
+                        || ($action === 'execute' && preg_match('/^\s*DROP\s+TABLE\b/i', $sql));
+                    if ($destructive) {
+                        return 'SQLite table drops require approval from the main agent. Do not retry this action.';
+                    }
+                    return $handler($args);
+                };
+                continue;
+            }
             if ($name === 'task_breakdown') {
                 $tools[$name] = function (): string {
                     return 'Only the main agent can add kanban cards. Add a result to the card you were given.';
