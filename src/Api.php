@@ -63,6 +63,7 @@ class Api
         $router->add('POST', '#^/api/soul$#', $this->guard(fn() => $this->saveSoul()));
         $router->add('GET', '#^/api/agents/status$#', $this->guard(fn() => $this->agentStatus()));
         $router->add('POST', '#^/api/agents/stop$#', $this->guard(fn() => $this->stopAgents()));
+        $router->add('POST', '#^/api/agents/start$#', $this->guard(fn() => $this->startAgents()));
         $router->add('GET', '#^/api/model/load$#', $this->guard(fn() => $this->modelLoad()));
         $router->add('GET', '#^/api/agents/logs$#', $this->guard(fn() => $this->agentLogs()));
         $router->add('GET', '#^/api/agents/loop$#', $this->guard(fn() => $this->loopLogs()));
@@ -542,6 +543,13 @@ class Api
             $this->json(['error' => 'The run is still stopping.'], 409);
             return;
         }
+        if ($projectId > 0) {
+            if (!empty($body['pause_heartbeat'])) {
+                $this->db->pauseHeartbeat($projectId);
+            } else {
+                $this->db->resumeHeartbeat($projectId);
+            }
+        }
         $generation = trim((string)($body['generation'] ?? ''));
         if (strlen($generation) > 64 || !preg_match('/^[A-Za-z0-9_.-]+$/', $generation)) {
             $generation = bin2hex(random_bytes(8));
@@ -615,7 +623,7 @@ class Api
                         $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, ChatTurn::encodeDetail($turn->detail));
                     }
                     $this->db->setAgentStatus('orchestrator', 'idle');
-                    $this->sse('stopped', ['text' => 'Stopped by user. Waiting for further instructions.']);
+                    $this->sse('stopped', ['text' => 'All processes stopped by user. Waiting for further instructions.']);
                 } elseif ($asked) {
                     $this->db->loop('orchestrator', 'process', 'Intentional stop · job ' . $jobId . ' finished');
                     $text = $text === '' ? 'Stopped.' : $text . "\n\nStopped.";
@@ -721,9 +729,27 @@ class Api
         foreach ($ids as $id) {
             $this->db->finishJob($id);
         }
-        $this->db->addMessage($projectId, 'notice', 'Stopped by user. Waiting for further instructions.', 'orchestrator');
+        if ($ids && $projectId > 0) {
+            $this->db->pauseHeartbeat($projectId);
+        }
+        $this->db->addMessage($projectId, 'notice', 'All processes stopped by user. Waiting for further instructions.', 'orchestrator');
         $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'heartbeat', 'process', 'Stopped by user');
         $this->json(['ok' => true, 'held' => array_values($held)]);
+    }
+
+    private function startAgents(): void
+    {
+        $body = $this->input();
+        $projectId = (int)($body['project_id'] ?? 0);
+        if ($projectId > 0 && !$this->db->project($projectId)) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return;
+        }
+        if ($projectId > 0) {
+            $this->db->resumeHeartbeat($projectId);
+        }
+        $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'heartbeat', 'process', 'Heartbeat resumed');
+        $this->json(['ok' => true, 'heartbeat_paused' => false]);
     }
 
     private function answerInstall(): void
@@ -1312,7 +1338,11 @@ class Api
             ];
         }
         $projectId = (int)($_GET['project_id'] ?? 0);
-        $this->json(['agents' => $agents, 'stopping' => $this->db->runStillStopping($projectId)]);
+        $this->json([
+            'agents' => $agents,
+            'stopping' => $this->db->runStillStopping($projectId),
+            'heartbeat_paused' => $projectId > 0 && $this->db->heartbeatPaused($projectId),
+        ]);
     }
 
     private function agentLogs(): void

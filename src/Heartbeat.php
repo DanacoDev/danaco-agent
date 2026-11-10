@@ -20,6 +20,10 @@ class Heartbeat
                 $this->traceJob($job, 'Stopped by user · job ' . $id . ' not retried');
                 continue;
             }
+            if ($projectId > 0 && $this->db->heartbeatPaused($projectId)) {
+                $this->traceJob($job, 'Skipped job ' . $id . ' · heartbeat paused');
+                continue;
+            }
             $attempt = (int)($job['attempts'] ?? 1);
             $this->traceJob($job, 'Due job ' . $id . ' · ' . $job['kind'] . ' · attempt ' . $attempt);
             if ((string)$job['kind'] === 'subagent' && $this->db->lockFresh('subagent_lock', 900)) {

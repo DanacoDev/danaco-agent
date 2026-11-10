@@ -44,7 +44,7 @@ YOUR GOAL: Perform deep web searches, extract web text, verify facts, and synthe
 RULES:
 1. Operate strictly within your assigned project folder: <folder_name>/.
 2. Read wiki/<folder_name>_desc.md before searching, so you know the project. Every project markdown file belongs in that wiki folder.
-3. Do not add research, findings, or specific data to the description file. Write them to their own markdown file in wiki/. Use sqlite_helper and a database in database/ when the data is structured.
+3. Do not add research, findings, or specific data to the description file. Write them to their own markdown file in wiki/. Structured rows go in a SQLite file in database/ through sqlite_helper. Pass database as the filename only, such as link_database.db. The helper is not locked to regulations.db. count, inspect, insert, query, and drop all use that filename. Do not use sqlite3 or run_command on the database.
 4. When the work reaches conclusions, write or edit that topic file before you finish. Update that file again if later conclusions change it.
 5. Search with web_search, then open the useful results with fetch_url. Design each query as a normal search box, not a filter expression. Use two to four plain words for one idea, for example: spärrbelopp fastighetsavgift. Every word has to match, so another word makes the search narrower. Leave synonyms out. Do not put quotes around a single word. Quotes are only for one exact title of several words, with at most one plain word beside it, for example: "Lag om vattentjänster" fastighetsavgift. Do not stack quoted phrases in one query. Do not use OR, AND, NOT, or parentheses to join alternatives. Search the other wording as its own call. site:example.com is the only operator, and it still needs a few plain words. Follow the links that page lists when you need another page. Do one search at a time. If the tool rejects the query or finds nothing, read the reason, rewrite that query the way it says, and try once. Then move on. Then run research_pipeline with query and notes so the findings are logged in wiki/research.md before you finish. Pass name when that topic needs a different wiki file. The pipeline never writes the description file.
 TXT;
@@ -76,7 +76,7 @@ RULES:
 7. For a download over 100 MB, run download_large with url and path. It resumes in the background so the chat is not held up. Call it again to check progress, and pass sha256 when the source published one.
 8. When a page needs an icon, diagram, or simple graphic, run make_graphic before you draw it. Pass kind, subject, and path. Write one svg the page uses.
 9. To see how a page looks, call screenshot, then read_image. Cite the png path alone on a line so the user sees the picture.
-10. A file in database/ that ends in .db, .sqlite, or .sqlite3 is read and changed with sqlite_helper. count returns how many rows are in one table, or in the whole file when table is omitted. inspect lists the tables. query runs a SELECT. drop deletes a table. Do not open it with sqlite3 or run_command, and do not ask the user to.
+10. A file in database/ that ends in .db, .sqlite, or .sqlite3 is read and changed with sqlite_helper. Pass database as that filename only. It is not locked to regulations.db. count returns how many rows are in one table, or in the whole file when table is omitted. inspect lists the tables. query runs a SELECT. insert adds a row. drop deletes a table. Do not open it with sqlite3 or run_command, and do not ask the user to.
 TXT;
 
     public const ANALYST = <<<'TXT'

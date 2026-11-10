@@ -506,7 +506,39 @@ SQL);
         $stmt = $this->pdo->prepare("SELECT * FROM tasks WHERE project_id IS NOT NULL AND status IN ('todo', 'backlog', 'in_progress') AND COALESCE(held, 0) = 0 AND id NOT IN (SELECT ref_id FROM jobs WHERE kind = 'task' AND status IN ('running', 'error') AND ref_id IS NOT NULL) AND ((schedule_time IS NOT NULL AND schedule_time <= ?) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') NOT IN ('', 'none')) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') IN ('', 'none') AND project_id NOT IN (SELECT project_id FROM jobs WHERE project_id IS NOT NULL AND kind IN ('chat', 'subagent') AND updated_at >= datetime('now', '-5 minutes')))) ORDER BY schedule_time");
         $stmt->execute([date('Y-m-d H:i:s')]);
         $rows = $stmt->fetchAll();
-        return array_map([$this, 'castTask'], $rows);
+        $tasks = array_map([$this, 'castTask'], $rows);
+        return array_values(array_filter($tasks, function (array $task): bool {
+            return !$this->heartbeatPaused((int)($task['project_id'] ?? 0));
+        }));
+    }
+
+    public function pauseHeartbeat(int $projectId): void
+    {
+        if ($projectId <= 0) {
+            return;
+        }
+        $this->setSetting($this->heartbeatPauseKey($projectId), '1');
+    }
+
+    public function heartbeatPaused(int $projectId): bool
+    {
+        if ($projectId <= 0) {
+            return false;
+        }
+        return $this->getSetting($this->heartbeatPauseKey($projectId), '0') === '1';
+    }
+
+    public function resumeHeartbeat(int $projectId): void
+    {
+        if ($projectId <= 0) {
+            return;
+        }
+        $this->setSetting($this->heartbeatPauseKey($projectId), '0');
+    }
+
+    private function heartbeatPauseKey(int $projectId): string
+    {
+        return 'heartbeat_paused_' . max(0, $projectId);
     }
 
     public function messages(int $projectId, int $limit = 100): array

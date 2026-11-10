@@ -423,6 +423,7 @@ class AgentRuntime
             $noise = new ReplyNoiseFilter($this->toolNames());
             $turnText = '';
             $guard = new RepeatLineGuard();
+            $thinkingGuard = new RepeatLineGuard();
             $show = function (string $text) use ($guard, $emit, $agent, &$visible, &$turnText): void {
                 $text = $guard->push($text);
                 if ($text === '') {
@@ -482,12 +483,16 @@ class AgentRuntime
                     if ($guard->tripped) {
                         throw new OutputRepeated();
                     }
-                }, $shouldStop, function (string $chunk) use ($shouldStop, &$thinkBuf, &$thinkAt, $flushThinking): void {
+                }, $shouldStop, function (string $chunk) use ($shouldStop, &$thinkBuf, &$thinkAt, $flushThinking, $thinkingGuard): void {
                     if ($chunk === '') {
                         return;
                     }
                     if ($shouldStop && $shouldStop()) {
                         throw new ChatStopped('Stopped.');
+                    }
+                    $thinkingGuard->push($chunk);
+                    if ($thinkingGuard->tripped) {
+                        throw new OutputRepeated();
                     }
                     if ($thinkBuf === '') {
                         $thinkAt = microtime(true);
@@ -508,11 +513,12 @@ class AgentRuntime
                 $finishNoise();
                 $flushThinking(true);
                 $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
-                $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
+                $repeatGuard = $thinkingGuard->tripped ? $thinkingGuard : $guard;
+                $this->traceFilters($agent, $projectId, $markers, $noise, $repeatGuard);
                 if ($turnText !== '') {
                     $this->db->logAgent($agent, $projectId, 'thinking', $turnText);
                 }
-                if (!$this->steerAfterRepeat($repeatTries, $messages, $guard->singleCopy($turnText), $guard->repeated, $visible, $emit, $agent, $skipCompact)) {
+                if (!$this->steerAfterRepeat($repeatTries, $messages, $repeatGuard->singleCopy($turnText), $repeatGuard->repeated, $visible, $emit, $agent, $skipCompact)) {
                     return $this->finishVisible($visible);
                 }
                 continue;

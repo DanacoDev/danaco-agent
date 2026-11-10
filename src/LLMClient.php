@@ -335,6 +335,9 @@ class LLMClient
                     $this->recoveries[] = $note;
                     $this->db->loop($who, 'retry', 'recovery · ' . $note);
                 }
+                if ($this->shouldRetryGpu($e->getMessage(), $cloud)) {
+                    $this->retryGpu($shouldStop, $who);
+                }
                 if ($again) {
                     $this->db->loop($who, 'retry', 'pause before retry');
                     $this->pauseForRetry($shouldStop);
@@ -808,6 +811,40 @@ class LLMClient
         }
     }
 
+    private function shouldRetryGpu(string $error, bool $cloud): bool
+    {
+        if ($cloud || $this->usingFailsafe || (string)$this->db->getSetting('model_mode', 'cpu_failsafe') !== 'local') {
+            return false;
+        }
+        return (bool)preg_match('/cuda|cublas|device-side assert|gpu/i', $error);
+    }
+
+    private function retryGpu(?callable $shouldStop, string $agent): void
+    {
+        $model = trim((string)$this->db->getSetting('local_model', app_config()['local_model']));
+        if (!$this->usableModel($model)) {
+            return;
+        }
+        $this->db->loop($agent, 'retry', 'GPU recovery · waiting before reload');
+        $until = microtime(true) + 4;
+        while (microtime(true) < $until) {
+            if ($shouldStop && $shouldStop()) {
+                throw new ChatStopped('Stopped.');
+            }
+            usleep(200000);
+        }
+        $this->gpuRestoreNotBefore = 0;
+        $this->gpuSkip = null;
+        if ($this->loadOntoGpu($model)) {
+            $this->leaveFailsafe();
+            $this->gpuMissNoted = false;
+            $this->recoveries[] = 'Reloaded the local model onto the GPU. Retrying there.';
+            $this->db->loop($agent, 'retry', 'GPU recovery · model reloaded');
+            return;
+        }
+        $this->db->loop($agent, 'retry', 'GPU recovery · reload not ready');
+    }
+
     private function isOom(string $text): bool
     {
         return (bool)preg_match('/out of memory|cuda|\\boom\\b|requires more system memory|model requires more/i', $text);
@@ -947,9 +984,10 @@ class LLMClient
         }
         $options = ['num_predict' => 1];
         $gpu = $this->gpuOptions($model, $this->hardware->effectiveContext('local'));
-        if ($gpu !== []) {
-            $options = array_merge($options, $gpu);
+        if ($gpu === []) {
+            return false;
         }
+        $options = array_merge($options, $gpu);
         $payload = json_encode([
             'model' => $model,
             'prompt' => 'hi',

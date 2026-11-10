@@ -148,12 +148,11 @@
           chatGeneration: '',
           chatStreamProject: 0,
           userStop: false,
-          stopModal: false,
-          stopNote: '',
           stopBusy: false,
           stopError: '',
-          heldTasks: [],
           runStopping: false,
+          heartbeatPaused: false,
+          startBusy: false,
           toolPending: false,
           streamEnded: false,
           steerText: '',
@@ -405,10 +404,7 @@
           return this.agents.some((agent) => this.agentBusy(agent) && (agent.project_id || 0) === projectId);
         },
         stopReady() {
-          return (this.agentsBusy || this.sending) && !this.stopBusy && !this.stopModal;
-        },
-        stopSettled() {
-          return !this.agentsBusy && !this.runStopping && !this.sending;
+          return (this.agentsBusy || this.sending) && !this.stopBusy;
         },
         thinkingSpinner() {
           return (this.sending || this.awaitingModel) && !this.answerStarted && !this.streamError;
@@ -637,7 +633,10 @@
         },
         async refreshTab() {
           if (!this.authed) return;
-          if (this.tab === 'chat') await this.reloadMessages();
+          if (this.tab === 'chat') {
+            this.stickToBottom = true;
+            await this.reloadMessages();
+          }
           if (this.tab === 'tasks') await this.reloadTasks();
           if (this.tab === 'workspace') await this.loadTree();
           if (this.tab === 'agents') {
@@ -1265,7 +1264,8 @@
                 generation: generation,
                 retry: !!(retryOpts && retryOpts.retry),
                 failed_id: retryOpts && retryOpts.failedId ? retryOpts.failedId : 0,
-                saved: !!(retryOpts && retryOpts.saved)
+                saved: !!(retryOpts && retryOpts.saved),
+                pause_heartbeat: !!(retryOpts && retryOpts.pauseHeartbeat)
               }),
               signal: controller.signal
             });
@@ -1353,48 +1353,37 @@
           this.api('/api/chat/stop', { method: 'POST', body: { project_id: this.projectId || 0, generation: generation }, quiet: true }).catch(function () {});
         },
         async stopAgents() {
-          if (this.stopBusy || this.stopModal) return;
+          if (this.stopBusy) return;
           this.stopBusy = true;
           this.stopError = '';
           try {
-            const data = await this.api('/api/agents/stop', {
+            await this.api('/api/agents/stop', {
               method: 'POST',
               body: { project_id: this.projectId || 0, generation: this.chatGeneration || '' }
             });
-            this.heldTasks = Array.isArray(data.held) ? data.held : [];
             this.runStopping = true;
-            this.stopNote = '';
-            this.stopModal = true;
+            if ((this.projectId || 0) > 0) this.heartbeatPaused = true;
             await this.refreshStatus(true);
+            if (this.tab !== 'chat') this.setTab('chat');
+            else await this.reloadMessages();
           } catch (error) {
             this.stopError = error.message || 'Could not stop the run.';
           } finally {
             this.stopBusy = false;
           }
         },
-        dismissStop() {
-          this.stopModal = false;
-          this.stopNote = '';
+        async startAgents() {
+          if (this.startBusy || !this.heartbeatPaused) return;
+          this.startBusy = true;
           this.stopError = '';
-        },
-        async submitStopNote() {
-          const note = this.stopNote.trim();
-          if (!note || !this.stopSettled || this.stopBusy) return;
-          const ids = (this.heldTasks || []).filter((id) => Number(id) > 0).map((id) => '#' + id);
-          let message = 'The current run was stopped. ';
-          if (ids.length) {
-            message += 'Held tasks: ' + ids.join(', ') + '. Do not start a held task unless this instruction says to resume it. Change the card, resume it, or end it.';
-          } else {
-            message += 'Do not continue the stopped run.';
+          try {
+            await this.api('/api/agents/start', { method: 'POST', body: { project_id: this.projectId || 0 } });
+            this.heartbeatPaused = false;
+          } catch (error) {
+            this.stopError = error.message || 'Could not start the heartbeat.';
+          } finally {
+            this.startBusy = false;
           }
-          message += '\n\n' + note;
-          this.stopModal = false;
-          this.stopNote = '';
-          this.stopError = '';
-          if (this.tab !== 'chat') this.setTab('chat');
-          this.messages.push({ id: 'local-' + Date.now(), role: 'user', agent_name: 'human', content: message });
-          this.scrollChat(true);
-          await this.runChat(message);
         },
         answerAction(allow) {
           const prompt = this.actionPrompt;
@@ -2332,6 +2321,7 @@
           const data = await this.api('/api/agents/status?' + params.toString(), { quiet: !!quiet });
           this.agents = data.agents;
           this.runStopping = !!data.stopping;
+          this.heartbeatPaused = !!data.heartbeat_paused;
         },
         async refreshLogs(quiet) {
           const projectId = this.projectId || 0;

@@ -106,7 +106,8 @@ header('X-Danaco: 1');
   <symbol id="i-trash" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4.5 7.5h15M9.2 7.4V5.2h5.6v2.2M7.2 7.5l.8 12h8l.8-12M10 11.2v5M14 11.2v5"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 4v10M8 10l4 4 4-4M5 19h14"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
-  <symbol id="i-alert" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 6.5v7"/><circle cx="12" cy="17.2" r="1" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path fill="#000" stroke="#000" stroke-linejoin="round" stroke-width="1" d="M12 3.2 2.2 20.8h19.6z"/><path fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" d="M12 9v5.2"/><circle cx="12" cy="16.9" r="0.95" fill="#fff" stroke="none"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.2v13.6l12-6.8z"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4.5 5.5h5.5v13H4.5z"/><circle cx="8" cy="12" r="0.8" fill="currentColor" stroke="none"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12.5 12H20M16.8 8.8 20 12l-3.2 3.2"/></symbol>
   <symbol id="i-av-orchestrator" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" d="M7 8.2 9 5.2 12 7.2 15 5.2 17 8.2"/><circle cx="12" cy="11.2" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" d="M12 13.8 10.4 19.2h3.2zM8 19.6c1.2-1.6 2.4-2.2 4-2.2s2.8.6 4 2.2"/></symbol>
   <symbol id="i-av-researcher" viewBox="0 0 24 24"><circle cx="9" cy="9" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="15.2" cy="15" r="2.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M17.3 17.1 20 19.8"/></symbol>
@@ -500,9 +501,12 @@ header('X-Danaco: 1');
           <section v-else-if="tab==='agents'" class="view">
             <div class="view-head">
               <h2>Agents</h2>
-              <button class="btn" :class="{ 'btn-stop': stopReady }" type="button" :disabled="!stopReady" @click="stopAgents"><svg v-if="stopReady" class="ico" aria-hidden="true"><use href="#i-alert"></use></svg>Stop</button>
+              <div class="view-actions">
+                <button v-if="heartbeatPaused" class="btn btn-gold btn-start" type="button" :disabled="startBusy" @click="startAgents"><svg class="ico" aria-hidden="true"><use href="#i-play"></use></svg>Start</button>
+                <button class="btn" :class="{ 'btn-stop': stopReady }" type="button" :disabled="!stopReady" @click="stopAgents"><svg v-if="stopReady" class="ico" aria-hidden="true"><use href="#i-alert"></use></svg>Stop</button>
+              </div>
             </div>
-            <p v-if="stopError && !stopModal" class="form-error">{{ stopError }}</p>
+            <p v-if="stopError" class="form-error">{{ stopError }}</p>
             <div v-if="pendingActions.length" class="setup-box">
               <h3>Pending approvals</h3>
               <p class="hint">The agent is waiting for you before continuing.</p>
@@ -1071,22 +1075,6 @@ header('X-Danaco: 1');
         <button class="btn" type="button" @click="confirmDeleteProject(false)">Keep folder</button>
         <button class="btn" type="button" @click="confirmDeleteProject(true)">Delete folder</button>
       </template>
-    </form>
-  </div>
-
-  <div v-if="stopModal" class="modal-back" @click.self="dismissStop">
-    <form class="modal" @submit.prevent="submitStopNote">
-      <h2>Stopped</h2>
-      <p class="hint">Stopped by user. Waiting for further instructions. Tell the main agent why this was stopped and what it should do instead.</p>
-      <label class="field">Instruction
-        <textarea v-model="stopNote" rows="5" maxlength="4000" required></textarea>
-      </label>
-      <p v-if="!stopSettled" class="hint">Waiting for the run to stop.</p>
-      <p v-if="stopError" class="form-error">{{ stopError }}</p>
-      <div class="modal-actions">
-        <button class="btn btn-gold" type="submit" :disabled="!stopSettled || stopBusy || !stopNote.trim()">Send</button>
-        <button class="btn" type="button" @click="dismissStop">Cancel</button>
-      </div>
     </form>
   </div>
 

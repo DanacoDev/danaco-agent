@@ -2,17 +2,18 @@
 /*
 ---
 name: sqlite_helper
-description: SQLite in database/. count returns how many rows are in one table or the whole file. drop deletes a table. ensure creates a missing table.
+description: Pass database as the filename only, such as link_database.db. Not locked to one file. count, inspect, insert, and drop use that file.
 ---
 */
 
 /*
 Usage:
+  database is the filename only, such as link_database.db. The file is in the database folder. The helper is not locked to regulations.db. Pass that filename on count, inspect, insert, query, drop, and ensure.
   Create workflow: always check the database and table first. If either already exists, do not recreate it. The schema is returned so you can compare columns.
   ensure: {"database":"link_database.sqlite","table":"links","columns":["url TEXT","title TEXT"]} or one CREATE TABLE statement in sql.
   When the table exists, read columns, missing_columns, and extra_columns. Add a column with execute and ALTER TABLE links ADD COLUMN name TYPE. Remove one with ALTER TABLE links DROP COLUMN name. Do not CREATE TABLE again.
   count: {"database":"link_database.db"} returns each table and the total. Add table to count one table.
-  inspect: read schemas, indexes, row counts, and sample rows. database may be the filename or all.
+  inspect: read schemas, indexes, row counts, and sample rows. database all lists every database file in the folder.
   query: run a read-only SELECT, WITH, or PRAGMA statement with params.
   insert: add a row with table and values.
   drop: {"database":"link_database.db","table":"links"} deletes that table. if_exists true leaves a missing table alone.
@@ -28,13 +29,20 @@ if (!is_array($args)) {
 
 $root = realpath(getcwd() ?: '.');
 $relativeDir = trim((string)($args['db_dir'] ?? 'database'));
-$database = trim((string)($args['database'] ?? 'regulations.db'));
+$database = trim((string)($args['database'] ?? ''));
 $action = strtolower(trim((string)($args['action'] ?? '')));
 if ($action === '' || $action === 'create') {
     $hasDefinition = trim((string)($args['table'] ?? '')) !== ''
         || trim((string)($args['sql'] ?? '')) !== ''
         || (isset($args['columns']) && $args['columns'] !== [] && $args['columns'] !== '');
     $action = $hasDefinition ? 'ensure' : 'init';
+}
+if ($database === '' && $action !== 'init') {
+    echo json_encode(['status' => 'error', 'action' => $action, 'message' => 'Pass database as the filename only, such as link_database.db. The helper is not locked to one file. Do not use sqlite3.']);
+    exit(1);
+}
+if ($database === '') {
+    $database = 'regulations.db';
 }
 
 if ($action === 'requirements') {
@@ -172,14 +180,27 @@ try {
         }
         $payload = ['status' => 'success', 'action' => 'init', 'directory' => $relativeDir, 'databases' => $created];
         $payload['message'] = $anyExisted
-            ? 'Existing tables were left in place and their schemas are below. Compare columns before you add or remove any.'
-            : 'Created the missing tables.';
+            ? 'Existing tables were left in place and their schemas are below. Compare columns before you add or remove any. This action only covers regulations.db and materials.db. For another file, pass database as its filename, such as link_database.db.'
+            : 'Created the missing tables in regulations.db and materials.db. For another file, pass database as its filename, such as link_database.db.';
         echo json_encode($payload);
         exit(0);
     }
 
     if ($action === 'inspect') {
-        $targets = $database === 'all' ? ['regulations.db', 'materials.db'] : [$database];
+        if ($database === 'all') {
+            $targets = [];
+            foreach (is_dir($dbDir) ? (scandir($dbDir) ?: []) : [] as $name) {
+                if (preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:db|sqlite|sqlite3)$/', $name)) {
+                    $targets[] = $name;
+                }
+            }
+            sort($targets);
+            if ($targets === []) {
+                throw new RuntimeException('No database files in ' . $relativeDir . '. Pass database as the filename, such as link_database.db.');
+            }
+        } else {
+            $targets = [$database];
+        }
         $inspected = [];
         foreach ($targets as $target) {
             if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:db|sqlite|sqlite3)$/', $target)) {
@@ -187,7 +208,7 @@ try {
             }
             $path = $dbDir . '/' . $target;
             if (!is_file($path)) {
-                throw new RuntimeException('Database not found: ' . $relativeDir . '/' . $target . '. Run the init action first.');
+                throw new RuntimeException('Database not found: ' . $relativeDir . '/' . $target . '. Pass database as that filename. ensure with table and columns creates it. init only creates regulations.db and materials.db.');
             }
             $inspectDb = new PDO('sqlite:' . $path, null, null, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -212,7 +233,7 @@ try {
     }
 
     if (!is_file($dbPath)) {
-        throw new RuntimeException('Database not found: ' . $relativeDir . '/' . $database . '. Run the init action first.');
+        throw new RuntimeException('Database not found: ' . $relativeDir . '/' . $database . '. Pass database as that filename. ensure with table and columns creates it. init only creates regulations.db and materials.db.');
     }
 
     $db = new PDO('sqlite:' . $dbPath, null, null, [
