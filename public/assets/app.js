@@ -136,6 +136,7 @@
           messages: [],
           context: { used: 0, total: 0 },
           compressing: false,
+          compressArmed: false,
           compressError: '',
           compressNote: '',
           clearingContext: false,
@@ -341,25 +342,35 @@
           const number = function (value) {
             return String(Math.round(value / 1024));
           };
-          return [
-            { key: 'cpu', label: 'CPU' },
-            { key: 'ram', label: 'RAM' },
-            { key: 'vram', label: 'VRAM' },
-            { key: 'disk', label: 'HDD' }
-          ].map(function (row) {
-            const n = Number(usage[row.key]);
+          const bar = function (label, raw, detail) {
+            const n = Number(raw);
             const ok = Number.isFinite(n);
             const value = ok ? Math.max(0, Math.min(100, n)) : 0;
-            const detail = details[row.key];
             const text = ok ? Math.round(value) + '%' : '—';
             return {
-              label: row.label,
+              label: label,
               value: value,
               text: detail && Number(detail.total_mb) > 0
                 ? number(Number(detail.used_mb)) + '/' + number(Number(detail.total_mb)) + 'GB (' + text + ')'
                 : text
             };
-          });
+          };
+          const rows = [
+            bar('CPU', usage.cpu, null),
+            bar('RAM', usage.ram, details.ram),
+            bar('VRAM', usage.vram, details.vram)
+          ];
+          const disks = Array.isArray(details.disks) ? details.disks.filter(function (disk) {
+            return disk && Number(disk.total_mb) > 0;
+          }).slice(0, 3) : [];
+          if (disks.length > 1) {
+            disks.forEach(function (disk, index) {
+              rows.push(bar('HDD' + (index + 1), (Number(disk.used_mb) / Number(disk.total_mb)) * 100, disk));
+            });
+          } else {
+            rows.push(bar('HDD', usage.disk, disks[0] || details.disk));
+          }
+          return rows;
         },
         sortedSkills() {
           const byName = function (a, b) {
@@ -406,14 +417,19 @@
           return (this.sending || this.awaitingModel) && !this.answerStarted && !this.streamError;
         },
         thinkingLabel() {
+          if (this.waitPhase === 'compressing' || this.compressing || this.compressArmed) return 'Compressing context';
           if (this.toolPending) return 'Calling a tool';
           if (!this.thinkingSpinner) return 'Working';
           if (this.waitPhase === 'scheduled') return 'Waiting (agent busy with scheduled task)';
           if (!this.slowReply) return 'Thinking';
-          let why = '';
-          if (this.waitPhase === 'compressing') why = 'compressing context';
-          else if (this.awaitingModel || (this.modelLoad && this.modelLoad.ready === false && !this.modelLoad.error)) why = 'loading model';
-          return why ? 'Taking longer than expected (' + why + ')' : 'Taking longer than expected';
+          const waiting = this.awaitingModel || (this.modelLoad && this.modelLoad.ready === false && !this.modelLoad.error);
+          return waiting ? 'Taking longer than expected (loading model)' : 'Taking longer than expected';
+        },
+        compressSpinner() {
+          if (!(this.compressing || this.compressArmed || this.waitPhase === 'compressing')) return false;
+          const detail = this.liveDetail || {};
+          const bubble = this.sending || this.awaitingModel || !!this.live || (detail.thinking && detail.thinking.length) || (detail.tools && detail.tools.length);
+          return !bubble;
         },
         showCpu() {
           const settings = this.settings || {};
@@ -888,14 +904,17 @@
           return used + ' / ' + total + ' tokens';
         },
         async compressContext() {
-          if (this.compressing) return;
+          if (this.compressing || this.compressArmed) return;
           this.compressing = true;
           this.compressError = '';
           this.compressNote = '';
+          let deferred = false;
           try {
             const data = await this.api('/api/context/compress', { method: 'POST', body: { project_id: this.projectId || 0 } });
             this.context = { used: Number(data.used) || 0, total: Number(data.total) || 0 };
             if (data.deferred) {
+              deferred = true;
+              this.compressArmed = true;
               this.compressNote = 'The current action will finish first. Compression runs after that, and the work continues.';
               return;
             }
@@ -904,6 +923,12 @@
             this.compressError = error.message;
           } finally {
             this.compressing = false;
+            if (!deferred) this.compressArmed = false;
+            if (!this.sending && !this.compressArmed && this.steerText) {
+              const next = this.steerText;
+              this.steerText = '';
+              await this.runChat(next);
+            }
           }
         },
         async clearContext() {
@@ -1131,11 +1156,18 @@
           this.messages = Array.isArray(data.messages) ? data.messages : [];
           if (this.messages.some((msg) => this.scheduledRaw(msg))) await this.reloadTasks();
           if (data.context) this.context = { used: Number(data.context.used) || 0, total: Number(data.context.total) || 0 };
+          let parked = '';
+          if (this.compressArmed && data.compressing === false && !this.sending && !this.compressing) {
+            this.compressArmed = false;
+            parked = this.steerText;
+            this.steerText = '';
+          }
           const pending = this.projectOpener;
           if (pending && pending.projectId === (this.projectId || 0) && !this.messages.length) {
             this.messages.push({ id: 'local-opener', role: 'user', agent_name: 'human', content: pending.text });
           }
           this.scrollChat();
+          if (parked) await this.runChat(parked);
         },
         async persistProjectOpener() {
           const pending = this.projectOpener;
@@ -1242,6 +1274,12 @@
           this.draft = '';
           this.attachments = [];
           this.fitComposer();
+          if (this.compressing || this.compressArmed || this.waitPhase === 'compressing') {
+            this.messages.push({ id: 'local-' + Date.now(), role: 'user', agent_name: 'human', content: message });
+            this.scrollChat(true);
+            this.steerText = message;
+            return;
+          }
           if (this.sending) {
             this.flushLive();
             this.messages.push({ id: 'local-' + Date.now(), role: 'user', agent_name: 'human', content: message });
@@ -1389,6 +1427,7 @@
             this.toolPending = false;
             this.chatAbort = null;
             this.delegation = null;
+            this.compressArmed = false;
             const next = this.steerText;
             this.steerText = '';
             if ((this.projectId || 0) !== chatProject) return;
@@ -1658,9 +1697,8 @@
           let data = {};
           try { data = JSON.parse(dataLines.join('\n')); } catch (error) { return; }
           if (event === 'phase') {
-            if (!(data.phase === 'compressing' && this.waitPhase === 'scheduled')) {
-              this.waitPhase = data.phase || '';
-            }
+            this.waitPhase = data.phase || '';
+            if (data.settled) this.compressArmed = false;
           } else if (event === 'token') {
             this.slowReply = false;
             this.waitPhase = '';
@@ -1684,6 +1722,10 @@
             if (text && (!last || last.role !== 'notice' || last.content !== text)) {
               this.messages.push({ id: 'notice-' + Date.now(), role: 'notice', content: text });
               this.scrollChat();
+            }
+            if (text === 'Older messages have been compressed') {
+              this.compressArmed = false;
+              if (this.steerText && this.chatAbort && !this.userStop) this.chatAbort.abort();
             }
           } else if (event === 'delegation') {
             this.delegation = data;
@@ -2770,9 +2812,9 @@
           this.skillCreating = true;
           this.skillEditing = true;
           this.skillForm = {
-            name: 'my-skill',
+            name: 'my_skill',
             description: 'What this skill does and when to use it.',
-            source: "---\nname: my-skill\ndescription: What this skill does and when to use it.\nversion: 0.1.0\n---\n\n# My skill\n\n## When to Use\n\n## Procedure\n\n## Pitfalls\n\n## Verification\n",
+            source: "---\nname: my_skill\ndescription: What this skill does and when to use it.\nversion: 0.1.0\n---\n\n# My skill\n\n## When to Use\n\n## Procedure\n\n## Pitfalls\n\n## Verification\n",
             script: '',
             lang: 'php',
             is_active: 1
@@ -2862,6 +2904,7 @@
             if (!document.hidden) {
               this.refreshModelLoad(true).then(() => this.maybeSendProjectOpener()).catch(function () {});
               if (this.tab === 'tasks') this.reloadTasks();
+              if (this.compressArmed && !this.sending && this.tab === 'chat') this.reloadMessages().catch(function () {});
               if (this.settings && this.settings.hitl_external_actions === '1' && (this.tab === 'chat' || this.sending)) {
                 this.refreshPendingActions().catch(function () {});
               }

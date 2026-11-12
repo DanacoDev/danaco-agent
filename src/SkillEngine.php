@@ -59,6 +59,7 @@ class SkillEngine
     public function offered(string $name): bool
     {
         $this->sync();
+        $name = $this->storedName($name);
         if ($name === 'search') {
             $name = 'web_search';
         } elseif ($name === 'create_task' || $name === 'list_tasks') {
@@ -126,6 +127,7 @@ class SkillEngine
     public function run(string $name, array $args, string $projectFolder, bool $force = false): array
     {
         $this->sync();
+        $name = $this->storedName($name);
         $skill = $this->db->skillByName($name);
         if (!$skill || (!$force && !(int)$skill['is_active'])) {
             throw new RuntimeException('Skill is not active.');
@@ -170,6 +172,7 @@ class SkillEngine
     public function testCall(array $call, string $projectFolder): string
     {
         $name = strtolower(trim((string)($call['name'] ?? $call['skill'] ?? '')));
+        $name = $this->storedName($name);
         if (!$this->validLoadedName($name)) {
             return 'Name the skill to test. name is the skill in the Skills library.';
         }
@@ -207,35 +210,69 @@ class SkillEngine
 
     public function register(array $args, string $createdBy): string
     {
-        $name = trim((string)($args['name'] ?? ''));
+        $name = $this->storedName(trim((string)($args['name'] ?? '')));
         $overwrite = in_array(strtolower(trim((string)($args['overwrite'] ?? ''))), ['1', 'true', 'yes'], true);
         $script = array_key_exists('script', $args) ? (string)$args['script'] : null;
         $lang = strtolower(trim((string)($args['lang'] ?? '')));
+        $description = (string)($args['description'] ?? '');
+        $source = (string)($args['source'] ?? '');
+        $movedProgram = ($script === null || trim($script) === '') && $this->findProgram($source) !== null;
         $before = $name !== '' ? $this->db->skillByName($name) : null;
+        $custom = $before && (string)($before['created_by'] ?? '') !== 'system' && !in_array($name, self::SYSTEM, true);
+        if ($custom) {
+            $overwrite = true;
+            if (trim($description) === '') {
+                $description = (string)$before['description'];
+            }
+            if (trim($source) === '') {
+                try {
+                    $source = $this->readSource($before);
+                } catch (Throwable $e) {
+                    $source = '';
+                }
+                if ($script !== null && trim($script) !== '') {
+                    [$source] = $this->liftProgram($source, null, '');
+                }
+            }
+            if ($script === null || trim($script) === '') {
+                $script = null;
+            }
+        }
+        $sentScript = $script !== null && trim($script) !== '';
+        if ($sentScript && $lang === '') {
+            $lang = $this->programLang($script);
+        }
         $skill = $this->saveSource(
             $name,
-            (string)($args['description'] ?? ''),
-            (string)($args['source'] ?? ''),
+            $description,
+            $source,
             true,
             $createdBy,
             $overwrite,
             $script,
             $lang
         );
-        $verb = $before ? 'Replaced' : 'Registered';
+        $verb = $before ? 'Updated' : 'Registered';
         $text = $verb . ' skill ' . $skill['name'] . ' in the Skills library. It is listed on the Skills page and can be called by name, including from a scheduled task.';
-        if ($script !== null && trim($script) !== '') {
+        $runner = $this->runnerFile($this->absoluteDir((string)$skill['script_path']));
+        if ($runner !== null) {
             $text .= ' Syntax check passed.';
+            if (!$sentScript && $movedProgram) {
+                $text .= ' The program was in source, so it was saved as the script. SKILL.md keeps only the instructions.';
+            }
         }
-        $text .= ' Call test_skill with name ' . $skill['name'] . ' and input set to the JSON that skill reads. This run cannot call the skill by its own name yet.';
+        $text .= ' Call test_skill with name ' . $skill['name'] . ' and input set to the JSON that skill reads.';
+        if (!$before) {
+            $text .= ' This run cannot call the skill by its own name yet.';
+        }
         return $text;
     }
 
     public function saveSource(string $name, string $description, string $source, bool $active = true, string $createdBy = 'user', bool $overwrite = false, ?string $script = null, string $lang = ''): array
     {
-        $name = trim($name);
-        if (!preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/', $name) || strlen($name) > 64) {
-            throw new InvalidArgumentException('Skill name must be lowercase letters, numbers, and single hyphens.');
+        $name = $this->storedName(trim($name));
+        if (!preg_match('/^[a-z0-9]+(?:[_-][a-z0-9]+)*$/', $name) || strlen($name) > 64) {
+            throw new InvalidArgumentException('Skill name must be lowercase letters, numbers, underscores, or hyphens.');
         }
         $description = trim($description);
         if ($description === '') {
@@ -247,6 +284,7 @@ class SkillEngine
         if (strlen($source) > 200000) {
             throw new InvalidArgumentException('Skill source is too large.');
         }
+        [$source, $script, $lang] = $this->liftProgram($source, $script, $lang);
         if ($script !== null && strlen($script) > 200000) {
             throw new InvalidArgumentException('Skill script is too large.');
         }
@@ -482,6 +520,23 @@ class SkillEngine
         return (bool)preg_match('/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/', $name);
     }
 
+    private function storedName(string $name): string
+    {
+        $name = strtolower(trim($name));
+        $this->sync();
+        if ($name === '' || $this->db->skillByName($name)) {
+            return $name;
+        }
+        $needle = str_replace('-', '_', $name);
+        foreach ($this->db->skills() as $skill) {
+            $known = (string)$skill['name'];
+            if (str_replace('-', '_', $known) === $needle) {
+                return $known;
+            }
+        }
+        return $name;
+    }
+
     private function allowsOs(array $map): bool
     {
         $need = $this->stringList($map['platforms'] ?? null);
@@ -549,6 +604,93 @@ class SkillEngine
         return trim($split['body']);
     }
 
+    private function liftProgram(string $source, ?string $script, string $lang): array
+    {
+        $split = $this->splitFrontmatter($source);
+        $body = $split === null ? $source : $split['body'];
+        $found = $this->findProgram($body);
+        if ($found === null) {
+            return [$source, $script, $lang];
+        }
+        if ($script !== null && trim($script) !== '') {
+            throw new InvalidArgumentException('source contains the program. Put the program only in script, with lang py or php. source is the short instructions, not the code.');
+        }
+        $prose = trim($found['prose']);
+        if ($split === null) {
+            $source = $prose === '' ? '' : $prose . "\n";
+        } else {
+            $source = $this->emitFrontmatter($split['map']) . ($prose === '' ? '' : $prose . "\n");
+        }
+        return [$source, $found['code'], $found['lang']];
+    }
+
+    private function findProgram(string $body): ?array
+    {
+        $body = preg_replace("/\r\n?/", "\n", $body) ?? $body;
+        if (preg_match('/```(?:python3?|py|php)?[^\n]*\n(.*?)```/s', $body, $match, PREG_OFFSET_CAPTURE)) {
+            $code = trim($match[1][0]);
+            if ($this->programBody($code)) {
+                $whole = $match[0][0];
+                $prose = trim(substr($body, 0, $match[0][1]) . substr($body, $match[0][1] + strlen($whole)));
+                return ['code' => $code . "\n", 'lang' => $this->programLang($code), 'prose' => $prose];
+            }
+        }
+        $lines = explode("\n", $body);
+        foreach ($lines as $i => $line) {
+            if (!$this->programStart($line)) {
+                continue;
+            }
+            $code = rtrim(implode("\n", array_slice($lines, $i)));
+            if (!$this->programBody($code)) {
+                continue;
+            }
+            return [
+                'code' => $code . "\n",
+                'lang' => $this->programLang($code),
+                'prose' => trim(implode("\n", array_slice($lines, 0, $i))),
+            ];
+        }
+        return null;
+    }
+
+    private function programStart(string $line): bool
+    {
+        $line = ltrim($line);
+        return str_starts_with($line, '#!/')
+            || str_starts_with($line, '<?php')
+            || preg_match('/^#\s*-\*- coding:/', $line) === 1
+            || preg_match('/^(?:import |from |def |class |async def |function |namespace )/', $line) === 1;
+    }
+
+    private function programBody(string $code): bool
+    {
+        $codeLines = 0;
+        foreach (explode("\n", $code) as $line) {
+            $line = ltrim($line);
+            if ($line === '' || str_starts_with($line, '#') || str_starts_with($line, '//') || str_starts_with($line, '/*') || str_starts_with($line, '*')) {
+                continue;
+            }
+            if (preg_match('/^(?:import |from |def |class |async def |if |for |while |return |print\(|<\?php|function |namespace |use |echo |\$[A-Za-z_])/', $line)) {
+                $codeLines++;
+            }
+        }
+        if ($codeLines < 4) {
+            return false;
+        }
+        return preg_match('/^<\?php\b/m', $code) === 1
+            || preg_match('/^#!/m', ltrim($code)) === 1
+            || (preg_match('/^(?:import |from )/m', $code) === 1 && preg_match('/^(?:def |class |async def )/m', $code) === 1)
+            || (preg_match('/^<\?php\b/m', $code) !== 1 && preg_match('/^function /m', $code) === 1);
+    }
+
+    private function programLang(string $code): string
+    {
+        if (preg_match('/^<\?php\b/m', $code) === 1 || preg_match('/^#!.*\bphp\b/m', $code) === 1 || preg_match('/^function /m', $code) === 1) {
+            return 'php';
+        }
+        return 'py';
+    }
+
     private function composeMarkdown(string $name, string $description, string $source, ?array $existing): string
     {
         $previous = [];
@@ -572,7 +714,7 @@ class SkillEngine
             $body = $split['body'];
         }
         if (trim($body) === '') {
-            throw new InvalidArgumentException('SKILL.md must have instructions after the frontmatter.');
+            $body = $description . "\n";
         }
         $map['name'] = $name;
         $map['description'] = $description;
@@ -1105,8 +1247,15 @@ class SkillEngine
 
     private function assertEditable(string $name): void
     {
-        if (in_array($name, self::SYSTEM, true)) {
-            throw new RuntimeException('Skill ' . $name . ' is built in and cannot be replaced. It can only be turned on or off.');
+        $needle = str_replace('-', '_', $name);
+        $reserved = array_merge(self::SYSTEM, [
+            'search', 'create_task', 'list_tasks', 'wiki_search', 'wiki_read', 'wiki_write', 'wiki_reindex',
+            'list_files', 'read_file', 'write_file', 'delete_file', 'move_file',
+        ]);
+        foreach ($reserved as $known) {
+            if (str_replace('-', '_', $known) === $needle) {
+                throw new RuntimeException('Skill ' . $known . ' is built in and cannot be replaced. It can only be turned on or off.');
+            }
         }
         $existing = $this->db->skillByName($name);
         if ($existing && (string)($existing['created_by'] ?? '') === 'system') {
@@ -1118,7 +1267,7 @@ class SkillEngine
     {
         $name = (string)($skill['name'] ?? '');
         $description = $this->oneLine((string)($skill['description'] ?? ''));
-        return 'Skill ' . $name . ' already exists: ' . $description . ' It was not changed. Pass overwrite true to replace it. A built-in skill cannot be replaced.';
+        return 'Skill ' . $name . ' already exists: ' . $description . ' It was not changed. Call write_skill with that name to update a custom skill. A built-in skill cannot be changed.';
     }
 
     private function oneLine(string $description): string

@@ -17,6 +17,10 @@ class Orchestrator
         if ($projectId > 0 && !$project) {
             throw new RuntimeException('Project not found.');
         }
+        $this->db->waitContextCompress($projectId, $shouldStop);
+        if ($shouldStop && $shouldStop()) {
+            throw new ChatStopped('Stopped.');
+        }
         $waitingOnTask = $this->db->taskRunning();
         if ($waitingOnTask) {
             $emit(['type' => 'phase', 'phase' => 'scheduled']);
@@ -113,17 +117,19 @@ class Orchestrator
                 'content' => $this->stamped($row),
             ];
         }
+        $history = ContextWindow::stripLookups($history);
         $total = $this->contextTotal();
         $system = $this->systemPrompt($project);
-        $manual = $activate;
+        $pendingKey = 'context_compress_pending_' . max(0, $projectId);
+        $pending = $this->db->getSetting($pendingKey, '0') === '1';
+        $manual = $activate || ($writeSummary && $pending);
         $last = $history[count($history) - 1] ?? null;
         if (is_array($last) && $this->toolWasCutOff((string)($last['content'] ?? ''))) {
             $manual = false;
         }
         $folder = is_array($project) ? (string)$project['folder_name'] : null;
         $summary = $this->memory->readContextSummary($folder);
-        $untilKey = 'context_summary_until_' . max(0, $projectId);
-        $until = (int)$this->db->getSetting($untilKey, '0');
+        $until = (int)$this->db->getSetting('context_summary_until_' . max(0, $projectId), '0');
         $live = [];
         foreach ($history as $message) {
             if (trim($summary) === '' || (int)($message['id'] ?? 0) > $until) {
@@ -152,7 +158,6 @@ class Orchestrator
                 'updated' => false,
             ];
         }
-        $updated = false;
         if ($split['compressed'] && $writeSummary) {
             $fresh = [];
             foreach ($split['dropped'] as $message) {
@@ -164,19 +169,18 @@ class Orchestrator
                 if ($emit) {
                     $emit(['type' => 'context', 'used' => $split['used'], 'total' => $split['total']]);
                 }
-                $summary = $this->summarize($summary, $fresh, $shouldStop, $emit);
-                if ($summary !== '') {
-                    $this->memory->writeContextSummary($folder, $summary);
-                    $lastId = (int)$fresh[count($fresh) - 1]['id'];
-                    $this->db->setSetting($untilKey, (string)$lastId);
-                    $updated = true;
+                $packed = $this->finishCompression($projectId, $folder, $system, $fresh, $split['kept'], $summary, $total, $shouldStop, $emit);
+                if ($packed !== null) {
+                    $this->db->setSetting($pendingKey, '0');
+                    return $packed;
                 }
             }
         }
-        if ($split['compressed'] && $writeSummary && trim($summary) !== '') {
-            $packed = ContextWindow::apply($system, $summary, $split['kept'], $total, $split['used']);
-            $packed['updated'] = $updated;
-            return $packed;
+        if ($writeSummary && $pending) {
+            $this->db->setSetting($pendingKey, '0');
+            if ($emit) {
+                $emit(['type' => 'phase', 'phase' => '', 'settled' => true]);
+            }
         }
         if (trim($summary) !== '') {
             $packed = ContextWindow::apply($system, $summary, $live, $total, $split['used']);
@@ -211,22 +215,38 @@ class Orchestrator
         }
         $system = (string)($messages[0]['content'] ?? '');
         $rest = array_slice($messages, 1);
+        $plain = 0;
+        foreach ($rest as $message) {
+            $plain += strlen((string)($message['content'] ?? ''));
+        }
+        $rest = ContextWindow::stripLookups($rest);
+        $stripped = 0;
+        foreach ($rest as $message) {
+            $stripped += strlen((string)($message['content'] ?? ''));
+        }
+        $messages = array_merge([['role' => 'system', 'content' => $system]], $rest);
         $total = $this->contextTotal();
         $split = ContextWindow::split($system, $rest, $total, $pending);
         if (!$split['compressed']) {
             if ($pending) {
                 $this->db->setSetting($pendingKey, '0');
+                $emit(['type' => 'phase', 'phase' => '', 'settled' => true]);
+            }
+            if ($stripped < $plain) {
+                $emit(['type' => 'context', 'used' => ContextWindow::measure($system, $rest), 'total' => $total]);
             }
             return $messages;
         }
         $folder = is_array($project) ? (string)$project['folder_name'] : null;
-        $summary = $this->summarize($this->memory->readContextSummary($folder), $split['dropped'], $shouldStop, $emit);
-        if (trim($summary) === '') {
+        $packed = $this->finishCompression($projectId, $folder, $system, $split['dropped'], $split['kept'], $this->memory->readContextSummary($folder), $total, $shouldStop, $emit);
+        if ($packed === null) {
+            if ($pending) {
+                $this->db->setSetting($pendingKey, '0');
+                $emit(['type' => 'phase', 'phase' => '', 'settled' => true]);
+            }
             return $messages;
         }
-        $this->memory->writeContextSummary($folder, $summary);
         $this->db->setSetting($pendingKey, '0');
-        $packed = ContextWindow::apply($system, $summary, $split['kept'], $total, $split['used']);
         $emit(['type' => 'notice', 'text' => ContextWindow::NOTICE]);
         $emit(['type' => 'context', 'used' => $packed['used'], 'total' => $packed['total']]);
         $after = count($packed['messages']);
@@ -240,7 +260,8 @@ class Orchestrator
     {
         $before = count($messages);
         $system = (string)($messages[0]['content'] ?? '');
-        $rest = array_slice($messages, 1);
+        $rest = ContextWindow::stripLookups(array_slice($messages, 1));
+        $messages = array_merge([['role' => 'system', 'content' => $system]], $rest);
         $total = $this->contextTotal();
         $split = ContextWindow::fit($system, $rest, $total);
         if (empty($split['compressed'])) {
@@ -248,13 +269,12 @@ class Orchestrator
             return $messages;
         }
         $folder = is_array($project) ? (string)$project['folder_name'] : null;
-        $summary = $this->summarize($this->memory->readContextSummary($folder), $split['dropped'], $shouldStop, $emit);
-        if (trim($summary) === '') {
+        $projectId = is_array($project) ? (int)($project['id'] ?? 0) : 0;
+        $packed = $this->finishCompression($projectId, $folder, $system, $split['dropped'], $split['kept'], $this->memory->readContextSummary($folder), $total, $shouldStop, $emit);
+        if ($packed === null) {
             $emit(['type' => 'context', 'used' => $split['used'], 'total' => $split['total']]);
             return $messages;
         }
-        $this->memory->writeContextSummary($folder, $summary);
-        $packed = ContextWindow::apply($system, $summary, $split['kept'], $total, $split['used']);
         $emit(['type' => 'notice', 'text' => ContextWindow::NOTICE]);
         $emit(['type' => 'context', 'used' => $packed['used'], 'total' => $packed['total']]);
         $after = count($packed['messages']);
@@ -295,37 +315,96 @@ class Orchestrator
         return true;
     }
 
+    private function finishCompression(
+        int $projectId,
+        ?string $folder,
+        string $system,
+        array $dropped,
+        array $kept,
+        string $summary,
+        int $total,
+        ?callable $shouldStop,
+        ?callable $emit
+    ): ?array {
+        $kept = ContextWindow::stripLookups($kept);
+        $dropped = ContextWindow::stripLookups($dropped);
+        $this->db->holdContextCompress($projectId);
+        try {
+            $summary = $this->summarize($summary, $dropped, $shouldStop, $emit);
+            if (trim($summary) === '' && $dropped !== [] && ContextWindow::summarySource($dropped) === []) {
+                $summary = 'Earlier listings were omitted.';
+            }
+            if (trim($summary) === '') {
+                return null;
+            }
+            $packed = ContextWindow::apply($system, $summary, $kept, $total, 0);
+            $limit = (int)floor(max(512, $total) * 0.60);
+            $start = ContextWindow::tailStart($kept);
+            if ((int)$packed['used'] > $limit && $start > 0 && $start < count($kept)) {
+                $extra = array_slice($kept, 0, $start);
+                $kept = array_slice($kept, $start);
+                $folded = $this->summarize($summary, $extra, $shouldStop, null);
+                if (trim($folded) !== '') {
+                    $summary = $folded;
+                }
+                $dropped = array_merge($dropped, $extra);
+                $packed = ContextWindow::apply($system, $summary, $kept, $total, 0);
+            }
+            $this->memory->writeContextSummary($folder, $summary);
+            $lastId = 0;
+            foreach ($dropped as $message) {
+                $id = (int)($message['id'] ?? 0);
+                if ($id > $lastId) {
+                    $lastId = $id;
+                }
+            }
+            if ($lastId > 0) {
+                $this->db->setSetting('context_summary_until_' . max(0, $projectId), (string)$lastId);
+            }
+            $packed['updated'] = true;
+            $packed['summary'] = $summary;
+            if ($emit) {
+                $emit(['type' => 'notice', 'text' => ContextWindow::NOTICE]);
+                $emit(['type' => 'context', 'used' => $packed['used'], 'total' => $packed['total']]);
+            }
+            return $packed;
+        } finally {
+            $this->db->releaseContextCompress($projectId);
+        }
+    }
+
     private function summarize(string $previous, array $fresh, ?callable $shouldStop, ?callable $emit = null): string
     {
         if ($emit) {
             $emit(['type' => 'phase', 'phase' => 'compressing']);
         }
-        $window = $this->contextTotal();
-        if ($window <= 8192) {
-            return $this->summarizeForWindow($previous, $fresh, $shouldStop, $window);
+        $fresh = ContextWindow::summarySource($fresh);
+        if (ContextWindow::isShort($fresh)) {
+            return $this->mechanicalSummary($previous, $fresh);
         }
-        $chunks = [];
-        $buffer = '';
+        return $this->summarizeForWindow($previous, $fresh, $shouldStop, $this->contextTotal());
+    }
+
+    private function mechanicalSummary(string $previous, array $fresh): string
+    {
+        $lines = [];
         foreach ($fresh as $message) {
+            $text = trim((string)($message['content'] ?? ''));
+            if ($text === '') {
+                continue;
+            }
             $who = ($message['role'] ?? '') === 'assistant' ? 'Agent' : 'User';
-            $line = $who . ': ' . clip_text(trim((string)($message['content'] ?? '')), 1500) . "\n\n";
-            if ($buffer !== '' && ContextWindow::tokens($buffer . $line) > 1200) {
-                $chunks[] = $buffer;
-                $buffer = '';
-            }
-            $buffer .= $line;
+            $lines[] = $who . ': ' . $text;
         }
-        if ($buffer !== '') {
-            $chunks[] = $buffer;
+        $body = trim(implode("\n\n", $lines));
+        $previous = trim($previous);
+        if ($body === '') {
+            return $previous;
         }
-        $summary = trim($previous);
-        foreach ($chunks as $chunk) {
-            if ($shouldStop && $shouldStop()) {
-                throw new ChatStopped('Stopped.');
-            }
-            $summary = $this->summarizeChunk($summary, $chunk, $shouldStop);
+        if ($previous === '') {
+            return clip_text($body, 6000);
         }
-        return trim($summary);
+        return clip_text($previous . "\n\n" . $body, 6000);
     }
 
     private function summarizeForWindow(string $previous, array $fresh, ?callable $shouldStop, int $window): string

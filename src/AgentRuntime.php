@@ -631,7 +631,7 @@ class AgentRuntime
                 if ($cutOff) {
                     $prompt = 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.';
                 } elseif ($emptyFences) {
-                    $prompt = 'That reply was an empty code fence, so nothing was called or saved. ```markdown is not a tool call. Do not output ``` at all. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill is write_skill with name, description, and source. source is the SKILL.md instructions. A project file is filesystem with action write. A wiki file is wiki_memory with action write. Send the full content.';
+                    $prompt = 'That reply was an empty code fence, so nothing was called or saved. ```markdown is not a tool call. Do not output ``` at all. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill is write_skill with name, description, and source. The same name updates a custom skill. source is the SKILL.md instructions. A project file is filesystem with action write. A wiki file is wiki_memory with action write. Send the full content.';
                 } elseif ($proseTools) {
                     $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Do not open a markdown code fence. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
                     if (preg_match('/\bdelegat/i', $turnText)) {
@@ -639,7 +639,7 @@ class AgentRuntime
                     } elseif (($xmlTool = $this->fakeXmlToolName($turnText)) !== null) {
                         $prompt = 'XML tags are not a tool call. Do not write <' . $xmlTool . '>. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"' . $xmlTool . '","args":{}}' . "\n" . '<<end>>' . "\n" . 'Fill args with the real JSON for that tool, then stop.';
                     } elseif ($this->claimedSkillWithoutCall($turnText)) {
-                        $prompt = 'That did not register a skill. Do not write it into the project and do not open a code fence. Call write_skill now with name, description, and source, then stop.';
+                        $prompt = 'That did not register a skill. Do not write it into the project and do not open a code fence. Call write_skill now with name, description, and source, then stop. The same name updates a custom skill.';
                     } elseif ($this->claimedFileWriteWithoutCall($turnText)) {
                         $prompt = $this->claimedWriteRetryPrompt($turnText);
                     }
@@ -687,7 +687,8 @@ class AgentRuntime
                 if ($shouldStop && $shouldStop()) {
                     throw new ChatStopped('Stopped.');
                 }
-                $toolName = (string)($tool['name'] ?? '');
+                $toolName = $this->knownTool((string)($tool['name'] ?? ''), $toolHandlers);
+                $tool['name'] = $toolName;
                 $toolArgs = is_array($tool['args'] ?? null) ? $tool['args'] : [];
                 $writePath = $this->repeatWritePath($toolName, $toolArgs);
                 if ($writePath !== '' && $writePath === $writeStreakPath && $writeStreak >= 2) {
@@ -797,6 +798,21 @@ class AgentRuntime
         }
         $action = strtolower(trim((string)($args['action'] ?? '')));
         return ($tool === 'filesystem' && $action === 'write') || ($tool === 'wiki_memory' && $action === 'write');
+    }
+
+    private function knownTool(string $name, array $handlers): string
+    {
+        $name = strtolower(trim($name));
+        if ($name === '' || isset($handlers[$name])) {
+            return $name;
+        }
+        $needle = str_replace('-', '_', $name);
+        foreach (array_keys($handlers) as $known) {
+            if (str_replace('-', '_', (string)$known) === $needle) {
+                return (string)$known;
+            }
+        }
+        return $name;
     }
 
     private function repeatWritePath(string $tool, array $args): string

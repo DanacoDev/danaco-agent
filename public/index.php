@@ -202,7 +202,7 @@ header('X-Danaco: 1');
                   <span class="context-tip">
                     <strong>Context limit</strong>
                     <span>{{ contextTip() }}</span>
-                    <a href="#" @click.prevent="compressContext">{{ compressing ? 'Compressing context' : 'Activate context compression' }}</a>
+                    <a href="#" @click.prevent="compressContext">{{ compressing || compressArmed ? 'Compressing context' : 'Activate context compression' }}</a>
                     <a href="#" @click.prevent="clearContext">Clear chat and start fresh</a>
                     <a :href="'/api/context/download?project_id=' + (projectId || 0)">Download full context</a>
                     <span v-if="compressError" class="form-error">{{ compressError }}</span>
@@ -227,6 +227,10 @@ header('X-Danaco: 1');
                   </template>
                 </article>
                 </template>
+                <div v-if="compressSpinner" class="thinking-row">
+                  <span class="spinner" aria-hidden="true"></span>
+                  <span>Compressing context</span>
+                </div>
                 <article v-if="sending || awaitingModel || live || liveDetail.thinking.length || liveDetail.tools.length" class="bubble assistant">
                   <div class="who">{{ agentLabel(liveAgent, showCpu) }}</div>
                   <activity-trace :thinking="liveDetail.thinking" :tools="liveDetail.tools" :open="traceOpen" :cpu="showCpu" prefix="live-" @toggle="toggleTrace"></activity-trace>
@@ -612,7 +616,7 @@ header('X-Danaco: 1');
               <div class="panel skill-pane">
                 <form v-if="skillCreating || skillEditing" class="skill-editor" @submit.prevent="saveSkillForm">
                   <h3 class="file-title">{{ skillForm.id ? 'Edit skill' : 'New skill' }}</h3>
-                  <label class="field">Name<input v-model="skillForm.name" required pattern="[a-z0-9]+(-[a-z0-9]+)*"></label>
+                  <label class="field">Name<input v-model="skillForm.name" required pattern="[a-z0-9]+([_-][a-z0-9]+)*"></label>
                   <label class="field">Description<input v-model="skillForm.description" required></label>
                   <label class="field">Instructions<textarea v-model="skillForm.source" class="file-editor" rows="16"></textarea></label>
                   <label class="field">Helper script

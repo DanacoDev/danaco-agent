@@ -352,6 +352,45 @@ SQL);
         $stmt->execute([$key, $value]);
     }
 
+    public function holdContextCompress(int $projectId): void
+    {
+        $this->setSetting($this->contextCompressLockKey($projectId), (string)time());
+    }
+
+    public function releaseContextCompress(int $projectId): void
+    {
+        $this->setSetting($this->contextCompressLockKey($projectId), '0');
+    }
+
+    public function contextCompressLocked(int $projectId): bool
+    {
+        $raw = (string)$this->getSetting($this->contextCompressLockKey($projectId), '0');
+        if ($raw === '' || $raw === '0') {
+            return false;
+        }
+        $at = (int)$raw;
+        return $at > 0 && (time() - $at) <= 900;
+    }
+
+    public function waitContextCompress(int $projectId, ?callable $shouldStop = null): void
+    {
+        $deadline = time() + 600;
+        while ($this->contextCompressLocked($projectId)) {
+            if ($shouldStop && $shouldStop()) {
+                return;
+            }
+            if (time() >= $deadline) {
+                return;
+            }
+            usleep(300000);
+        }
+    }
+
+    private function contextCompressLockKey(int $projectId): string
+    {
+        return 'context_compress_lock_' . max(0, $projectId);
+    }
+
     public function allSettings(): array
     {
         $rows = $this->pdo->query('SELECT key, value FROM settings')->fetchAll();

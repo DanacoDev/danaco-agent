@@ -34,16 +34,18 @@ class HardwareMonitor
             $ram = round(max(0, min(100, (($total - $available) / $total) * 100)), 1);
         }
         $vram = $this->vramUsage();
-        $disk = $this->diskUsage();
+        $disks = $this->diskUsages();
+        $disk = $disks[0] ?? null;
         return [
             'cpu' => $this->cpuPercent(),
             'ram' => $ram,
             'vram' => $vram === null ? null : round(max(0, min(100, ($vram['used_mb'] / $vram['total_mb']) * 100)), 1),
-            'disk' => $disk === null ? null : round(max(0, min(100, ($disk['used_mb'] / $disk['total_mb']) * 100)), 1),
+            'disk' => ($disk === null || (int)$disk['total_mb'] <= 0) ? null : round(max(0, min(100, ($disk['used_mb'] / $disk['total_mb']) * 100)), 1),
             'details' => [
                 'ram' => $total > 0 ? ['used_mb' => max(0, $total - $available), 'total_mb' => $total] : null,
                 'vram' => $vram,
                 'disk' => $disk,
+                'disks' => $disks,
             ],
         ];
     }
@@ -547,25 +549,136 @@ class HardwareMonitor
         return null;
     }
 
-    private function diskUsage(): ?array
+    private function diskUsages(): array
     {
-        $result = Process::run(['df', '-P', dirname(__DIR__)], null, null, 5);
+        $result = Process::run(['df', '-P'], null, null, 5);
+        if ($result['code'] !== 0) {
+            return [];
+        }
+        return $this->drivesFromDf($result['stdout'], $this->filesystemOf(dirname(__DIR__)));
+    }
+
+    private function filesystemOf(string $path): ?string
+    {
+        $result = Process::run(['df', '-P', $path], null, null, 5);
         if ($result['code'] !== 0) {
             return null;
         }
         $lines = preg_split("/\r\n|\n|\r/", trim($result['stdout'])) ?: [];
-        $line = (string)end($lines);
-        if (!preg_match('/\s(\d+)\s+(\d+)\s+\d+\s+\d+%\s+\S+$/', $line, $match)) {
+        $line = trim((string)end($lines));
+        if (!preg_match('/^(\S+)\s+\d+\s+\d+\s+\d+\s+\d+%\s+/', $line, $match)) {
             return null;
         }
-        $totalBlocks = (int)$match[1];
-        if ($totalBlocks <= 0) {
+        return $match[1];
+    }
+
+    private function drivesFromDf(string $stdout, ?string $homeFilesystem): array
+    {
+        $rows = [];
+        foreach (preg_split("/\r\n|\n|\r/", trim($stdout)) ?: [] as $line) {
+            $line = trim((string)$line);
+            if (!preg_match('/^(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)%\s+(.*)$/', $line, $match)) {
+                continue;
+            }
+            $filesystem = $match[1];
+            $mount = rtrim($match[6]);
+            $totalBlocks = (int)$match[2];
+            if ($totalBlocks <= 0 || !$this->isDiskFilesystem($filesystem, $mount)) {
+                continue;
+            }
+            $rows[] = [
+                'fs' => $filesystem,
+                'mount' => $mount,
+                'total_blocks' => $totalBlocks,
+                'used_blocks' => (int)$match[3],
+                'group' => $this->diskGroup($filesystem),
+            ];
+        }
+        $homeGroup = $homeFilesystem !== null ? $this->diskGroup($homeFilesystem) : '';
+        $groups = [];
+        foreach ($rows as $row) {
+            $groups[$row['group']][] = $row;
+        }
+        $drives = [];
+        foreach ($groups as $group => $members) {
+            $pick = $this->pickDriveVolume($members);
+            if ($pick === null) {
+                continue;
+            }
+            $pick['home'] = $group === $homeGroup;
+            $drives[] = $pick;
+        }
+        usort($drives, function (array $a, array $b): int {
+            if ($a['home'] !== $b['home']) {
+                return $a['home'] ? -1 : 1;
+            }
+            if ($a['total_blocks'] !== $b['total_blocks']) {
+                return $b['total_blocks'] <=> $a['total_blocks'];
+            }
+            return strcmp($a['mount'], $b['mount']);
+        });
+        $out = [];
+        foreach (array_slice($drives, 0, 3) as $row) {
+            $out[] = [
+                'used_mb' => (int)round(($row['used_blocks'] * 512) / 1048576),
+                'total_mb' => (int)round(($row['total_blocks'] * 512) / 1048576),
+            ];
+        }
+        return $out;
+    }
+
+    private function isDiskFilesystem(string $filesystem, string $mount): bool
+    {
+        if ($mount === '' || $mount === '/dev' || str_starts_with($mount, '/dev/')) {
+            return false;
+        }
+        if (str_starts_with($mount, '/System/Volumes/') && $mount !== '/System/Volumes/Data') {
+            return false;
+        }
+        if (!str_starts_with($filesystem, '/dev/')) {
+            return false;
+        }
+        return !preg_match('#^/dev/(loop|ram|fd|sr)\d*#', $filesystem);
+    }
+
+    private function diskGroup(string $filesystem): string
+    {
+        if (preg_match('#^/dev/disk(\d+)#', $filesystem, $match)) {
+            return 'disk' . $match[1];
+        }
+        if (preg_match('#^/dev/(nvme\d+n\d+)#', $filesystem, $match)) {
+            return $match[1];
+        }
+        if (preg_match('#^/dev/(mmcblk\d+)#', $filesystem, $match)) {
+            return $match[1];
+        }
+        if (preg_match('#^/dev/((?:sd|hd|vd|xvd)[a-z]+)#', $filesystem, $match)) {
+            return $match[1];
+        }
+        return $filesystem;
+    }
+
+    private function pickDriveVolume(array $members): ?array
+    {
+        $minBlocks = (int)((2 * 1024 * 1024 * 1024) / 512);
+        $kept = [];
+        foreach ($members as $row) {
+            if ($row['total_blocks'] >= $minBlocks) {
+                $kept[] = $row;
+            }
+        }
+        if ($kept === []) {
             return null;
         }
-        return [
-            'used_mb' => (int)round(((int)$match[2] * 512) / 1048576),
-            'total_mb' => (int)round(($totalBlocks * 512) / 1048576),
-        ];
+        foreach ($kept as $row) {
+            if ($row['mount'] === '/System/Volumes/Data') {
+                return $row;
+            }
+        }
+        usort($kept, function (array $a, array $b): int {
+            return $b['used_blocks'] <=> $a['used_blocks'];
+        });
+        return $kept[0];
     }
 
     private function gbFromMb(int $mb): string

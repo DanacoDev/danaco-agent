@@ -452,9 +452,11 @@ class Api
             $this->json(['error' => 'Project not found.'], 404);
             return;
         }
+        $key = max(0, $projectId);
         $this->json([
             'messages' => $this->presentMessages($projectId, $this->db->messages($projectId)),
             'context' => app_services()['orchestrator']->contextUsage($projectId),
+            'compressing' => $this->db->contextCompressLocked($projectId) || $this->db->getSetting('context_compress_pending_' . $key, '0') === '1',
         ]);
     }
 
@@ -505,6 +507,7 @@ class Api
         $this->db->setSetting('context_summary_until_' . $key, '0');
         $this->db->setSetting('context_compress_' . $key, '0');
         $this->db->setSetting('context_compress_pending_' . $key, '0');
+        $this->db->releaseContextCompress($projectId);
         if ($projectId > 0) {
             $this->db->setSetting('reread_desc_' . $key, '1');
         }
@@ -541,6 +544,7 @@ class Api
             $this->json(['error' => 'The run is still stopping.'], 409);
             return;
         }
+        $this->db->waitContextCompress($projectId, null);
         if ($projectId > 0) {
             if (!empty($body['pause_heartbeat'])) {
                 $this->db->pauseHeartbeat($projectId);
