@@ -508,4 +508,89 @@ class Projects
             @rename($tmp, $source);
         }
     }
+
+    public static function promptContext(string $folder, bool $files = false): string
+    {
+        if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $folder)) {
+            return '';
+        }
+        $root = self::root($folder);
+        $notes = self::readProjectNotes($root);
+        if ($notes === '') {
+            $block = 'Notes for project ' . $folder . ', from wiki/NOTES.md:' . "\n" . 'No notes yet.';
+        } else {
+            $block = 'Notes for project ' . $folder . ', from wiki/NOTES.md:' . "\n" . $notes;
+        }
+        if (!$files) {
+            return $block;
+        }
+        $found = [];
+        $cut = false;
+        self::collectProjectFiles($root, $root, 0, $found, $cut);
+        sort($found, SORT_NATURAL | SORT_FLAG_CASE);
+        if ($found === []) {
+            $fileBlock = 'No files in project ' . $folder . ' yet, outside the wiki.';
+        } else {
+            $fileBlock = 'Files already in project ' . $folder . ', outside the wiki. Use this list to narrow the task before you delegate. Do not create a file that is already here, and do not overwrite one unless the task is to change that file:' . "\n- " . implode("\n- ", $found);
+            if ($cut) {
+                $fileBlock .= "\n- …more files exist. Call list_files before creating one.";
+            }
+        }
+        return $block . "\n\n" . $fileBlock;
+    }
+
+    private static function readProjectNotes(string $root): string
+    {
+        $path = $root . '/wiki/' . self::notesFile();
+        if (!is_file($path) || is_link($path)) {
+            return '';
+        }
+        $raw = @file_get_contents($path, false, null, 0, 6500);
+        if ($raw === false) {
+            return '';
+        }
+        $notes = trim($raw);
+        if ($notes === '') {
+            return '';
+        }
+        $text = clip_text($notes, 6000);
+        $size = filesize($path);
+        if ($size !== false && $size > 6500 && !str_ends_with($text, '…[truncated]')) {
+            $text .= "\n…[truncated]";
+        }
+        return $text;
+    }
+
+    private static function collectProjectFiles(string $dir, string $root, int $depth, array &$files, bool &$cut): void
+    {
+        if ($cut || $depth > 6 || !is_dir($dir) || is_link($dir)) {
+            return;
+        }
+        $names = scandir($dir) ?: [];
+        sort($names, SORT_NATURAL | SORT_FLAG_CASE);
+        foreach ($names as $name) {
+            if ($name === '.' || $name === '..' || str_starts_with($name, '.')) {
+                continue;
+            }
+            if (count($files) >= 80) {
+                $cut = true;
+                return;
+            }
+            $full = $dir . '/' . $name;
+            if (is_link($full)) {
+                continue;
+            }
+            $relative = ltrim(substr($full, strlen($root)), '/');
+            if ($relative === 'wiki' || str_starts_with($relative, 'wiki/')) {
+                continue;
+            }
+            if (is_dir($full)) {
+                self::collectProjectFiles($full, $root, $depth + 1, $files, $cut);
+                continue;
+            }
+            if (is_file($full)) {
+                $files[] = $relative;
+            }
+        }
+    }
 }

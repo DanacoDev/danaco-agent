@@ -177,6 +177,10 @@ TXT;
                 $identity .= "\n" . $rename;
             }
         }
+        $brief = Projects::promptContext($projectFolder);
+        if ($brief !== '') {
+            $identity .= "\n\n" . $brief;
+        }
         $rules = <<<TXT
 {$identity}
 Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card. You cannot create, move, edit, or delete a kanban card, and you do not call task_breakdown. When the instruction names a card, add a short result to it with the kanban tool before you finish. The main agent checks that work and then moves or updates the card. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.

@@ -486,6 +486,10 @@ When you create or cite a file, put its path alone on a line, such as wiki/NOTES
 When this chat settles conclusions, decisions, or facts worth keeping, read the matching wiki file and then write or edit it with wiki_write before you finish. Keep doing this as the chat continues and those conclusions change. Do not wait for the end of a long task, and do not leave the record only in the chat.
 Tag every delegation exactly as project: {$folder}
 TXT;
+            $brief = Projects::promptContext((string)$folder, true);
+            if ($brief !== '') {
+                $context .= "\n" . $brief . "\n";
+            }
             $index = $this->projectIndex();
             if ($index !== '') {
                 $context .= "\n" . $index;
