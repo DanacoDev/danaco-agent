@@ -317,7 +317,7 @@ class Kanban
 
     private function agent(string $agent): string
     {
-        return in_array($agent, ['orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer', 'human'], true) ? $agent : 'orchestrator';
+        return in_array($agent, ['orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer', 'consultant', 'human'], true) ? $agent : 'orchestrator';
     }
 
     private function recurrence(string $value): string

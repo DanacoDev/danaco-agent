@@ -13,7 +13,7 @@ class Sight
         }
         if (!preg_match('/\.(?:png|jpe?g|gif|webp)$/i', $path)) {
             if (preg_match('/\.svg$/i', $path)) {
-                return 'An svg is text. Use read_file.';
+                return 'An svg is text. Use filesystem with action read.';
             }
             return 'read_image looks at a png, jpg, gif, or webp.';
         }

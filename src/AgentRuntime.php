@@ -631,7 +631,7 @@ class AgentRuntime
                 if ($cutOff) {
                     $prompt = 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.';
                 } elseif ($emptyFences) {
-                    $prompt = 'That reply was an empty code fence, so nothing was called or saved. ```markdown is not a tool call. Do not output ``` at all. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill is write_skill with name, description, and source. source is the SKILL.md instructions. A project file is write_file or wiki_write with the full content.';
+                    $prompt = 'That reply was an empty code fence, so nothing was called or saved. ```markdown is not a tool call. Do not output ``` at all. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill is write_skill with name, description, and source. source is the SKILL.md instructions. A project file is filesystem with action write. A wiki file is wiki_memory with action write. Send the full content.';
                 } elseif ($proseTools) {
                     $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Do not open a markdown code fence. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
                     if (preg_match('/\bdelegat/i', $turnText)) {
@@ -682,7 +682,6 @@ class AgentRuntime
             }
             $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($raw !== '' ? $raw : $turnText)];
             $delegated = false;
-            $consulted = false;
             $savedThisTurn = '';
             foreach ($tail['tools'] as $tool) {
                 if ($shouldStop && $shouldStop()) {
@@ -708,17 +707,6 @@ class AgentRuntime
                     }
                     $delegated = true;
                 }
-                if ($agent === 'orchestrator' && ($tool['name'] ?? '') === 'consult') {
-                    if ($consulted) {
-                        $skipped = 'The Consultant was already called this turn. It costs money, so wait for that result before asking again.';
-                        $this->db->loop($agent, 'tool', 'consult skipped · already called', $projectId);
-                        $emit(['type' => 'tool_call', 'agent' => $agent, 'name' => 'consult', 'args' => $tool['args']]);
-                        $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => 'consult', 'text' => $skipped]);
-                        $messages[] = ['role' => 'user', 'content' => "TOOL RESULT consult:\n{$skipped}"];
-                        continue;
-                    }
-                    $consulted = true;
-                }
                 $this->db->setAgentStatus($agent, 'executing_tool');
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'executing_tool']);
                 $emit(['type' => 'tool_call', 'agent' => $agent, 'name' => $tool['name'], 'args' => $tool['args']]);
@@ -734,7 +722,7 @@ class AgentRuntime
                     $result = agent_error($agent, $e->getMessage());
                     $this->db->logAgent($agent, $projectId, 'error', $result);
                 }
-                if ($toolName === 'write_file' || $toolName === 'wiki_write') {
+                if ($this->recordsWrite($toolName, $toolArgs)) {
                     if ($writePath !== '' && $this->writeSucceeded($result)) {
                         if ($writePath === $writeStreakPath) {
                             $writeStreak++;
@@ -802,8 +790,23 @@ class AgentRuntime
         return true;
     }
 
+    private function recordsWrite(string $tool, array $args): bool
+    {
+        if ($tool === 'write_file' || $tool === 'wiki_write') {
+            return true;
+        }
+        $action = strtolower(trim((string)($args['action'] ?? '')));
+        return ($tool === 'filesystem' && $action === 'write') || ($tool === 'wiki_memory' && $action === 'write');
+    }
+
     private function repeatWritePath(string $tool, array $args): string
     {
+        $action = strtolower(trim((string)($args['action'] ?? '')));
+        if ($tool === 'filesystem' && $action === 'write') {
+            $tool = 'write_file';
+        } elseif ($tool === 'wiki_memory' && $action === 'write') {
+            $tool = 'wiki_write';
+        }
         if ($tool !== 'write_file' && $tool !== 'wiki_write') {
             return '';
         }
@@ -903,8 +906,8 @@ class AgentRuntime
     private function toolNames(): array
     {
         return [
-            'delegate', 'consult', 'list_files', 'read_file', 'read_image', 'read_pdf', 'screenshot', 'write_file', 'delete_file', 'move_file',
-            'create_pdf', 'run_command', 'kanban', 'wiki_search', 'wiki_read', 'wiki_write',
+            'delegate', 'filesystem', 'list_files', 'read_file', 'read_image', 'read_pdf', 'screenshot', 'write_file', 'delete_file', 'move_file',
+            'create_pdf', 'run_command', 'kanban', 'wiki_memory', 'wiki_search', 'wiki_read', 'wiki_write',
             'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'write_skill', 'test_skill', 'remember', 'send_email',
             'web_search', 'fetch_url', 'browse_url', 'ftp', 'mcp', 'download_large', 'task_breakdown',
             'research_pipeline', 'sqlite_helper', 'code_verifier', 'humanizer', 'write_article', 'make_graphic', 'save_note',
@@ -1001,7 +1004,7 @@ class AgentRuntime
         if (preg_match('/wiki\/[\w.-]+\.md/i', $text, $match)) {
             $path = $match[0];
         }
-        $prompt = 'You described a wiki or file write but did not call a tool. Showing markdown in chat is not a write. Emit the <<tool>> JSON block for wiki_write (or write_file) now with the full content. Do not say it is done until the tool result returns.';
+        $prompt = 'You described a wiki or file write but did not call a tool. Showing markdown in chat is not a write. Emit the <<tool>> JSON block for wiki_memory with action write, or filesystem with action write, now with the full content. Do not say it is done until the tool result returns.';
         if ($path !== '') {
             $prompt .= ' Use path ' . $path . ' when that is the file you meant.';
         }
@@ -1015,7 +1018,7 @@ class AgentRuntime
         }
         $agent = strtolower(trim($match[1]));
         $instruction = trim((string)preg_replace('/\n+\s*\*{0,2}\s*note\s*\*{0,2}\s*:.*\z/is', '', $match[2]));
-        if ($instruction === '' || !in_array($agent, ['researcher', 'writer', 'coder', 'analyst', 'marketer'], true)) {
+        if ($instruction === '' || !in_array($agent, ['researcher', 'writer', 'coder', 'analyst', 'marketer', 'consultant'], true)) {
             return null;
         }
         $args = ['agent' => $agent, 'instruction' => $instruction];

@@ -533,7 +533,7 @@ class Projects
         } else {
             $fileBlock = 'Files already in project ' . $folder . ', outside the wiki. Use this list to narrow the task before you delegate. Do not create a file that is already here, and do not overwrite one unless the task is to change that file:' . "\n- " . implode("\n- ", $found);
             if ($cut) {
-                $fileBlock .= "\n- …more files exist. Call list_files before creating one.";
+                $fileBlock .= "\n- …more files exist. Call filesystem with action list before creating one.";
             }
         }
         return $block . "\n\n" . $fileBlock;

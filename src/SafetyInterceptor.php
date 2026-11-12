@@ -93,18 +93,18 @@ class SafetyInterceptor
         return $meta;
     }
 
-    public function moveFile(string $projectFolder, string $from, string $to): array
+    public function moveFile(string $projectFolder, string $from, string $to, bool $copy = false): array
     {
         if ($this->machinePath($from) || $this->machinePath($to)) {
             if (!$this->machinePath($from) || !$this->machinePath($to)) {
-                throw new RuntimeException('Move both paths on the computer, or both inside the project.');
+                throw new RuntimeException(($copy ? 'Copy' : 'Move') . ' both paths on the computer, or both inside the project.');
             }
-            return $this->moveMachine($from, $to);
+            return $this->moveMachine($from, $to, $copy);
         }
         $from = $this->projectPath($projectFolder, $from);
         $to = $this->projectPath($projectFolder, $to);
         if ($from === $to || (is_dir($this->projectRoot($projectFolder) . '/' . $from) && str_starts_with($to, $from . '/'))) {
-            throw new RuntimeException('Cannot move a folder into itself.');
+            throw new RuntimeException($copy ? 'Cannot copy that onto itself.' : 'Cannot move a folder into itself.');
         }
         $this->rejectProjectSkill($to);
         if ($this->isMarkdown($to)) {
@@ -123,7 +123,9 @@ class SafetyInterceptor
         if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
             throw new RuntimeException('Could not create directory.');
         }
-        if (!@rename($source, $dest)) {
+        if ($copy) {
+            $this->copyPath($source, $dest);
+        } elseif (!@rename($source, $dest)) {
             throw new RuntimeException('Could not move that file.');
         }
         if ($this->isMarkdown($from) || $this->isMarkdown($to) || is_dir($dest)) {
@@ -1135,12 +1137,12 @@ class SafetyInterceptor
         return $meta;
     }
 
-    private function moveMachine(string $from, string $to): array
+    private function moveMachine(string $from, string $to, bool $copy = false): array
     {
         $source = $this->resolveMachine($from, false);
         $dest = $this->resolveMachine($to, true);
         if ($source === $dest || (is_dir($source) && str_starts_with($dest, $source . '/'))) {
-            throw new RuntimeException('Cannot move a folder into itself.');
+            throw new RuntimeException($copy ? 'Cannot copy that onto itself.' : 'Cannot move a folder into itself.');
         }
         if (file_exists($dest)) {
             throw new RuntimeException('Something already exists at that path.');
@@ -1149,10 +1151,37 @@ class SafetyInterceptor
         if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
             throw new RuntimeException('Could not create directory.');
         }
-        if (!@rename($source, $dest)) {
+        if ($copy) {
+            $this->copyPath($source, $dest);
+        } elseif (!@rename($source, $dest)) {
             throw new RuntimeException('Could not move that file.');
         }
         return ['from' => $source, 'to' => $dest];
+    }
+
+    private function copyPath(string $source, string $dest): void
+    {
+        if (is_link($source)) {
+            throw new RuntimeException('Could not copy that file.');
+        }
+        if (is_file($source)) {
+            if (!@copy($source, $dest)) {
+                throw new RuntimeException('Could not copy that file.');
+            }
+            return;
+        }
+        if (!is_dir($source)) {
+            throw new RuntimeException('File not found.');
+        }
+        if (!mkdir($dest, 0775, true) && !is_dir($dest)) {
+            throw new RuntimeException('Could not copy that folder.');
+        }
+        foreach (scandir($source) ?: [] as $name) {
+            if ($name === '.' || $name === '..' || is_link($source . '/' . $name)) {
+                continue;
+            }
+            $this->copyPath($source . '/' . $name, $dest . '/' . $name);
+        }
     }
 
     private function listMachine(string $path): array

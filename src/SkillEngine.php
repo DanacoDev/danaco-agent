@@ -3,18 +3,16 @@
 class SkillEngine
 {
     public const BUILTIN = [
-        'list_files', 'read_file', 'read_image', 'read_pdf', 'screenshot', 'create_pdf',
-        'write_file', 'delete_file', 'move_file', 'wiki_search', 'wiki_read', 'wiki_write',
-        'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'kanban', 'delegate',
-        'consult', 'web_search', 'fetch_url', 'browse_url', 'run_command', 'send_email',
+        'filesystem', 'read_image', 'read_pdf', 'screenshot', 'create_pdf',
+        'wiki_memory', 'list_vault', 'read_vault', 'restore_file', 'kanban', 'delegate',
+        'web_search', 'fetch_url', 'browse_url', 'run_command', 'send_email',
         'ftp', 'mcp', 'remember', 'write_skill', 'test_skill',
     ];
 
     public const SYSTEM = [
-        'list_files', 'read_file', 'read_image', 'read_pdf', 'screenshot', 'create_pdf',
-        'write_file', 'delete_file', 'move_file', 'wiki_search', 'wiki_read', 'wiki_write',
-        'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'kanban', 'delegate',
-        'consult', 'web_search', 'fetch_url', 'browse_url', 'run_command', 'send_email',
+        'filesystem', 'read_image', 'read_pdf', 'screenshot', 'create_pdf',
+        'wiki_memory', 'list_vault', 'read_vault', 'restore_file', 'kanban', 'delegate',
+        'web_search', 'fetch_url', 'browse_url', 'run_command', 'send_email',
         'ftp', 'mcp', 'remember', 'write_skill', 'test_skill', 'sqlite_helper', 'save_note',
         'code_verifier', 'research_pipeline', 'task_breakdown', 'download_large',
         'write_article', 'humanizer', 'make_graphic',
@@ -65,6 +63,10 @@ class SkillEngine
             $name = 'web_search';
         } elseif ($name === 'create_task' || $name === 'list_tasks') {
             $name = 'kanban';
+        } elseif (in_array($name, ['wiki_search', 'wiki_read', 'wiki_write', 'wiki_reindex'], true)) {
+            $name = 'wiki_memory';
+        } elseif (in_array($name, ['list_files', 'read_file', 'write_file', 'delete_file', 'move_file'], true)) {
+            $name = 'filesystem';
         }
         $skill = $this->db->skillByName($name);
         if (!$skill) {

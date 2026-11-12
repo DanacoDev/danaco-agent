@@ -483,7 +483,7 @@ Assigned project folder: {$folder}
 Assigned project name: {$project['name']}
 {$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file in that folder, such as wiki/research.md, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card.
 When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat.
-When this chat settles conclusions, decisions, or facts worth keeping, read the matching wiki file and then write or edit it with wiki_write before you finish. Keep doing this as the chat continues and those conclusions change. Do not wait for the end of a long task, and do not leave the record only in the chat.
+When this chat settles conclusions, decisions, or facts worth keeping, read the matching wiki file and then write or edit it with wiki_memory action write before you finish. Keep doing this as the chat continues and those conclusions change. Do not wait for the end of a long task, and do not leave the record only in the chat.
 Tag every delegation exactly as project: {$folder}
 TXT;
             $brief = Projects::promptContext((string)$folder, true);
@@ -498,7 +498,7 @@ TXT;
         $now = app_local_stamp();
         $state = $this->db->consultantState();
         if ($state['active']) {
-            $consultNote = "The Consultant is on. Use consult only as a last resort. Each call costs the user money.\n";
+            $consultNote = "The Consultant is on. Delegate to it with agent consultant only as a last resort. Each call costs the user money.\n";
         } elseif (($state['reason'] ?? '') === 'no_key') {
             $consultNote = "The Consultant exists, but you cannot call it until an API key is saved. It is a paid external model for a hard multi-step problem the team should not handle alone, and it can use the same project file tools. If that would help, tell the user that adding a key on the Setup page, under External LLM provider, and using that API for the Consultant, gives the agent superpowers on hard work. Do not describe the Consultant as missing.\n";
         } else {
@@ -523,32 +523,29 @@ Each message from the user starts with the local time it was sent, in brackets. 
 
 {$consultNote}When you need a tool, emit exactly this and stop so the system can run it. Put nothing after <<end>> in the same turn:
 <<tool>>
-{"name":"list_files","args":{}}
+{"name":"filesystem","args":{"action":"list"}}
 <<end>>
 Other correct examples:
 <<tool>>
-{"name":"wiki_read","args":{}}
+{"name":"wiki_memory","args":{"action":"read"}}
 <<end>>
 <<tool>>
 {"name":"kanban","args":{"action":"list"}}
 <<end>>
 Never invent another call format. These do nothing:
-: list_files
+: filesystem
 : wiki/NOTES.md
-list_files
+filesystem
 <task_breakdown>...</task_breakdown>
 <delegate><agent>writer</agent></delegate>
 Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> block runs it.
 Do not print a tool call in the reply. Draft XML such as <delegate> is thinking, not something the user should read.
-Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_write or write_file first, then answer.
+Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_memory with action write first, then answer. A project file is written by a subagent with filesystem action write.
 
 {$pdfNote}These are the skills at your disposal. Read each for further instructions
 TXT;
         $projectId = $project ? (int)$project['id'] : 0;
-        $omit = ['write_file', 'delete_file', 'move_file', 'create_pdf', 'run_command'];
-        if (!$state['active']) {
-            $omit[] = 'consult';
-        }
+        $omit = ['create_pdf', 'run_command'];
         if ($projectId <= 0 || !$this->db->emailAccounts($projectId)) {
             $omit[] = 'send_email';
         }
@@ -585,7 +582,7 @@ TXT;
         if ($project !== null) {
             if ($this->db->getSetting('reread_desc_' . (int)$project['id'], '0') === '1') {
                 $desc = 'wiki/' . Projects::descFile((string)$project['folder_name']);
-                $tail .= "\n\nThe chat was just cleared. Before you answer or do other work, read {$desc} so you know what this project is. Use wiki_read with no name.\n";
+                $tail .= "\n\nThe chat was just cleared. Before you answer or do other work, read {$desc} so you know what this project is. Use wiki_memory with action read and no name.\n";
             }
         }
         return $tail;
@@ -703,14 +700,92 @@ TXT;
         $formerName = is_array($project) ? trim((string)($project['former_name'] ?? '')) : '';
         $shownProject = $projectName !== '' ? $projectName : $folder;
         $createdTaskIds = [];
+        $files = function (array $args) use ($folder, $projectId): string {
+            $action = strtolower(trim((string)($args['action'] ?? '')));
+            if (in_array($action, ['write', 'delete', 'move', 'copy'], true)) {
+                return 'Only a subagent changes files. Delegate it. The main agent uses filesystem with action list or read.';
+            }
+            if ($action !== 'list' && $action !== 'read') {
+                return 'filesystem needs action list or read here. A subagent uses write, delete, move, or copy.';
+            }
+            $path = (string)($args['path'] ?? '');
+            if ($action === 'list' && $folder === '' && trim(str_replace('\\', '/', $path)) === '') {
+                $path = 'uploads';
+            }
+            $useFolder = $this->uploadsFolder($folder, $path);
+            if ($action === 'list') {
+                if ($this->generalUploadsMissing($useFolder)) {
+                    return '[]';
+                }
+                $blocked = $this->needsProject($useFolder, $path, 'Open a project before listing its files.');
+                if ($blocked !== null) {
+                    return $blocked;
+                }
+                $tree = (new SafetyInterceptor(app_config()['data_dir']))->listFiles($useFolder, $path);
+                return json_encode($tree, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '[]';
+            }
+            if ($this->generalUploadsMissing($useFolder)) {
+                return 'File not found.';
+            }
+            $blocked = $this->needsProject($useFolder, $path, 'Open a project before reading its files.');
+            if ($blocked !== null) {
+                return $blocked;
+            }
+            $this->clearDescReread($projectId, $useFolder, $path);
+            return (new SafetyInterceptor(app_config()['data_dir']))->readFile($useFolder, $path);
+        };
         $tools = [
             'delegate' => function (array $args) use ($folder, $projectName, $formerName, $shownProject, $emit, $projectId, $shouldStop, $scheduled, &$createdTaskIds): string {
+                $agent = strtolower(trim((string)($args['agent'] ?? '')));
+                $instruction = trim((string)($args['instruction'] ?? ''));
+                if ($agent === 'consultant') {
+                    if (!$this->db->consultantActive()) {
+                        $reason = (string)($this->db->consultantState()['reason'] ?? '');
+                        if ($reason === 'no_key') {
+                            $this->db->loop('orchestrator', 'process', 'Delegate rejected · consultant has no key');
+                            return 'The Consultant has no API key. Tell the user to add one on the Setup page, under External LLM provider, and use that API for the Consultant.';
+                        }
+                        $this->db->loop('orchestrator', 'process', 'Delegate rejected · consultant turned off');
+                        return 'The Consultant is turned off. Tell the user they can turn it on from the Agents page. It costs tokens while it is on.';
+                    }
+                    if ($instruction === '') {
+                        $this->db->loop('orchestrator', 'process', 'Delegate rejected · no instruction');
+                        return 'The Consultant needs an assignment.';
+                    }
+                    if ($folder !== '') {
+                        $tagged = trim((string)($args['project'] ?? $folder));
+                        if (!$this->acceptsProjectTag($tagged, $folder, $projectName, $formerName, $projectId)) {
+                            $this->db->loop('orchestrator', 'process', 'Delegate rejected · project tag');
+                            return 'Delegation rejected. The project tag must be project: ' . $folder;
+                        }
+                    }
+                    $note = '';
+                    if ($folder !== '') {
+                        try {
+                            $note = $this->startDelegatedTask($projectId, $agent, $instruction, $args, $createdTaskIds);
+                        } catch (Throwable $e) {
+                            $note = '';
+                        }
+                    }
+                    $runInstruction = $instruction;
+                    if (preg_match('/Task #(\d+)/', $note, $card)) {
+                        $runInstruction .= "\n\nThis is card #" . $card[1] . ". When you finish, add a short result to that card with the kanban tool. Do not move or edit the card.";
+                    }
+                    $emit(['type' => 'delegation', 'agent' => 'consultant', 'project' => $shownProject !== '' ? $shownProject : 'general', 'text' => $instruction]);
+                    try {
+                        return $this->subagents->consult($folder, $runInstruction, $emit, $projectId, $shouldStop, $scheduled) . $note;
+                    } catch (ChatStopped $e) {
+                        throw $e;
+                    } catch (Throwable $e) {
+                        $notice = agent_error('consultant', $e->getMessage());
+                        $emit(['type' => 'token', 'agent' => $agent, 'text' => $notice]);
+                        return $notice . $note;
+                    }
+                }
                 if ($folder === '') {
                     $this->db->loop('orchestrator', 'process', 'Delegate rejected · no project');
                     return 'General chat has no project. Tell the user to create a project manually from the menu before delegating.';
                 }
-                $agent = strtolower(trim((string)($args['agent'] ?? '')));
-                $instruction = trim((string)($args['instruction'] ?? ''));
                 $tagged = trim((string)($args['project'] ?? $folder));
                 if (!$this->acceptsProjectTag($tagged, $folder, $projectName, $formerName, $projectId)) {
                     $this->db->loop('orchestrator', 'process', 'Delegate rejected · project tag');
@@ -780,32 +855,6 @@ TXT;
                     $this->db->loopPop();
                 }
             },
-            'consult' => function (array $args) use ($folder, $shownProject, $emit, $projectId, $shouldStop, $scheduled): string {
-                if (!$this->db->consultantActive()) {
-                    $reason = (string)($this->db->consultantState()['reason'] ?? '');
-                    if ($reason === 'no_key') {
-                        $this->db->loop('orchestrator', 'process', 'Consult rejected · no key');
-                        return 'The Consultant has no API key. Tell the user to add one on the Setup page, under External LLM provider, and use that API for the Consultant.';
-                    }
-                    $this->db->loop('orchestrator', 'process', 'Consult rejected · turned off');
-                    return 'The Consultant is turned off. Tell the user they can turn it on from the Agents page. It costs tokens while it is on.';
-                }
-                $instruction = trim((string)($args['instruction'] ?? ''));
-                if ($instruction === '') {
-                    $this->db->loop('orchestrator', 'process', 'Consult rejected · no instruction');
-                    return 'The Consultant needs an assignment.';
-                }
-                $emit(['type' => 'delegation', 'agent' => 'consultant', 'project' => $shownProject !== '' ? $shownProject : 'general', 'text' => $instruction]);
-                try {
-                    return $this->subagents->consult($folder, $instruction, $emit, $projectId, $shouldStop, $scheduled);
-                } catch (ChatStopped $e) {
-                    throw $e;
-                } catch (Throwable $e) {
-                    $notice = agent_error('consultant', $e->getMessage());
-                    $emit(['type' => 'token', 'agent' => 'consultant', 'text' => $notice]);
-                    return $notice;
-                }
-            },
             'kanban' => function (array $args) use ($projectId, &$createdTaskIds): string {
                 return $this->kanban($projectId, $args, $createdTaskIds);
             },
@@ -816,34 +865,27 @@ TXT;
             'list_tasks' => function () use ($projectId): string {
                 return $this->kanban($projectId, ['action' => 'list']);
             },
-            'list_files' => function (array $args) use ($folder): string {
-                $path = (string)($args['path'] ?? '');
-                if ($folder === '' && trim(str_replace('\\', '/', $path)) === '') {
-                    $path = 'uploads';
-                }
-                $folder = $this->uploadsFolder($folder, $path);
-                if ($this->generalUploadsMissing($folder)) {
-                    return '[]';
-                }
-                $blocked = $this->needsProject($folder, $path, 'Open a project before listing its files.');
-                if ($blocked !== null) {
-                    return $blocked;
-                }
-                $tree = (new SafetyInterceptor(app_config()['data_dir']))->listFiles($folder, $path);
-                return json_encode($tree, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '[]';
+            'filesystem' => $files,
+            'list_files' => function (array $args) use ($files): string {
+                $args['action'] = 'list';
+                return $files($args);
             },
-            'read_file' => function (array $args) use ($folder, $projectId): string {
-                $path = (string)($args['path'] ?? '');
-                $folder = $this->uploadsFolder($folder, $path);
-                if ($this->generalUploadsMissing($folder)) {
-                    return 'File not found.';
-                }
-                $blocked = $this->needsProject($folder, $path, 'Open a project before reading its files.');
-                if ($blocked !== null) {
-                    return $blocked;
-                }
-                $this->clearDescReread($projectId, $folder, $path);
-                return (new SafetyInterceptor(app_config()['data_dir']))->readFile($folder, $path);
+            'read_file' => function (array $args) use ($files): string {
+                $args['action'] = 'read';
+                return $files($args);
+            },
+            'write_file' => function (array $args) use ($files): string {
+                $args['action'] = 'write';
+                return $files($args);
+            },
+            'delete_file' => function (array $args) use ($files): string {
+                $args['action'] = 'delete';
+                return $files($args);
+            },
+            'move_file' => function (array $args) use ($files): string {
+                $copy = $args['copy'] ?? false;
+                $args['action'] = ($copy === true || $copy === 1 || in_array(strtolower(trim((string)$copy)), ['1', 'true', 'yes'], true)) ? 'copy' : 'move';
+                return $files($args);
             },
             'read_pdf' => function (array $args) use ($folder, $shouldStop): string {
                 $path = (string)($args['path'] ?? '');
@@ -883,6 +925,54 @@ TXT;
             },
             'create_project' => function (array $args): string {
                 return 'You cannot create a project. Tell the user to create it manually from the menu.';
+            },
+            'wiki_memory' => function (array $args) use ($folder, $projectId): string {
+                $action = strtolower(trim((string)($args['action'] ?? '')));
+                if ($action === 'search') {
+                    return $this->memory->search((string)($args['query'] ?? ''), $folder !== '' ? $folder : null);
+                }
+                if ($action === 'read') {
+                    if ($folder === '') {
+                        return 'General chat has no project wiki.';
+                    }
+                    try {
+                        $relative = Projects::wikiRelative($folder, (string)($args['name'] ?? ''));
+                    } catch (InvalidArgumentException $e) {
+                        return $e->getMessage();
+                    }
+                    $this->clearDescReread($projectId, $folder, $relative);
+                    try {
+                        return (new SafetyInterceptor(app_config()['data_dir']))->readFile($folder, $relative, 100000);
+                    } catch (Throwable $e) {
+                        return 'That wiki file does not exist yet.';
+                    }
+                }
+                if ($action === 'write') {
+                    if ($folder === '') {
+                        return 'General chat has no project wiki. Open a project before writing project notes.';
+                    }
+                    try {
+                        $relative = Projects::wikiRelativeFromArgs($folder, $args);
+                    } catch (InvalidArgumentException $e) {
+                        return $e->getMessage();
+                    }
+                    $content = (string)($args['content'] ?? '');
+                    $safety = new SafetyInterceptor(app_config()['data_dir']);
+                    if (!empty($args['append'])) {
+                        try {
+                            $existing = $safety->readFile($folder, $relative, 100000);
+                        } catch (Throwable $e) {
+                            $existing = '';
+                        }
+                        $content = rtrim($existing) . "\n\n" . $content;
+                    }
+                    $written = $safety->writeFile($folder, $relative, $content);
+                    return 'Updated ' . $written['path'];
+                }
+                if ($action === 'reindex') {
+                    return $this->memory->update();
+                }
+                return 'wiki_memory needs action search, read, write, or reindex.';
             },
             'wiki_search' => function (array $args) use ($folder): string {
                 return $this->memory->search((string)($args['query'] ?? ''), $folder !== '' ? $folder : null);

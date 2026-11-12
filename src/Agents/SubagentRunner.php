@@ -88,7 +88,7 @@ class SubagentRunner
 
     public function teamBrief(int $projectId): string
     {
-        $names = ['list_files', 'read_file', 'read_image', 'read_pdf', 'screenshot', 'create_pdf', 'write_file', 'delete_file', 'move_file', 'wiki_search', 'wiki_write', 'list_vault', 'read_vault', 'restore_file'];
+        $names = ['filesystem', 'read_image', 'read_pdf', 'screenshot', 'create_pdf', 'wiki_memory', 'list_vault', 'read_vault', 'restore_file'];
         $own = [];
         $research = [];
         $teamCaps = [];
@@ -131,13 +131,13 @@ Those skills cover any file in the project, including the wiki. {$scope} A new o
 - coder: write and debug software, run code_verifier on each changed file, and use download_large for a download over 100 MB. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
 - marketer: campaigns, press copy, brand, and visual direction. An icon or infographic runs make_graphic.
-The Consultant always exists. When it is available it can use the same project file skills. It has no write_skill or test_skill. It is paid and only for a hard multi-step problem.
+- consultant: a subagent for a hard multi-step problem. Delegate with agent consultant. It uses an external paid model and the same project file skills. It has no write_skill or test_skill. Delegate only when the note says the Consultant is on.
 TXT;
     }
 
     private function systemPrompt(string $agent, string $projectFolder, int $projectId): string
     {
-        $omit = ['delegate', 'consult', 'wiki_read', 'wiki_reindex', 'task_breakdown'];
+        $omit = ['delegate', 'task_breakdown'];
         if ($agent !== 'coder') {
             $omit[] = 'write_skill';
             $omit[] = 'test_skill';
@@ -182,25 +182,25 @@ Never create or replace a skill unless the instruction from the main agent expli
 
 When you need a tool, emit exactly this and stop so the system can run it. Put nothing after <<end>> in the same turn:
 <<tool>>
-{"name":"list_files","args":{}}
+{"name":"filesystem","args":{"action":"list"}}
 <<end>>
 Other correct examples:
 <<tool>>
-{"name":"read_file","args":{"path":"wiki/NOTES.md"}}
+{"name":"filesystem","args":{"action":"read","path":"wiki/NOTES.md"}}
 <<end>>
 <<tool>>
-{"name":"write_file","args":{"path":"wiki/NOTES.md","content":"..."}}
+{"name":"filesystem","args":{"action":"write","path":"wiki/NOTES.md","content":"..."}}
 <<end>>
 Never invent another call format. These do nothing:
-: list_files
-: delete_file
+: filesystem
+: delete
 : wiki/NOTES.md
-list_files
+filesystem
 <task_breakdown>...</task_breakdown>
 <delegate><agent>writer</agent></delegate>
 Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> block runs it.
 Do not print a tool call in the reply. Draft XML such as <delegate> is thinking, not something the user should read.
-Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_write or write_file first, then answer.
+Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_memory with action write, or filesystem with action write, first, then answer.
 
 These are the skills at your disposal. Read each for further instructions
 TXT;
@@ -286,59 +286,42 @@ TXT;
 
     private function tools(string $agent, string $projectFolder, int $projectId, callable $emit, ?callable $shouldStop = null): array
     {
-        $tools = [
-            'read_file' => function (array $args) use ($projectFolder): string {
+        $files = function (array $args) use ($projectFolder): string {
+            $action = strtolower(trim((string)($args['action'] ?? '')));
+            if ($action === 'list') {
+                $tree = $this->safety->listFiles($projectFolder, (string)($args['path'] ?? ''));
+                return json_encode($tree, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '[]';
+            }
+            if ($action === 'read') {
                 return $this->safety->readFile($projectFolder, (string)($args['path'] ?? ''));
-            },
-            'read_pdf' => function (array $args) use ($projectFolder, $shouldStop): string {
-                return PdfFile::readProject($this->safety, $projectFolder, (string)($args['path'] ?? ''), (string)($args['question'] ?? ''), $shouldStop);
-            },
-            'read_image' => function (array $args) use ($projectFolder, $shouldStop): string {
-                return Sight::look($this->safety, $projectFolder, (string)($args['path'] ?? ''), (string)($args['question'] ?? ''), $shouldStop);
-            },
-            'screenshot' => function (array $args) use ($projectFolder, $shouldStop): string {
-                return Sight::shot($this->safety, $projectFolder, $args, $shouldStop);
-            },
-            'create_pdf' => function (array $args) use ($projectFolder): string {
-                return PdfFile::writeProject($this->safety, $projectFolder, (string)($args['path'] ?? ''), (string)($args['text'] ?? ''));
-            },
-            'write_file' => function (array $args) use ($projectFolder): string {
+            }
+            if ($action === 'write') {
                 $path = (string)($args['path'] ?? '');
                 $content = (string)($args['content'] ?? '');
                 $written = $this->safety->writeFile($projectFolder, $path, $content);
                 return 'Wrote ' . $written['path'] . ($written['backed_up'] ? ' (previous version backed up).' : '.');
-            },
-            'delete_file' => function (array $args) use ($projectFolder): string {
+            }
+            if ($action === 'delete') {
                 $meta = $this->safety->deleteFile($projectFolder, (string)($args['path'] ?? ''));
                 $kind = !empty($meta['is_dir']) ? 'folder ' : '';
                 $where = str_starts_with((string)$meta['relative_path'], '/') ? 'the trash.' : 'the trash above the project.';
                 return 'Moved ' . $kind . $meta['relative_path'] . ' to ' . $where;
-            },
-            'move_file' => function (array $args) use ($projectFolder): string {
-                $moved = $this->safety->moveFile($projectFolder, (string)($args['from'] ?? ''), (string)($args['to'] ?? ''));
-                return 'Moved ' . $moved['from'] . ' to ' . $moved['to'] . '.';
-            },
-            'list_files' => function (array $args) use ($projectFolder): string {
-                $tree = $this->safety->listFiles($projectFolder, (string)($args['path'] ?? ''));
-                return json_encode($tree, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '[]';
-            },
-            'list_vault' => function (): string {
-                return $this->safety->vaultListing();
-            },
-            'read_vault' => function (array $args): string {
-                return $this->safety->readVault((string)($args['kind'] ?? ''), (string)($args['stored_as'] ?? ''));
-            },
-            'restore_file' => function (array $args): string {
-                $result = $this->safety->restore((string)($args['kind'] ?? ''), (string)($args['stored_as'] ?? ''));
-                return 'Restored ' . $result['restored'] . ' into ' . $result['project_folder'] . '.';
-            },
-            'wiki_search' => function (array $args) use ($projectFolder): string {
+            }
+            if ($action === 'move' || $action === 'copy') {
+                $moved = $this->safety->moveFile($projectFolder, (string)($args['from'] ?? ''), (string)($args['to'] ?? ''), $action === 'copy');
+                return ($action === 'copy' ? 'Copied ' : 'Moved ') . $moved['from'] . ' to ' . $moved['to'] . '.';
+            }
+            return 'filesystem needs action list, read, write, delete, move, or copy.';
+        };
+        $wiki = function (array $args) use ($projectFolder): string {
+            $action = strtolower(trim((string)($args['action'] ?? '')));
+            if ($action === 'search') {
                 return $this->memory->search((string)($args['query'] ?? ''), $projectFolder);
-            },
-            'kanban' => function (array $args) use ($projectId): string {
-                return $this->kanbanResult($projectId, $args);
-            },
-            'wiki_write' => function (array $args) use ($projectFolder): string {
+            }
+            if ($action === 'read' || $action === 'reindex') {
+                return 'Only the main agent can ' . $action . ' the wiki. A subagent uses filesystem to read a file, and wiki_memory with action search or write.';
+            }
+            if ($action === 'write') {
                 try {
                     $relative = Projects::wikiRelativeFromArgs($projectFolder, $args);
                 } catch (InvalidArgumentException $e) {
@@ -355,6 +338,65 @@ TXT;
                 }
                 $written = $this->safety->writeFile($projectFolder, $relative, $content);
                 return 'Updated ' . $written['path'];
+            }
+            return 'wiki_memory needs action search or write here. The main agent also uses read and reindex.';
+        };
+        $tools = [
+            'filesystem' => $files,
+            'list_files' => function (array $args) use ($files): string {
+                $args['action'] = 'list';
+                return $files($args);
+            },
+            'read_file' => function (array $args) use ($files): string {
+                $args['action'] = 'read';
+                return $files($args);
+            },
+            'write_file' => function (array $args) use ($files): string {
+                $args['action'] = 'write';
+                return $files($args);
+            },
+            'delete_file' => function (array $args) use ($files): string {
+                $args['action'] = 'delete';
+                return $files($args);
+            },
+            'move_file' => function (array $args) use ($files): string {
+                $copy = $args['copy'] ?? false;
+                $args['action'] = ($copy === true || $copy === 1 || in_array(strtolower(trim((string)$copy)), ['1', 'true', 'yes'], true)) ? 'copy' : 'move';
+                return $files($args);
+            },
+            'read_pdf' => function (array $args) use ($projectFolder, $shouldStop): string {
+                return PdfFile::readProject($this->safety, $projectFolder, (string)($args['path'] ?? ''), (string)($args['question'] ?? ''), $shouldStop);
+            },
+            'read_image' => function (array $args) use ($projectFolder, $shouldStop): string {
+                return Sight::look($this->safety, $projectFolder, (string)($args['path'] ?? ''), (string)($args['question'] ?? ''), $shouldStop);
+            },
+            'screenshot' => function (array $args) use ($projectFolder, $shouldStop): string {
+                return Sight::shot($this->safety, $projectFolder, $args, $shouldStop);
+            },
+            'create_pdf' => function (array $args) use ($projectFolder): string {
+                return PdfFile::writeProject($this->safety, $projectFolder, (string)($args['path'] ?? ''), (string)($args['text'] ?? ''));
+            },
+            'list_vault' => function (): string {
+                return $this->safety->vaultListing();
+            },
+            'read_vault' => function (array $args): string {
+                return $this->safety->readVault((string)($args['kind'] ?? ''), (string)($args['stored_as'] ?? ''));
+            },
+            'restore_file' => function (array $args): string {
+                $result = $this->safety->restore((string)($args['kind'] ?? ''), (string)($args['stored_as'] ?? ''));
+                return 'Restored ' . $result['restored'] . ' into ' . $result['project_folder'] . '.';
+            },
+            'wiki_memory' => $wiki,
+            'wiki_search' => function (array $args) use ($wiki): string {
+                $args['action'] = 'search';
+                return $wiki($args);
+            },
+            'kanban' => function (array $args) use ($projectId): string {
+                return $this->kanbanResult($projectId, $args);
+            },
+            'wiki_write' => function (array $args) use ($wiki): string {
+                $args['action'] = 'write';
+                return $wiki($args);
             },
         ];
         if ($agent === 'coder') {
