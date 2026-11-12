@@ -241,6 +241,9 @@ class CapabilityTools
         }
         $refusals = [];
         $sawEmpty = false;
+        $terms = $this->queryTerms($query);
+        $bestBlocks = '';
+        $bestScore = -1;
         foreach (['Bing', 'Google', 'DuckDuckGo'] as $name) {
             if ($name === 'Bing') {
                 $found = $this->bingResults($query);
@@ -251,9 +254,19 @@ class CapabilityTools
             }
             $blocks = $this->searchBlocks($found['results']);
             if ($blocks) {
-                $blocks[] = 'Results from ' . $name . '.';
-                $blocks[] = 'Read a page with fetch_url. The result lists links you can open next.';
-                return clip_text(implode("\n\n", $blocks), 4000);
+                $score = $this->resultTermScore($terms, $found['results']);
+                $full = !$terms || $score === count($terms);
+                if ($full || $score > $bestScore) {
+                    $labeled = $blocks;
+                    $labeled[] = 'Results from ' . $name . '.';
+                    $labeled[] = 'Read a page with fetch_url. The result lists links you can open next.';
+                    $bestBlocks = clip_text(implode("\n\n", $labeled), 4000);
+                    $bestScore = $score;
+                    if ($full) {
+                        return $bestBlocks;
+                    }
+                }
+                continue;
             }
             if ($found['status'] === 'results') {
                 $found['status'] = 'empty';
@@ -263,6 +276,9 @@ class CapabilityTools
                 continue;
             }
             $refusals[] = $this->engineMiss($name, $found);
+        }
+        if ($bestBlocks !== '') {
+            return $bestBlocks;
         }
         $instant = $this->instantAnswer($query);
         if ($instant !== '') {
@@ -298,6 +314,39 @@ class CapabilityTools
             }
         }
         return $blocks;
+    }
+
+    private function queryTerms(string $query): array
+    {
+        $skip = ['to', 'for', 'in', 'on', 'at', 'by', 'from', 'as', 'be', 'is', 'it', 'we', 'you', 'your', 'this', 'that', 'with', 'not', 'but', 'if', 'are', 'was', 'into', 'over', 'via', 'per', 'up', 'out'];
+        $terms = [];
+        foreach ($this->searchWords($query) as $word) {
+            $lower = mb_strtolower($word);
+            if (mb_strlen($lower) < 3 || in_array($lower, $skip, true) || isset($terms[$lower])) {
+                continue;
+            }
+            $terms[$lower] = $lower;
+        }
+        return array_values($terms);
+    }
+
+    private function resultTermScore(array $terms, array $results): int
+    {
+        if (!$terms) {
+            return 1;
+        }
+        $hay = '';
+        foreach ($results as $row) {
+            $hay .= ' ' . ($row['title'] ?? '') . ' ' . ($row['snippet'] ?? '') . ' ' . ($row['url'] ?? '');
+        }
+        $hay = mb_strtolower($hay);
+        $score = 0;
+        foreach ($terms as $term) {
+            if (preg_match('/(?<![\p{L}\p{N}])' . preg_quote($term, '/') . '(?![\p{L}\p{N}])/u', $hay)) {
+                $score++;
+            }
+        }
+        return $score;
     }
 
     private function engineMiss(string $name, array $found): string
@@ -502,7 +551,12 @@ class CapabilityTools
 
     private function bingResults(string $query): array
     {
-        $fetched = $this->searchFetch('https://www.bing.com/search?format=rss&count=8&q=' . rawurlencode($query));
+        $url = 'https://www.bing.com/search?format=rss&count=8&q=' . rawurlencode($query);
+        $market = $this->bingMarket();
+        if ($market !== '') {
+            $url .= '&mkt=' . rawurlencode($market);
+        }
+        $fetched = $this->searchFetch($url);
         $body = (string)$fetched['body'];
         if ($this->searchFailedToConnect($fetched)) {
             return $this->searchOutcome([], 'transport', $fetched);
@@ -530,6 +584,11 @@ class CapabilityTools
             return $this->searchOutcome([], 'unparsed', $fetched);
         }
         return $this->searchOutcome($out, 'results', $fetched);
+    }
+
+    private function bingMarket(): string
+    {
+        return date_default_timezone_get() === 'Europe/Stockholm' ? 'sv-SE' : '';
     }
 
     private function googleResults(string $query): array

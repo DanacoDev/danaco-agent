@@ -503,7 +503,7 @@ header('X-Danaco: 1');
               <h2>Agents</h2>
               <div class="view-actions">
                 <button v-if="heartbeatPaused" class="btn btn-gold btn-start" type="button" :disabled="startBusy" @click="startAgents"><svg class="ico" aria-hidden="true"><use href="#i-play"></use></svg>Start</button>
-                <button class="btn" :class="{ 'btn-stop': stopReady }" type="button" :disabled="!stopReady" @click="stopAgents"><svg v-if="stopReady" class="ico" aria-hidden="true"><use href="#i-alert"></use></svg>Stop</button>
+                <button v-if="!heartbeatPaused" class="btn" :class="{ 'btn-stop': stopReady }" type="button" :disabled="!stopReady" @click="stopAgents"><svg v-if="stopReady" class="ico" aria-hidden="true"><use href="#i-alert"></use></svg>Stop</button>
               </div>
             </div>
             <p v-if="stopError" class="form-error">{{ stopError }}</p>
@@ -543,7 +543,7 @@ header('X-Danaco: 1');
                         <span :class="'status-' + consultant.status">{{ consultant.label }}</span>
                       </p>
                       <p class="hint flow-task">
-                        <button class="retry-link" type="button" @click.stop="openProviderSetup">{{ consultant.reason === 'on' ? 'Enabled' : 'Disabled' }}</button>
+                        <button class="retry-link" type="button" @click.stop="openProviderSetup">{{ consultant.reason === 'on' ? 'Enabled' : 'Edit settings' }}</button>
                       </p>
                     </article>
                 </div>
