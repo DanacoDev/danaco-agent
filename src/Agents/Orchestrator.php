@@ -450,6 +450,19 @@ TXT;
         return trim($excerpt);
     }
 
+    private function projectIndex(): string
+    {
+        $path = app_config()['data_dir'] . '/wiki/projects_index.md';
+        if (!is_file($path)) {
+            return '';
+        }
+        $text = trim((string)file_get_contents($path));
+        if ($text === '') {
+            return '';
+        }
+        return "Projects that already exist. This is a short index, not the full description of each project:\n" . clip_text($text, 4000);
+    }
+
     private function systemPrompt(?array $project): string
     {
         if ($project === null) {
@@ -473,6 +486,10 @@ When you create or cite a file, put its path alone on a line, such as wiki/NOTES
 When this chat settles conclusions, decisions, or facts worth keeping, read the matching wiki file and then write or edit it with wiki_write before you finish. Keep doing this as the chat continues and those conclusions change. Do not wait for the end of a long task, and do not leave the record only in the chat.
 Tag every delegation exactly as project: {$folder}
 TXT;
+            $index = $this->projectIndex();
+            if ($index !== '') {
+                $context .= "\n" . $index;
+            }
         }
         $now = app_local_stamp();
         $state = $this->db->consultantState();

@@ -185,42 +185,6 @@ class SafetyInterceptor
     public function listWorkspace(array $projects): array
     {
         $nodes = [];
-        $wiki = $this->dataDir . '/wiki';
-        $children = [];
-        if (is_dir($wiki)) {
-            $real = realpath($wiki);
-            if ($real !== false) {
-                $children = array_values(array_filter(
-                    $this->tag($this->walk($real, $real, 0), 'wiki', '', 'Main'),
-                    static fn(array $node): bool => strtolower((string)($node['name'] ?? '')) !== 'tools.md'
-                ));
-            }
-        }
-        $nodes[] = [
-            'name' => 'Main',
-            'path' => '',
-            'type' => 'dir',
-            'scope' => 'wiki',
-            'folder' => '',
-            'place' => 'Main',
-            'children' => $children,
-        ];
-        $generalFolder = Projects::generalFolder();
-        $generalRoot = Projects::root($generalFolder);
-        if (is_dir($generalRoot) && !is_link($generalRoot)) {
-            $real = realpath($generalRoot);
-            if ($real !== false) {
-                $nodes[] = [
-                    'name' => 'General chat',
-                    'path' => '',
-                    'type' => 'dir',
-                    'scope' => 'project',
-                    'folder' => $generalFolder,
-                    'place' => 'General chat',
-                    'children' => $this->tag($this->walk($real, $real, 0), 'project', $generalFolder, 'General chat'),
-                ];
-            }
-        }
         foreach ($projects as $project) {
             $folder = (string)($project['folder_name'] ?? '');
             if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $folder)) {
@@ -454,17 +418,7 @@ class SafetyInterceptor
         if ($query === '') {
             throw new InvalidArgumentException('Enter a search.');
         }
-        $roots = [['root' => $this->dataDir . '/wiki', 'scope' => 'wiki', 'folder' => '', 'place' => 'Main']];
-        $generalFolder = Projects::generalFolder();
-        $generalRoot = Projects::root($generalFolder);
-        if (is_dir($generalRoot) && !is_link($generalRoot)) {
-            $roots[] = [
-                'root' => $generalRoot,
-                'scope' => 'project',
-                'folder' => $generalFolder,
-                'place' => 'General chat',
-            ];
-        }
+        $roots = [];
         foreach ($projects as $project) {
             $folder = (string)($project['folder_name'] ?? '');
             if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $folder)) {

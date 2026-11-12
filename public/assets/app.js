@@ -473,6 +473,10 @@
             if (this.chatQuery.trim()) this.queueChatSearch(false);
           },
           deep: true
+        },
+        projectForm: {
+          handler() { this.rememberProjectForm(); },
+          deep: true
         }
       },
       mounted() {
@@ -700,9 +704,61 @@
         },
         openProjectModal() {
           this.projectError = '';
-          this.projectForm = { name: '', description: '', goals: '', limitations: '', role: '' };
+          this.restoreProjectForm();
           this.projectModal = true;
           this.mobileNav = false;
+        },
+        blankProjectForm() {
+          return { name: '', description: '', goals: '', limitations: '', role: '' };
+        },
+        rememberProjectForm() {
+          const form = this.projectForm || {};
+          const fields = ['name', 'description', 'goals', 'limitations', 'role'];
+          const empty = fields.every((key) => !String(form[key] || '').trim());
+          try {
+            if (empty) {
+              sessionStorage.removeItem('danaco.projectDraft');
+              return;
+            }
+            sessionStorage.setItem('danaco.projectDraft', JSON.stringify({ savedAt: Date.now(), form: {
+              name: String(form.name || ''),
+              description: String(form.description || ''),
+              goals: String(form.goals || ''),
+              limitations: String(form.limitations || ''),
+              role: String(form.role || '')
+            } }));
+          } catch (error) {}
+        },
+        restoreProjectForm() {
+          try {
+            const raw = sessionStorage.getItem('danaco.projectDraft');
+            if (!raw) return;
+            const saved = JSON.parse(raw);
+            const age = Date.now() - Number(saved && saved.savedAt);
+            if (!saved || !saved.form || !Number.isFinite(age) || age > 2 * 60 * 60 * 1000) {
+              sessionStorage.removeItem('danaco.projectDraft');
+              return;
+            }
+            const form = saved.form;
+            this.projectForm = {
+              name: String(form.name || ''),
+              description: String(form.description || ''),
+              goals: String(form.goals || ''),
+              limitations: String(form.limitations || ''),
+              role: String(form.role || '')
+            };
+          } catch (error) {
+            try { sessionStorage.removeItem('danaco.projectDraft'); } catch (ignore) {}
+          }
+        },
+        clearProjectForm() {
+          this.projectForm = this.blankProjectForm();
+          this.projectError = '';
+          try { sessionStorage.removeItem('danaco.projectDraft'); } catch (error) {}
+        },
+        cancelProjectModal() {
+          this.clearProjectForm();
+          this.projectModal = false;
         },
         openProjectEdit(project) {
           this.projectEdit = project;
@@ -802,6 +858,7 @@
               text: this.projectBrief(),
               saved: false
             };
+            this.clearProjectForm();
             await this.persistProjectOpener();
             await this.onProjectChange();
             await this.refreshModelLoad();
@@ -881,11 +938,11 @@
           return this.logPreview(log.content);
         },
         agentProject(agent) {
-          if (!agent || !agent.project_id) return 'General chat';
+          if (!agent || !agent.project_id) return '';
           return this.projectName(agent.project_id);
         },
         logProject(log) {
-          if (!log || !log.project_id) return 'General chat';
+          if (!log || !log.project_id) return '';
           return this.projectName(log.project_id);
         },
         pickLogAgent(name) {

@@ -151,9 +151,6 @@ header('X-Danaco: 1');
           <button class="new-project" type="button" @click="openProjectModal">+ add new</button>
         </div>
         <div class="project-list">
-          <div class="project-row" :class="{active: !projectId}">
-            <button class="project-name" type="button" @click="chooseProject(0)">General chat</button>
-          </div>
           <div v-for="project in projects" :key="project.id" class="project-row" :class="{active: projectId===project.id}">
             <button class="project-name" type="button" @click="chooseProject(project.id)">{{ project.name }}</button>
             <button class="project-edit" type="button" :aria-label="'Edit ' + project.name" @click.stop="openProjectEdit(project)">
@@ -172,11 +169,14 @@ header('X-Danaco: 1');
       <header class="topbar flex md:hidden">
         <button class="icon-btn" type="button" id="open-menu" aria-label="Open menu" :aria-expanded="mobileNav ? 'true' : 'false'" @click="mobileNav = true">☰</button>
         <strong>{{ currentLabel }}</strong>
-        <span class="muted">{{ currentProject ? currentProject.name : 'General chat' }}</span>
+        <span class="muted">{{ currentProject ? currentProject.name : '' }}</span>
       </header>
       <div class="stage">
         <main class="main-pane">
-          <section v-if="tab==='chat'" class="view chat-view">
+          <section v-if="tab==='chat' && !currentProject" class="view chat-view">
+            <p class="chat-empty">Create a project to start the chat</p>
+          </section>
+          <section v-else-if="tab==='chat'" class="view chat-view">
             <div class="chat-column">
               <div class="view-head" style="padding:16px 18px 0">
                 <div class="chat-heading">
@@ -580,7 +580,7 @@ header('X-Danaco: 1');
                 </button>
                 <div v-if="openLogs[log.id]" class="md" v-html="md(log.content)"></div>
               </article>
-              <p v-if="!logs.length" class="empty">{{ logAgent ? 'No activity for this agent yet.' : (projectId ? 'No activity in this project yet.' : 'No activity in General chat yet.') }}</p>
+              <p v-if="!logs.length" class="empty">{{ logAgent ? 'No activity for this agent yet.' : (projectId ? 'No activity in this project yet.' : 'No activity yet.') }}</p>
             </div>
             <div class="flow-log-head">
               <h3 class="flow-log-title">Loop</h3>
@@ -1020,9 +1020,6 @@ header('X-Danaco: 1');
             <button class="new-project" type="button" @click="openProjectModal">+ add new</button>
           </div>
           <div class="project-list">
-            <div class="project-row" :class="{active: !projectId}">
-              <button class="project-name" type="button" @click="chooseProject(0)">General chat</button>
-            </div>
             <div v-for="project in projects" :key="'m'+project.id" class="project-row" :class="{active: projectId===project.id}">
               <button class="project-name" type="button" @click="chooseProject(project.id)">{{ project.name }}</button>
               <button class="project-edit" type="button" :aria-label="'Edit ' + project.name" @click.stop="openProjectEdit(project)">
@@ -1083,7 +1080,10 @@ header('X-Danaco: 1');
       <label class="field">Limitations<textarea v-model="projectForm.limitations" rows="3" placeholder="Limits, constraints, or things to avoid"></textarea></label>
       <label class="field">The agent's role in this project<textarea v-model="projectForm.role" rows="3" placeholder="What the agent should do here"></textarea></label>
       <p class="form-error">{{ projectError }}</p>
-      <button class="btn btn-gold" type="submit">Create project</button>
+      <div class="view-actions">
+        <button class="btn btn-gold" type="submit">Create project</button>
+        <button class="btn" type="button" @click="cancelProjectModal">Cancel</button>
+      </div>
     </form>
   </div>
 
