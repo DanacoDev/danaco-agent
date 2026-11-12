@@ -8,7 +8,7 @@ description: Creates or changes a SQLite file in database/, including the folder
 
 /*
 Usage:
-  database is the filename or the path, such as link_database.db or database/link_database.db. The helper is not locked to regulations.db. action, or command, is count, inspect, insert, query, drop, or ensure.
+  database is the filename or the path, such as link_database.db or database/link_database.db. action, or command, is count, inspect, insert, query, drop, or ensure.
   Create workflow: always check the database and table first. If either already exists, do not recreate it. The schema is returned so you can compare columns.
   ensure: {"database":"link_database.sqlite","table":"links","columns":["url TEXT","title TEXT"]} or one CREATE TABLE statement in sql.
   When the table exists, read columns, missing_columns, and extra_columns. Add a column with execute and ALTER TABLE links ADD COLUMN name TYPE. Remove one with ALTER TABLE links DROP COLUMN name. Do not CREATE TABLE again.
@@ -18,7 +18,7 @@ Usage:
   insert: add a row with table and values.
   drop: {"database":"link_database.db","table":"links"} deletes that table. if_exists true leaves a missing table alone.
   execute: run a parameterized write. CREATE TABLE is checked first and is not run when that table exists. DROP TABLE is the drop action.
-  init: create one explicitly named regulations.db or materials.db only when its tables are missing. Existing tables return their schema.
+  init: only for a preset schema the user already named. For any other file, use ensure with that same filename, table, and columns. Do not invent a filename.
   Every existing database is snapshotted in the project backup vault before a write.
 Do not use the sqlite3 CLI. Do not ask anyone to open the database file.
 */
@@ -142,7 +142,7 @@ try {
             ],
         ];
         if (!isset($databases[$database])) {
-            throw new InvalidArgumentException('init supports regulations.db or materials.db. Pass a specific database filename.');
+            throw new InvalidArgumentException('init does not create this file. Keep the database filename you were given and call ensure with table and columns. Do not create a different database.');
         }
         $databases = [$database => $databases[$database]];
         $created = [];
@@ -236,7 +236,7 @@ try {
             }
             $path = $dbDir . '/' . $target;
             if (!is_file($path)) {
-                throw new RuntimeException('Database not found: ' . $relativeDir . '/' . $target . '. Pass database as that filename. ensure with table and columns creates it. init only creates regulations.db and materials.db.');
+                throw new RuntimeException('Database not found: ' . $relativeDir . '/' . $target . '. Keep that filename and call ensure with table and columns. Do not create a different database.');
             }
             $inspectDb = new PDO('sqlite:' . $path, null, null, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -261,7 +261,7 @@ try {
     }
 
     if (!is_file($dbPath)) {
-        throw new RuntimeException('Database not found: ' . $relativeDir . '/' . $database . '. Pass database as that filename. ensure with table and columns creates it. init only creates regulations.db and materials.db.');
+        throw new RuntimeException('Database not found: ' . $relativeDir . '/' . $database . '. Keep that filename and call ensure with table and columns. Do not create a different database.');
     }
 
     $db = new PDO('sqlite:' . $dbPath, null, null, [

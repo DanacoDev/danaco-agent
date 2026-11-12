@@ -286,7 +286,7 @@ class CapabilityTools
         $n = 0;
         foreach ($results as $row) {
             $host = (string)(parse_url($row['url'], PHP_URL_HOST) ?? '');
-            if ($host === '' || !$this->hostIsPublic($host)) {
+            if ($host === '' || !$this->hostIsPublic($host, true)) {
                 continue;
             }
             $n++;
@@ -328,11 +328,28 @@ class CapabilityTools
         $hay = mb_strtolower($hay);
         $score = 0;
         foreach ($terms as $term) {
-            if (preg_match('/(?<![\p{L}\p{N}])' . preg_quote($term, '/') . '(?![\p{L}\p{N}])/u', $hay)) {
+            if ($this->hayHasTerm($hay, $term)) {
                 $score++;
             }
         }
         return $score;
+    }
+
+    private function hayHasTerm(string $hay, string $term): bool
+    {
+        $quoted = preg_quote($term, '/');
+        if (preg_match('/(?<![\p{L}\p{N}])' . $quoted . '(?![\p{L}\p{N}])/u', $hay)) {
+            return true;
+        }
+        if (mb_strlen($term) < 5 || !preg_match_all('/(?<![\p{L}\p{N}])([\p{L}\p{N}]{5,})/u', $hay, $tokens)) {
+            return false;
+        }
+        foreach ($tokens[1] as $token) {
+            if (str_starts_with($token, $term) || str_starts_with($term, $token)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function matchingResults(array $terms, array $results): array
@@ -483,7 +500,7 @@ class CapabilityTools
             array_pop($pieces);
             return 'No web results for that query. Every word has to match, so this is narrower than a normal search. Drop the last word and search once more, with no new quotes: ' . implode(' ', $pieces) . '. If that is also empty, stop and say what you could not find. If you already have the page address, open it with fetch_url.';
         }
-        return 'No web results for that query. The pages may use a different word. Try one other plain term, or open a page you already know with fetch_url. Do not add quotes, OR, AND, or NOT.';
+        return 'No web results contained every word of that query. The provider answered, so this is not a block and the task continues. Try one other two-word query. Do not add quotes, OR, AND, or NOT, and do not describe the search as blocked.';
     }
 
     private function suggestedQuery(string $query): string
@@ -1213,7 +1230,7 @@ class CapabilityTools
         }
     }
 
-    private function hostIsPublic(string $host): bool
+    private function hostIsPublic(string $host, bool $allowUnresolved = false): bool
     {
         $host = trim($host, '[]');
         if (filter_var($host, FILTER_VALIDATE_IP)) {
@@ -1236,7 +1253,7 @@ class CapabilityTools
             $ips = $fallback;
         }
         if (!$ips) {
-            return false;
+            return $allowUnresolved && (bool)preg_match('/^[a-z0-9.-]+\.[a-z]{2,}$/i', $host);
         }
         foreach ($ips as $ip) {
             if (!$this->ipIsPublic($ip)) {
