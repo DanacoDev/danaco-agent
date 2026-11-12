@@ -126,7 +126,7 @@
           nav: [
             { id: 'chat', label: 'Chat', icon: 'i-chat' },
             { id: 'tasks', label: 'Tasks', icon: 'i-tasks' },
-            { id: 'workspace', label: 'Workspace', icon: 'i-workspace' },
+            { id: 'workspace', label: 'Files', icon: 'i-workspace' },
             { id: 'agents', label: 'Agents', icon: 'i-agents' },
             { id: 'skills', label: 'Skills', icon: 'i-skills' },
             { id: 'setup', label: 'Setup', icon: 'i-setup' }

@@ -22,6 +22,8 @@ class SkillEngine
 
     private ?array $synced = null;
 
+    private bool $syncing = false;
+
     public function __construct(private Database $db, private string $dataDir)
     {
     }
@@ -31,29 +33,38 @@ class SkillEngine
         if ($this->synced !== null) {
             return $this->synced;
         }
-        $seen = [];
-        $hidden = [];
-        foreach ($this->discover() as $found) {
-            $name = $found['name'];
-            $existing = $this->db->skillByName($name);
-            $createdBy = $existing
-                ? (string)$existing['created_by']
-                : (in_array($name, self::SYSTEM, true) ? 'system' : 'user');
-            $active = $existing ? (bool)$existing['is_active'] : true;
-            $this->db->saveSkill($name, $found['description'], $found['dir'], $active, $createdBy);
-            $seen[$name] = true;
-            if (!$found['compatible']) {
-                $hidden[$name] = true;
-            }
+        if ($this->syncing) {
+            return $this->db->skills();
         }
-        foreach ($this->db->skills() as $skill) {
-            if (!isset($seen[$skill['name']])) {
-                $this->db->deleteSkill($skill['id']);
+        $this->syncing = true;
+        try {
+            $seen = [];
+            $hidden = [];
+            foreach ($this->discover() as $found) {
+                $name = $found['name'];
+                $existing = $this->db->skillByName($name);
+                $createdBy = $existing
+                    ? (string)$existing['created_by']
+                    : (in_array($name, self::SYSTEM, true) ? 'system' : 'user');
+                $active = $existing ? (bool)$existing['is_active'] : true;
+                $this->db->saveSkill($name, $found['description'], $found['dir'], $active, $createdBy);
+                $seen[$name] = true;
+                if (!$found['compatible']) {
+                    $hidden[$name] = true;
+                }
             }
+            foreach ($this->db->skills() as $skill) {
+                if (!isset($seen[$skill['name']])) {
+                    $this->db->deleteSkill($skill['id']);
+                }
+            }
+            $this->repairCustomPrograms();
+            $this->hidden = $hidden;
+            $this->synced = $this->withSource($this->db->skills());
+            return $this->synced;
+        } finally {
+            $this->syncing = false;
         }
-        $this->hidden = $hidden;
-        $this->synced = $this->withSource($this->db->skills());
-        return $this->synced;
     }
 
     public function offered(string $name): bool
@@ -216,7 +227,6 @@ class SkillEngine
         $lang = strtolower(trim((string)($args['lang'] ?? '')));
         $description = (string)($args['description'] ?? '');
         $source = (string)($args['source'] ?? '');
-        $movedProgram = ($script === null || trim($script) === '') && $this->findProgram($source) !== null;
         $before = $name !== '' ? $this->db->skillByName($name) : null;
         $custom = $before && (string)($before['created_by'] ?? '') !== 'system' && !in_array($name, self::SYSTEM, true);
         if ($custom) {
@@ -230,14 +240,12 @@ class SkillEngine
                 } catch (Throwable $e) {
                     $source = '';
                 }
-                if ($script !== null && trim($script) !== '') {
-                    [$source] = $this->liftProgram($source, null, '');
-                }
             }
             if ($script === null || trim($script) === '') {
                 $script = null;
             }
         }
+        $embedded = $this->findProgram($this->sourceBody($source)) !== null;
         $sentScript = $script !== null && trim($script) !== '';
         if ($sentScript && $lang === '') {
             $lang = $this->programLang($script);
@@ -257,8 +265,10 @@ class SkillEngine
         $runner = $this->runnerFile($this->absoluteDir((string)$skill['script_path']));
         if ($runner !== null) {
             $text .= ' Syntax check passed.';
-            if (!$sentScript && $movedProgram) {
+            if ($embedded && !$sentScript) {
                 $text .= ' The program was in source, so it was saved as the script. SKILL.md keeps only the instructions.';
+            } elseif ($embedded) {
+                $text .= ' The program in the instructions was removed. The script you sent is what runs.';
             }
         }
         $text .= ' Call test_skill with name ' . $skill['name'] . ' and input set to the JSON that skill reads.';
@@ -612,27 +622,39 @@ class SkillEngine
         if ($found === null) {
             return [$source, $script, $lang];
         }
-        if ($script !== null && trim($script) !== '') {
-            throw new InvalidArgumentException('source contains the program. Put the program only in script, with lang py or php. source is the short instructions, not the code.');
+        $code = $found['code'];
+        $codeLang = $found['lang'];
+        $guard = 0;
+        while ($found !== null && $guard < 5) {
+            $body = $found['prose'];
+            $found = $this->findProgram($body);
+            $guard++;
         }
-        $prose = trim($found['prose']);
+        $prose = trim($body);
         if ($split === null) {
             $source = $prose === '' ? '' : $prose . "\n";
         } else {
             $source = $this->emitFrontmatter($split['map']) . ($prose === '' ? '' : $prose . "\n");
         }
-        return [$source, $found['code'], $found['lang']];
+        if ($script !== null && trim($script) !== '') {
+            return [$source, $script, $lang];
+        }
+        return [$source, $code, $codeLang];
     }
 
     private function findProgram(string $body): ?array
     {
         $body = preg_replace("/\r\n?/", "\n", $body) ?? $body;
-        if (preg_match('/```(?:python3?|py|php)?[^\n]*\n(.*?)```/s', $body, $match, PREG_OFFSET_CAPTURE)) {
-            $code = trim($match[1][0]);
-            if ($this->programBody($code)) {
+        if (preg_match_all('/```(?:python3?|py|php)?[^\n]*\n(.*?)```/s', $body, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+            foreach ($matches as $match) {
+                $code = $this->dedent($this->trimEdges($match[1][0]));
+                if (!$this->programBody($code)) {
+                    continue;
+                }
                 $whole = $match[0][0];
-                $prose = trim(substr($body, 0, $match[0][1]) . substr($body, $match[0][1] + strlen($whole)));
-                return ['code' => $code . "\n", 'lang' => $this->programLang($code), 'prose' => $prose];
+                $at = $match[0][1];
+                $prose = trim(substr($body, 0, $at) . substr($body, $at + strlen($whole)));
+                return ['code' => rtrim($code) . "\n", 'lang' => $this->programLang($code), 'prose' => $prose];
             }
         }
         $lines = explode("\n", $body);
@@ -640,12 +662,12 @@ class SkillEngine
             if (!$this->programStart($line)) {
                 continue;
             }
-            $code = rtrim(implode("\n", array_slice($lines, $i)));
+            $code = $this->dedent($this->trimEdges(implode("\n", array_slice($lines, $i))));
             if (!$this->programBody($code)) {
                 continue;
             }
             return [
-                'code' => $code . "\n",
+                'code' => rtrim($code) . "\n",
                 'lang' => $this->programLang($code),
                 'prose' => trim(implode("\n", array_slice($lines, 0, $i))),
             ];
@@ -664,6 +686,7 @@ class SkillEngine
 
     private function programBody(string $code): bool
     {
+        $code = $this->dedent($code);
         $codeLines = 0;
         foreach (explode("\n", $code) as $line) {
             $line = ltrim($line);
@@ -685,10 +708,113 @@ class SkillEngine
 
     private function programLang(string $code): string
     {
+        $code = $this->dedent($code);
         if (preg_match('/^<\?php\b/m', $code) === 1 || preg_match('/^#!.*\bphp\b/m', $code) === 1 || preg_match('/^function /m', $code) === 1) {
             return 'php';
         }
         return 'py';
+    }
+
+    private function trimEdges(string $code): string
+    {
+        $code = preg_replace("/\r\n?/", "\n", $code) ?? $code;
+        $lines = explode("\n", $code);
+        while ($lines !== [] && trim($lines[0]) === '') {
+            array_shift($lines);
+        }
+        while ($lines !== [] && trim($lines[array_key_last($lines)]) === '') {
+            array_pop($lines);
+        }
+        return implode("\n", $lines);
+    }
+
+    private function dedent(string $code): string
+    {
+        $code = preg_replace("/\r\n?/", "\n", $code) ?? $code;
+        $lines = explode("\n", $code);
+        $prefix = null;
+        foreach ($lines as $line) {
+            if (trim($line) === '') {
+                continue;
+            }
+            if (preg_match('/^[ \t]*/', $line, $match) !== 1) {
+                return $code;
+            }
+            $lead = $match[0];
+            if ($prefix === null) {
+                $prefix = $lead;
+                continue;
+            }
+            $limit = min(strlen($prefix), strlen($lead));
+            $shared = '';
+            for ($i = 0; $i < $limit; $i++) {
+                if ($prefix[$i] !== $lead[$i]) {
+                    break;
+                }
+                $shared .= $prefix[$i];
+            }
+            $prefix = $shared;
+            if ($prefix === '') {
+                return $code;
+            }
+        }
+        if ($prefix === null || $prefix === '') {
+            return $code;
+        }
+        $width = strlen($prefix);
+        $out = [];
+        foreach ($lines as $line) {
+            if (trim($line) === '') {
+                $out[] = '';
+                continue;
+            }
+            $out[] = substr($line, $width);
+        }
+        return implode("\n", $out);
+    }
+
+    private function sourceBody(string $source): string
+    {
+        $split = $this->splitFrontmatter($source);
+        return $split === null ? $source : $split['body'];
+    }
+
+    private function repairCustomPrograms(): void
+    {
+        foreach ($this->db->skills() as $skill) {
+            $name = (string)$skill['name'];
+            if ((string)($skill['created_by'] ?? '') === 'system' || in_array($name, self::SYSTEM, true)) {
+                continue;
+            }
+            try {
+                $source = $this->readSource($skill);
+                if ($this->findProgram($this->sourceBody($source)) === null) {
+                    continue;
+                }
+                $dir = $this->absoluteDir((string)$skill['script_path']);
+                $script = null;
+                $lang = '';
+                $runner = $this->runnerFile($dir);
+                if ($runner !== null) {
+                    $loaded = file_get_contents($runner);
+                    if ($loaded !== false) {
+                        $script = $loaded;
+                        $lang = str_ends_with($runner, '.py') ? 'py' : 'php';
+                    }
+                }
+                $this->saveSource(
+                    $name,
+                    (string)$skill['description'],
+                    $source,
+                    (bool)$skill['is_active'],
+                    (string)($skill['created_by'] ?? 'user'),
+                    true,
+                    $script,
+                    $lang
+                );
+            } catch (Throwable $e) {
+            }
+        }
     }
 
     private function composeMarkdown(string $name, string $description, string $source, ?array $existing): string
@@ -1051,10 +1177,12 @@ class SkillEngine
         foreach ($skills as &$skill) {
             $skill['script'] = '';
             $skill['script_lang'] = '';
+            $skill['instructions'] = '';
             $skill['available'] = !isset($this->hidden[(string)$skill['name']]);
             try {
                 $dir = $this->absoluteDir((string)$skill['script_path']);
                 $skill['source'] = $this->readSource($skill);
+                $skill['instructions'] = $this->markdownBody($dir);
                 $runner = $this->runnerFile($dir);
                 if ($runner !== null) {
                     $skill['script'] = (string)file_get_contents($runner);
@@ -1062,6 +1190,7 @@ class SkillEngine
                 }
             } catch (Throwable $e) {
                 $skill['source'] = '';
+                $skill['instructions'] = '';
             }
         }
         return $skills;

@@ -16,7 +16,7 @@ args:
 
 Calling write_skill with the name of a custom skill updates it. Send the fields that change. An omitted description, source, or script stays as it is. A new source replaces the instructions. A new script replaces the program. A system skill cannot be edited or overwritten.
 
-SKILL.md is not the program. Calling the skill runs script. It does not return the source code. If the program is pasted into source and script is empty, the program is moved into script and only the instructions stay in SKILL.md. If both source and script contain the program, the call is rejected.
+SKILL.md is not the program. Calling the skill runs script. It does not return the source code. If the program is pasted into source and script is empty, the program is moved into script and only the instructions stay in SKILL.md. If both source and script contain the program, the script you sent is kept and the program is removed from the instructions.
 
 A script is syntax-checked and is not kept when the check fails. Send that script again in one call. Do not write a skill into the project, and do not create a skills or data/skills folder there.
 

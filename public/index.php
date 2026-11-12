@@ -386,12 +386,12 @@ header('X-Danaco: 1');
 
           <section v-else-if="tab==='workspace'" class="view workspace-view" :class="{ 'is-vault': vaultOpen }">
             <div class="view-head">
-              <h2>Workspace</h2>
+              <h2>Files</h2>
               <button class="btn btn-ghost" type="button" @click="toggleVault">{{ vaultOpen ? 'Hide backups' : 'Show backups' }}</button>
             </div>
             <form class="wiki-tools workspace-search" @submit.prevent="searchWorkspace">
               <div class="search-field">
-                <input v-model="wikiQuery" :aria-label="vaultOpen ? 'Search backups' : 'Search the workspace'" :placeholder="vaultOpen ? 'Search backups' : 'Search filename or content'">
+                <input v-model="wikiQuery" :aria-label="vaultOpen ? 'Search backups' : 'Search files'" :placeholder="vaultOpen ? 'Search backups' : 'Search filename or content'">
                 <button v-if="wikiQuery" class="search-clear" type="button" aria-label="Clear search" @click="clearWorkspaceSearch">
                   <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>
                 </button>
@@ -650,7 +650,9 @@ header('X-Danaco: 1');
                     <input type="checkbox" :checked="!!selectedSkill.is_active" @change="toggleSkill(selectedSkill, $event.target.checked)">
                   </label>
                   <p v-if="skillError" class="form-error">{{ skillError }}</p>
-                  <pre class="file-view">{{ selectedSkill.source }}</pre>
+                  <p v-if="selectedSkill.instructions" class="hint skill-block-label">Instructions</p>
+                  <pre v-if="selectedSkill.instructions" class="file-view">{{ selectedSkill.instructions }}</pre>
+                  <p v-if="selectedSkill.script" class="hint skill-block-label">Script</p>
                   <pre v-if="selectedSkill.script" class="file-view">{{ selectedSkill.script }}</pre>
                 </template>
               </div>
