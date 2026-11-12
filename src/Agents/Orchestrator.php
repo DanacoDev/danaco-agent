@@ -468,8 +468,8 @@ TXT;
             $context = <<<TXT
 Assigned project folder: {$folder}
 Assigned project name: {$project['name']}
-{$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/{$folder}_desc.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file in that folder, such as wiki/research.md, or a SQLite database in database/. wiki/notes.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card.
-When you create or cite a file, put its path alone on a line, such as wiki/notes.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat.
+{$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file in that folder, such as wiki/research.md, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card.
+When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat.
 When this chat settles conclusions, decisions, or facts worth keeping, read the matching wiki file and then write or edit it with wiki_write before you finish. Keep doing this as the chat continues and those conclusions change. Do not wait for the end of a long task, and do not leave the record only in the chat.
 Tag every delegation exactly as project: {$folder}
 TXT;
@@ -541,7 +541,7 @@ Other correct examples:
 <<end>>
 Never invent another call format. These do nothing:
 : list_files
-: wiki/notes.md
+: wiki/NOTES.md
 list_files
 <task_breakdown>...</task_breakdown>
 <delegate><agent>writer</agent></delegate>
@@ -564,7 +564,7 @@ Tools:
   Do not create a card while you are still planning. Move a task to in_progress when the user chose now and you start it, or when a scheduled card is due. Move a finished run-once card to review. Leave a repeating card in in_progress, with its repeat still set. Do not leave a finished run-once card in in_progress. Do not delegate new cards in the planning turn unless the user chose now.
   After every delegated job, list the board and update the matching cards before you reply or delegate again, even when this chat does not mention any tasks. A cleared context still has cards. Do not explain the workflow in place of updating them.
 - wiki_search: args query
-- wiki_read: args name. Reads one project wiki file. Omit name to read wiki/<folder>_desc.md, which is only the general description. General chat has no project wiki.
+- wiki_read: args name. Reads one project wiki file. Omit name to read wiki/PROJECT.md, which is only the general description. General chat has no project wiki.
 - wiki_write: args name, content, append. Writes wiki/<name>.md in the current project. Omit name only to edit the general description: what the project is, contributors, credentials, and main goals. Pass name for research, findings, and specific data. Read the file first when you are changing it. Use append to add to what is already there. When the chat has reached conclusions, update the matching wiki file in this same turn.
 - wiki_reindex: no args
 - list_vault: no args. Backups and trash with exact size_bytes for each item. Read or restore only. Never delete them.
@@ -572,7 +572,6 @@ Tools:
 - restore_file: args kind, stored_as
 - write_skill: args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there. Delegate this to the coder. Call it yourself when the coder cannot finish.
 - test_skill: args name, input. Runs that skill in this project and returns the exit code, stdout, and stderr. name is the skill. input is the JSON object it reads on stdin. The skill really runs, so files it writes stay. It also runs a skill that is turned off. Use it to check a skill, including one just registered with write_skill. A skill registered in this run is not callable by its own name until a later run. Delegate the test to the coder. Call it yourself when the coder cannot finish. Open a project first.
-- soul: args action (add or remove), text. Optional persona line only: how you speak, present yourself, or a standing always/never habit. soul.md starts empty; add a line only when the user wants lasting persona behaviour. Never store project facts or subject matter here. General chat has no soul file. Open a project first.
 
 Skills, one line each:
 TXT;
@@ -601,10 +600,6 @@ TXT;
             $tail .= "\n\n" . $notes;
         }
         if ($project !== null) {
-            $soul = Projects::soulPrompt((string)$project['folder_name']);
-            if ($soul !== '') {
-                $tail .= "\n\n" . $soul;
-            }
             if ($this->db->getSetting('reread_desc_' . (int)$project['id'], '0') === '1') {
                 $desc = 'wiki/' . Projects::descFile((string)$project['folder_name']);
                 $tail .= "\n\nThe chat was just cleared. Before you answer or do other work, read {$desc} so you know what this project is. Use wiki_read with no name.\n";
@@ -1036,20 +1031,6 @@ TXT;
             },
             'browse_url' => function (): string {
                 return $this->researchDelegationNotice('browse_url');
-            },
-            'soul' => function (array $args) use ($folder): string {
-                if ($folder === '') {
-                    return 'Open a project before saving how you should act.';
-                }
-                $action = strtolower(trim((string)($args['action'] ?? 'add')));
-                $text = (string)($args['text'] ?? '');
-                if ($action === 'remove') {
-                    return Projects::removeSoulLine($folder, $text);
-                }
-                if ($action !== 'add') {
-                    return 'Use action add or remove.';
-                }
-                return Projects::addSoulLine($folder, $text);
             },
         ];
         if ($folder !== '') {

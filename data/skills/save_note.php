@@ -2,7 +2,7 @@
 /*
 ---
 name: save_note
-description: Append a short reminder or idea to wiki/notes.md, the project doodle board. Does not write the project description. args note.
+description: Append a short reminder or idea to wiki/NOTES.md, the project doodle board. Does not write the project description. args note.
 ---
 */
 $raw = stream_get_contents(STDIN);
@@ -19,7 +19,12 @@ if (!is_dir('wiki') && !mkdir('wiki', 0775, true) && !is_dir('wiki')) {
     fwrite(STDERR, "Could not create the wiki folder.\n");
     exit(1);
 }
-$path = 'wiki/notes.md';
+$path = 'wiki/NOTES.md';
+$legacy = 'wiki/notes.md';
+if (!is_file($path) && is_file($legacy) && !@rename($legacy, $path)) {
+    fwrite(STDERR, "Could not create the notes file.\n");
+    exit(1);
+}
 if (!is_file($path) && file_put_contents($path, "# Notes\n\n") === false) {
     fwrite(STDERR, "Could not create the notes file.\n");
     exit(1);

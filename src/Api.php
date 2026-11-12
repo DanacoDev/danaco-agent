@@ -59,8 +59,6 @@ class Api
         $router->add('GET', '#^/api/wiki$#', $this->guard(fn() => $this->wiki()));
         $router->add('POST', '#^/api/wiki/search$#', $this->guard(fn() => $this->wikiSearch()));
         $router->add('POST', '#^/api/wiki/reindex$#', $this->guard(fn() => $this->wikiReindex()));
-        $router->add('GET', '#^/api/soul$#', $this->guard(fn() => $this->soul()));
-        $router->add('POST', '#^/api/soul$#', $this->guard(fn() => $this->saveSoul()));
         $router->add('GET', '#^/api/agents/status$#', $this->guard(fn() => $this->agentStatus()));
         $router->add('POST', '#^/api/agents/stop$#', $this->guard(fn() => $this->stopAgents()));
         $router->add('POST', '#^/api/agents/start$#', $this->guard(fn() => $this->startAgents()));
@@ -1255,37 +1253,6 @@ class Api
         $this->json(['which' => 'central', 'name' => $name, 'content' => $content, 'files' => $files]);
     }
 
-    private function soul(): void
-    {
-        $project = $this->projectFromQuery();
-        $this->json(['lines' => Projects::soulLines((string)$project['folder_name'])]);
-    }
-
-    private function saveSoul(): void
-    {
-        $body = $this->input();
-        $project = $this->db->project((int)($body['project_id'] ?? 0));
-        if (!$project) {
-            $this->json(['error' => 'Project not found.'], 404);
-            return;
-        }
-        $folder = (string)$project['folder_name'];
-        $action = strtolower(trim((string)($body['action'] ?? 'add')));
-        $text = (string)($body['text'] ?? '');
-        if ($action === 'remove') {
-            $result = Projects::removeSoulLine($folder, $text);
-        } elseif ($action === 'add') {
-            $result = Projects::addSoulLine($folder, $text);
-        } else {
-            $result = 'Use action add or remove.';
-        }
-        if (!in_array($result, ['Saved.', 'Removed.'], true)) {
-            $this->json(['error' => $result], 422);
-            return;
-        }
-        $this->json(['lines' => Projects::soulLines($folder)]);
-    }
-
     private function wikiSearch(): void
     {
         $body = $this->input();
@@ -2018,14 +1985,6 @@ class Api
     private function saveSetup(): void
     {
         $body = $this->input();
-        if (array_key_exists('agent_name', $body)) {
-            $name = trim((string)$body['agent_name']);
-            if ($name === '' || strlen($name) > 40 || preg_match('/[\r\n]/', $name)) {
-                $this->json(['error' => 'Enter a name up to 40 characters.'], 422);
-                return;
-            }
-            $this->db->setSetting('agent_name', $name);
-        }
         $previousMode = (string)$this->db->getSetting('model_mode', '');
         $previousLocal = (string)$this->db->getSetting('local_model', '');
         if (array_key_exists('model_mode', $body)) {

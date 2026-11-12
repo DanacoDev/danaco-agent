@@ -139,7 +139,7 @@ header('X-Danaco: 1');
     <aside class="sidebar hidden md:flex flex-col">
       <div class="brand">
         <img class="brand-icon" src="/assets/logo.png" alt="">
-        <strong class="brand-name">{{ agentName }}</strong>
+        <strong class="brand-name">Agent Danaco</strong>
       </div>
       <button v-for="item in nav" :key="item.id" type="button" class="nav-btn" :class="{active: tab===item.id}" :aria-current="tab===item.id ? 'page' : null" @click="setTab(item.id)">
         <svg class="ico"><use :href="'#' + item.icon"></use></svg>
@@ -766,10 +766,6 @@ header('X-Danaco: 1');
             </div>
             <form id="setup-form" class="setup-stack" @submit.prevent="saveSetup">
               <div class="setup-box">
-                <h3>Agent</h3>
-                <label class="field">Agent name<input v-model="settings.agent_name" maxlength="40" required></label>
-              </div>
-              <div class="setup-box">
                 <h3>Jurisdiction</h3>
                 <label class="field">Does the EU AI Act apply to this deployment?
                   <select v-model="settings.ai_act_applies">
@@ -844,6 +840,30 @@ header('X-Danaco: 1');
                 <p v-if="providerTestMessage" :class="providerTestError ? 'form-error' : 'form-ok'">{{ providerTestMessage }}</p>
               </div>
             </form>
+            <div class="setup-box">
+              <div class="view-head">
+                <h3>Local models in Ollama</h3>
+                <button class="btn" type="button" @click="loadOllamaModels" :disabled="ollamaBusy">Refresh</button>
+              </div>
+              <p class="form-error" v-if="ollamaError">{{ ollamaError }}</p>
+              <p class="hint" v-else-if="!ollamaModels.length">No models installed.</p>
+              <article v-for="model in ollamaModels" :key="model.name" class="model-row">
+                <div>
+                  <strong>{{ model.name }}</strong>
+                  <p class="hint">{{ model.size_label }}<span v-if="model.parameter_size"> · {{ model.parameter_size }}</span><span v-if="model.modified"> · {{ model.modified }}</span></p>
+                  <p class="hint" v-if="model.selected">The agent uses this model.</p>
+                  <p class="hint" v-if="model.place === 'gpu'">Loaded on the GPU.</p>
+                  <p class="hint" v-else-if="model.place === 'cpu'">Loaded in RAM, not on the GPU.</p>
+                  <p class="hint" v-if="model.protected">CPU failsafe. This model stays installed.</p>
+                </div>
+                <button v-if="!model.protected" class="btn" type="button" :disabled="ollamaBusy" @click="deleteOllamaModel(model)">Delete</button>
+              </article>
+              <form class="model-install" @submit.prevent="pullOllamaModel">
+                <input class="inline-input" v-model="ollamaPullName" placeholder="qwen3.6" :disabled="ollamaBusy" aria-label="Model to install">
+                <button class="btn btn-gold" type="submit" :disabled="ollamaBusy || !ollamaPullName.trim()">Install</button>
+              </form>
+              <p class="hint" v-if="ollamaProgress">{{ ollamaProgress }}</p>
+            </div>
             <div class="setup-box">
               <h3>Email</h3>
               <p class="hint">Each mailbox is linked to one project. The agent can send only from that project's address.</p>
@@ -938,30 +958,6 @@ header('X-Danaco: 1');
               <p :class="mcpError ? 'form-error' : 'form-ok'">{{ mcpMessage }}</p>
             </div>
             <div class="setup-box">
-              <div class="view-head">
-                <h3>Local models in Ollama</h3>
-                <button class="btn" type="button" @click="loadOllamaModels" :disabled="ollamaBusy">Refresh</button>
-              </div>
-              <p class="form-error" v-if="ollamaError">{{ ollamaError }}</p>
-              <p class="hint" v-else-if="!ollamaModels.length">No models installed.</p>
-              <article v-for="model in ollamaModels" :key="model.name" class="model-row">
-                <div>
-                  <strong>{{ model.name }}</strong>
-                  <p class="hint">{{ model.size_label }}<span v-if="model.parameter_size"> · {{ model.parameter_size }}</span><span v-if="model.modified"> · {{ model.modified }}</span></p>
-                  <p class="hint" v-if="model.selected">The agent uses this model.</p>
-                  <p class="hint" v-if="model.place === 'gpu'">Loaded on the GPU.</p>
-                  <p class="hint" v-else-if="model.place === 'cpu'">Loaded in RAM, not on the GPU.</p>
-                  <p class="hint" v-if="model.protected">CPU failsafe. This model stays installed.</p>
-                </div>
-                <button v-if="!model.protected" class="btn" type="button" :disabled="ollamaBusy" @click="deleteOllamaModel(model)">Delete</button>
-              </article>
-              <form class="model-install" @submit.prevent="pullOllamaModel">
-                <input class="inline-input" v-model="ollamaPullName" placeholder="qwen3.6" :disabled="ollamaBusy" aria-label="Model to install">
-                <button class="btn btn-gold" type="submit" :disabled="ollamaBusy || !ollamaPullName.trim()">Install</button>
-              </form>
-              <p class="hint" v-if="ollamaProgress">{{ ollamaProgress }}</p>
-            </div>
-            <div class="setup-box">
               <h3>Backup</h3>
               <p class="hint">Saves the selected projects with their folders, wiki, chat, tasks, logins, and all custom skills. Settings and the agent program stay on this computer.</p>
               <div v-if="projects.length" class="backup-list">
@@ -1013,7 +1009,7 @@ header('X-Danaco: 1');
 
     <div v-if="mobileNav" class="drawer-backdrop" @click="mobileNav = false">
       <aside class="drawer" @click.stop>
-        <div class="brand"><img class="brand-icon" src="/assets/logo.png" alt=""><strong>{{ agentName }}</strong></div>
+        <div class="brand"><img class="brand-icon" src="/assets/logo.png" alt=""><strong>Agent Danaco</strong></div>
         <button v-for="item in nav" :key="'d'+item.id" type="button" class="nav-btn" :class="{active: tab===item.id}" @click="setTab(item.id)">
           <svg class="ico"><use :href="'#' + item.icon"></use></svg>
           <span>{{ item.label }}</span>

@@ -222,7 +222,6 @@ SQL);
     private function seedDefaults(array $config): void
     {
         $defaults = [
-            'agent_name' => 'Agent',
             'model_mode' => 'cpu_failsafe',
             'ollama_url' => $config['ollama_url'],
             'local_model' => $config['local_model'],

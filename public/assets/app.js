@@ -335,10 +335,6 @@
           if (this.awaitingModel) return true;
           return this.showModelLoader;
         },
-        agentName() {
-          const name = String(this.settings.agent_name || '').trim();
-          return name || 'Agent';
-        },
         healthBars() {
           const usage = (this.hardware && this.hardware.usage) || {};
           const details = usage.details || {};
@@ -733,13 +729,11 @@
             if (index >= 0) this.projects.splice(index, 1, next);
             this.projects.sort((a, b) => a.name.localeCompare(b.name));
             if (previous && next && this.fileScope === 'project' && this.fileFolder === previous.folder_name && next.folder_name && next.folder_name !== previous.folder_name) {
-              const oldDesc = previous.folder_name + '_desc.md';
-              const newDesc = next.folder_name + '_desc.md';
-              if (this.fileName === oldDesc) this.fileName = newDesc;
-              if (this.fileRel === 'wiki/' + oldDesc) this.fileRel = 'wiki/' + newDesc;
+              if (this.fileName === previous.folder_name + '_desc.md') this.fileName = 'PROJECT.md';
+              if (this.fileRel === 'wiki/' + previous.folder_name + '_desc.md') this.fileRel = 'wiki/PROJECT.md';
               if (typeof this.filePath === 'string' && this.filePath.indexOf(previous.folder_name + '/') === 0) {
                 this.filePath = next.folder_name + this.filePath.slice(previous.folder_name.length);
-                this.filePath = this.filePath.replace('wiki/' + oldDesc, 'wiki/' + newDesc);
+                this.filePath = this.filePath.replace('wiki/' + previous.folder_name + '_desc.md', 'wiki/PROJECT.md');
               }
               this.fileFolder = next.folder_name;
             }
@@ -2535,7 +2529,6 @@
         async saveSetup() {
           this.setupMessage = '';
           const body = {
-            agent_name: this.settings.agent_name,
             model_mode: this.settings.model_mode,
             local_model: this.settings.local_model,
             cpu_failsafe_model: this.settings.cpu_failsafe_model,

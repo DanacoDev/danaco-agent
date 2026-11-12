@@ -31,7 +31,12 @@ class Projects
 
     public static function descFile(string $folder): string
     {
-        return $folder . '_desc.md';
+        return 'PROJECT.md';
+    }
+
+    public static function notesFile(): string
+    {
+        return 'NOTES.md';
     }
 
     public static function folderFromName(string $name): string
@@ -63,8 +68,10 @@ class Projects
     public static function wikiRelative(string $folder, string $name): string
     {
         $name = basename(str_replace('\\', '/', trim($name)));
-        if ($name === '' || preg_match('/_desc\.md$/i', $name)) {
+        if ($name === '' || preg_match('/_desc\.md$/i', $name) || strcasecmp($name, 'PROJECT.md') === 0) {
             $name = self::descFile($folder);
+        } elseif (strcasecmp($name, 'notes.md') === 0) {
+            $name = self::notesFile();
         }
         if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md$/', $name)) {
             throw new InvalidArgumentException('Wiki file name must be a markdown filename.');
@@ -83,162 +90,6 @@ class Projects
             }
         }
         return self::wikiRelative($folder, $name);
-    }
-
-    public static function soulPath(string $folder): string
-    {
-        return self::root($folder) . '/soul.md';
-    }
-
-    public static function soulHeader(): string
-    {
-        return '# Optional agent persona only. Add a short line when lasting how-you-act habits are needed (voice, always/never). Not project facts — those go in the wiki. Use the soul tool to add or remove lines below.';
-    }
-
-    public static function soulLines(string $folder): array
-    {
-        $path = self::soulPath($folder);
-        if (!is_file($path)) {
-            return [];
-        }
-        return self::parseSoul((string)file_get_contents($path));
-    }
-
-    public static function soulPrompt(string $folder): string
-    {
-        $lines = self::soulLines($folder);
-        if ($lines === []) {
-            return '';
-        }
-        return "Your persona for this project (soul.md), added to your normal rules:\n" . implode("\n", $lines);
-    }
-
-    public static function addSoulLine(string $folder, string $text): string
-    {
-        $line = self::soulLine($text, false);
-        if ($line === null) {
-            return 'Keep that behaviour to one short line.';
-        }
-        if ($line === '') {
-            return 'A short behaviour line is required.';
-        }
-        $lines = self::soulLines($folder);
-        foreach ($lines as $existing) {
-            if (strcasecmp($existing, $line) === 0) {
-                return 'That behaviour is already saved.';
-            }
-        }
-        if (count($lines) >= 40) {
-            return 'This project already has 40 behaviour lines. Remove one first.';
-        }
-        $lines[] = $line;
-        if (!self::writeSoul($folder, $lines)) {
-            return 'Could not save that behaviour.';
-        }
-        return 'Saved.';
-    }
-
-    public static function removeSoulLine(string $folder, string $text): string
-    {
-        $line = self::soulLine($text, true);
-        if ($line === null || $line === '') {
-            return 'Say which line to remove.';
-        }
-        $lines = self::soulLines($folder);
-        $next = [];
-        $found = false;
-        foreach ($lines as $existing) {
-            if (!$found && strcasecmp($existing, $line) === 0) {
-                $found = true;
-                continue;
-            }
-            $next[] = $existing;
-        }
-        if (!$found) {
-            return 'That line is not in the soul file.';
-        }
-        if (!self::writeSoul($folder, $next)) {
-            return 'Could not update the soul file.';
-        }
-        return 'Removed.';
-    }
-
-    public static function ensureSoul(string $folder): void
-    {
-        $path = self::soulPath($folder);
-        $dir = dirname($path);
-        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
-            return;
-        }
-        if (!is_file($path)) {
-            file_put_contents($path, self::soulHeader() . "\n");
-            return;
-        }
-        $raw = (string)file_get_contents($path);
-        $trimmed = ltrim($raw);
-        if ($trimmed === '' || !str_starts_with($trimmed, self::soulHeader())) {
-            self::writeSoul($folder, self::parseSoul($raw));
-        }
-    }
-
-    private static function soulLine(string $text, bool $clip): ?string
-    {
-        $text = trim(preg_replace('/\s+/', ' ', $text) ?? '');
-        $text = trim((string)preg_replace('/^[-*]+\s+/', '', $text));
-        if ($text === '' || str_starts_with($text, '#')) {
-            return '';
-        }
-        if (strcasecmp($text, 'How to act in this project, added to your normal rules:') === 0
-            || strcasecmp($text, 'Your persona for this project (soul.md), added to your normal rules:') === 0) {
-            return '';
-        }
-        if (mb_strlen($text) > 240) {
-            if (!$clip) {
-                return null;
-            }
-            $text = rtrim(mb_substr($text, 0, 240));
-        }
-        return $text;
-    }
-
-    private static function parseSoul(string $text): array
-    {
-        $lines = [];
-        foreach (preg_split('/\r\n|\n|\r/', $text) ?: [] as $raw) {
-            $line = self::soulLine($raw, true);
-            if ($line === null || $line === '') {
-                continue;
-            }
-            $known = false;
-            foreach ($lines as $existing) {
-                if (strcasecmp($existing, $line) === 0) {
-                    $known = true;
-                    break;
-                }
-            }
-            if ($known) {
-                continue;
-            }
-            $lines[] = $line;
-            if (count($lines) >= 40) {
-                break;
-            }
-        }
-        return $lines;
-    }
-
-    private static function writeSoul(string $folder, array $lines): bool
-    {
-        $root = self::root($folder);
-        if (!is_dir($root) && !mkdir($root, 0775, true) && !is_dir($root)) {
-            return false;
-        }
-        $body = self::soulHeader();
-        if ($lines !== []) {
-            $body .= "\n" . implode("\n", $lines);
-        }
-        $body .= "\n";
-        return file_put_contents(self::soulPath($folder), $body) !== false;
     }
 
     private static function descBody(string $name, string $description, string $goals, string $limitations, string $role): string
@@ -304,11 +155,10 @@ class Projects
                 throw new RuntimeException('Could not create the project description.');
             }
         }
-        $notes = $wiki . '/notes.md';
+        $notes = $wiki . '/' . self::notesFile();
         if (!is_file($notes) && file_put_contents($notes, "# Notes\n\n") === false) {
             throw new RuntimeException('Could not create the project notes.');
         }
-        self::ensureSoul($folder);
         $project = $db->insertProject($name, $folder, trim($purpose), trim($type));
         self::appendIndex($project);
         try {
@@ -347,12 +197,6 @@ class Projects
                 throw new RuntimeException('Could not rename the project folder.');
             } else {
                 $moved = true;
-                try {
-                    self::renameDescFile($newFolder, $oldFolder);
-                } catch (Throwable $e) {
-                    self::rollbackMove($oldFolder, $newFolder);
-                    throw $e;
-                }
             }
         }
         $former = null;
@@ -386,22 +230,6 @@ class Projects
         return $updated;
     }
 
-    private static function renameDescFile(string $folder, string $oldFolder): void
-    {
-        if ($oldFolder === $folder) {
-            return;
-        }
-        $wiki = self::root($folder) . '/wiki';
-        $from = $wiki . '/' . $oldFolder . '_desc.md';
-        $to = $wiki . '/' . self::descFile($folder);
-        if (!is_file($from) || is_file($to)) {
-            return;
-        }
-        if (!rename($from, $to)) {
-            throw new RuntimeException('Could not rename the project description.');
-        }
-    }
-
     private static function rollbackMove(string $oldFolder, string $newFolder): void
     {
         if ($oldFolder === $newFolder) {
@@ -411,12 +239,6 @@ class Projects
         $to = self::root($oldFolder);
         if (!is_dir($from) || file_exists($to)) {
             return;
-        }
-        $wiki = $from . '/wiki';
-        $descFrom = $wiki . '/' . self::descFile($newFolder);
-        $descTo = $wiki . '/' . $oldFolder . '_desc.md';
-        if (is_file($descFrom) && !is_file($descTo)) {
-            @rename($descFrom, $descTo);
         }
         @rename($from, $to);
     }
@@ -615,6 +437,20 @@ class Projects
                 @rename($from, $to);
             }
         }
+        self::adoptWikiFile($wiki, self::descFile($folder), [$folder . '_desc.md']);
+        if (!self::exactWikiFile($wiki, self::descFile($folder))) {
+            $legacy = [];
+            foreach (scandir($wiki) ?: [] as $item) {
+                if (preg_match('/_desc\.md$/i', $item)) {
+                    $legacy[] = $item;
+                }
+            }
+            if (count($legacy) === 1) {
+                self::adoptWikiFile($wiki, self::descFile($folder), $legacy);
+            }
+            self::adoptWikiFile($wiki, self::descFile($folder), ['PROJECT.md']);
+        }
+        self::adoptWikiFile($wiki, self::notesFile(), ['notes.md']);
         $desc = $wiki . '/' . self::descFile($folder);
         $title = trim((string)($project['name'] ?? ''));
         if ($title === '') {
@@ -627,10 +463,49 @@ class Projects
         if ($current === '' || trim($current) === trim($stub)) {
             file_put_contents($desc, $body);
         }
-        $notes = $wiki . '/notes.md';
-        if (!is_file($notes)) {
+        $notes = $wiki . '/' . self::notesFile();
+        if (!self::exactWikiFile($wiki, self::notesFile())) {
             file_put_contents($notes, "# Notes\n\n");
         }
-        self::ensureSoul($folder);
+    }
+
+    private static function exactWikiFile(string $dir, string $name): bool
+    {
+        foreach (scandir($dir) ?: [] as $item) {
+            if ($item === $name) {
+                return is_file($dir . '/' . $item);
+            }
+        }
+        return false;
+    }
+
+    private static function adoptWikiFile(string $dir, string $to, array $fromNames): void
+    {
+        if (self::exactWikiFile($dir, $to) || $fromNames === []) {
+            return;
+        }
+        $actual = '';
+        foreach (scandir($dir) ?: [] as $item) {
+            if ($item === '.' || $item === '..' || !is_file($dir . '/' . $item)) {
+                continue;
+            }
+            foreach ($fromNames as $from) {
+                if ($item === $from || strcasecmp($item, $from) === 0) {
+                    $actual = $item;
+                    break 2;
+                }
+            }
+        }
+        if ($actual === '') {
+            return;
+        }
+        $source = $dir . '/' . $actual;
+        $tmp = $dir . '/.' . $to . '.adopting';
+        if (!@rename($source, $tmp)) {
+            return;
+        }
+        if (!@rename($tmp, $dir . '/' . $to)) {
+            @rename($tmp, $source);
+        }
     }
 }

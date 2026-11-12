@@ -938,7 +938,7 @@ class SafetyInterceptor
             return $relativePath;
         }
         $leaf = basename(str_replace('\\', '/', $relativePath));
-        if (!preg_match('/_desc\.md$/i', $leaf)) {
+        if (!preg_match('/_desc\.md$/i', $leaf) && strcasecmp($leaf, 'PROJECT.md') !== 0 && strcasecmp($leaf, 'notes.md') !== 0) {
             return $relativePath;
         }
         return Projects::wikiRelative($projectFolder, $leaf);

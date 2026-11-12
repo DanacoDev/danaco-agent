@@ -19,7 +19,7 @@ $name = basename(str_replace('\\', '/', trim((string)($args['name'] ?? 'research
 if ($name === '') {
     $name = 'research.md';
 }
-if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md$/', $name) || preg_match('/_desc\.md$/', $name)) {
+if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md$/', $name) || preg_match('/_desc\.md$/i', $name) || strcasecmp($name, 'PROJECT.md') === 0) {
     echo json_encode(['status' => 'error', 'message' => 'Research belongs in its own wiki markdown file, not the project description.']);
     exit(1);
 }

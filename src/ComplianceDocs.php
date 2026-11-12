@@ -53,11 +53,7 @@ class ComplianceDocs
 
     public function disclosureSnippet(): string
     {
-        $name = trim((string)$this->db->getSetting('agent_name', 'Agent'));
-        if ($name === '') {
-            $name = 'Agent';
-        }
-        return 'This conversation is assisted by ' . $name . ', an AI system running on Agent Danaco. Outputs can be wrong. A human operator remains responsible for decisions that affect people or the business.';
+        return 'This conversation is assisted by Agent Danaco, an AI system. Outputs can be wrong. A human operator remains responsible for decisions that affect people or the business.';
     }
 
     public function systemCardMarkdown(): string
@@ -92,7 +88,6 @@ class ComplianceDocs
             '',
             '## Models and runtime',
             '',
-            '- Agent name: ' . (string)($settings['agent_name'] ?? 'Agent'),
             '- Model mode: ' . $mode,
             '- Local model: ' . (string)($settings['local_model'] ?? ''),
             '- CPU failsafe model: ' . (string)($settings['cpu_failsafe_model'] ?? ''),

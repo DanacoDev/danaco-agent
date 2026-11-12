@@ -1178,12 +1178,10 @@ class ProjectBackup
     private function retitle(string $folder, string $oldFolder, string $oldName, string $newName): void
     {
         $wiki = Projects::root($folder) . '/wiki';
-        if ($oldFolder !== $folder) {
-            $from = $wiki . '/' . $oldFolder . '_desc.md';
-            $to = $wiki . '/' . Projects::descFile($folder);
-            if (is_file($from) && !is_file($to) && !rename($from, $to)) {
-                throw new RuntimeException('Could not rename the project description.');
-            }
+        $from = $wiki . '/' . $oldFolder . '_desc.md';
+        $to = $wiki . '/' . Projects::descFile($folder);
+        if ($from !== $to && is_file($from) && !is_file($to) && !rename($from, $to)) {
+            throw new RuntimeException('Could not rename the project description.');
         }
         if ($oldName === $newName) {
             return;
