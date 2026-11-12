@@ -2,7 +2,7 @@
 /*
 ---
 name: sqlite_helper
-description: Pass database as link_database.db or database/link_database.db. Not locked to one file. count, inspect, insert, and drop use that file.
+description: Creates or changes a SQLite file in database/, including the folder. Use this instead of mkdir, run_command, or a new skill. Pass database as the filename.
 ---
 */
 

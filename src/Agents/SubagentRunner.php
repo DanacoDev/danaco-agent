@@ -122,7 +122,7 @@ class SubagentRunner
         $skills = $this->skills->summariesForPrompt();
         $skillLine = $skills === '- none'
             ? 'No extra skills are active.'
-            : "Active skills, available to every subagent:\n" . $skills;
+            : "These are the tools at your disposal. Read each for further instructions\n" . $skills;
         $scope = $this->db->fullSystemControl()
             ? 'Paths are relative to the project folder. A path that starts with / reaches any file on this computer, and run_command may use sudo.'
             : 'Paths are relative to the project folder.';
@@ -132,7 +132,7 @@ Those tools cover any file in the project, including the wiki. {$scope} A new or
 {$capLine}
 - researcher: find and check facts with web_search, fetch_url, and browse_url, parse documents, then log them with research_pipeline in their own wiki file. Do not put research in the project description.
 - writer: draft long-form text, documentation, and communication copy, and save it in the wiki. An article runs write_article and follows every step, including humanizer and a spelling pass. Other prose runs humanizer. A figure, icon, or infographic runs make_graphic, then the file is written and its path comes back. A PDF is the writer's job too. Delegate the brief and the file name. The writer calls create_pdf, and only the file path comes back, so a long document does not fill this chat. Do not give a PDF to the coder.
-- coder: write and debug software, run code_verifier on each changed file, use download_large for a download over 100 MB, and register a reusable PHP or Python skill with write_skill, then test_skill and read the exit code and output. That puts it in the Skills library. A file in the project is not a skill. A page icon or graphic runs make_graphic before it is drawn.
+- coder: write and debug software, run code_verifier on each changed file, and use download_large for a download over 100 MB. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
 - marketer: campaigns, press copy, brand, and visual direction. An icon or infographic runs make_graphic.
 The Consultant always exists. When it is available it can use the same project file tools. It has no write_skill or test_skill. It is paid and only for a hard multi-step problem.
@@ -148,7 +148,7 @@ TXT;
             '- read_image: args path, optional question. Looks at a png, jpg, gif, or webp in this project. The GPU model can see the picture, including text in it. Use it for a screenshot, photo, or image upload. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.',
             '- screenshot: args path or url, optional save, width, height. Takes a picture of a page in this project or a public page. path is an html, htm, or php file, or a folder with an index page. url is a public http or https address. Saves a png under screenshots/ unless save is set. Cite that path alone on a line so the user sees the picture. Call read_image on it when you need to see what is wrong.',
             '- create_pdf: args path, text. Writes a PDF in this project. Put the file in docs/ unless another folder was requested. path ends in .pdf and is not in wiki/. Headings and asterisks are typeset for you. An existing file is kept, and the new one is saved as the next free name, such as document2.pdf. Cite the path the tool wrote, alone on a line. Do not repeat the document.',
-            '- write_file: args path, content. Creates or overwrites a file in this project. It can create folders in the path. Markdown belongs in wiki/. A skill is not a project file. The coder uses write_skill.',
+            '- write_file: args path, content. Creates or overwrites a file in this project. It can create folders in the path. Markdown belongs in wiki/. A skill is not a project file. Do not create one unless the main agent explicitly asked. The coder uses write_skill.',
             '- delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.',
             '- move_file: args from, to. Moves a file or folder to another path in this project. It can create folders in the path.',
             '- list_files: args path, optional',
@@ -160,11 +160,11 @@ TXT;
             '- kanban: args action (list or result). list shows the board. result needs id and result, and that is the only change you can make. You cannot create, move, edit, or delete a card. The main agent checks the result and then moves or updates the card.',
         ];
         if ($agent === 'coder') {
-            $toolLines[] = '- write_skill: args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there.';
+            $toolLines[] = '- write_skill: Do not call this unless the main agent explicitly asked you to create or replace a skill. args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there.';
             $toolLines[] = '- test_skill: args name, input. Runs that skill in this project and returns the exit code, stdout, and stderr. name is the skill. input is the JSON object it reads on stdin. The skill really runs, so files it writes stay. It also runs a skill that is turned off. Call it after write_skill. A skill registered in this run is not callable by its own name until a later run. Do not finish while the test result is wrong.';
         }
         $toolLines = array_merge($toolLines, $this->capabilities->descriptions($projectId));
-        $toolLines[] = "Skills, one line each:\n" . $this->skills->summariesForPrompt();
+        $toolLines[] = $this->skills->summariesForPrompt();
         $identity = 'Assigned project folder: ' . $projectFolder;
         $named = $projectFolder !== '' ? $this->db->projectByFolder($projectFolder) : null;
         if (is_array($named)) {
@@ -182,6 +182,8 @@ TXT;
 Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card. You cannot create, move, edit, or delete a kanban card, and you do not call task_breakdown. When the instruction names a card, add a short result to it with the kanban tool before you finish. The main agent checks that work and then moves or updates the card. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
 
 Do not install software or dependencies. If something is missing, say what it is and stop. The main agent asks the user and installs it.
+
+Never create or replace a skill unless the instruction from the main agent explicitly asks for that new or replaced skill. A database, a folder, or a script the task needs is not that request. Use a tool or skill that is already listed.
 
 When you need a tool, emit exactly this and stop so the system can run it. Put nothing after <<end>> in the same turn:
 <<tool>>
@@ -205,7 +207,7 @@ Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> 
 Do not print a tool call in the reply. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_write or write_file first, then answer.
 
-Tools:
+These are the tools at your disposal. Read each for further instructions
 TXT;
         if ($this->db->fullSystemControl()) {
             $rules .= "\nFull system control is on. You may use sudo, and a path that starts with / can read or change any file on this computer. Prefer {$projectFolder}/ unless the task needs something outside it.\n";

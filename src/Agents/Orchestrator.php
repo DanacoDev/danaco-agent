@@ -566,7 +566,7 @@ Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> 
 Do not print a tool call in the reply. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_write or write_file first, then answer.
 
-Tools:
+These are the tools at your disposal. Read each for further instructions
 - delegate: args agent (researcher, writer, coder, analyst, or marketer), instruction, project, task_id. One subagent at a time. Pick the agent from the team section. Delegating a card moves it to in_progress. Pass task_id when that card already exists. A subagent can only add a result to that card. When it returns, list the kanban, check that the work was done, and you move or update the card before the next step, even if you have no recollection of any tasks.
 {$fileTools}
 {$consultLine}- kanban: the task board. args action (list, create, move, or delete).
@@ -587,7 +587,7 @@ Tools:
 - list_vault: no args. Backups and trash with exact size_bytes for each item. Read or restore only. Never delete them.
 - read_vault: args kind (backup or trash), stored_as
 - restore_file: args kind, stored_as
-- write_skill: args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there. Delegate this to the coder. Call it yourself when the coder cannot finish.
+- write_skill: args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there. A subagent creates a skill only when you explicitly ask for that new or replaced skill in the instruction. Delegate this to the coder. Call it yourself when the coder cannot finish.
 - test_skill: args name, input. Runs that skill in this project and returns the exit code, stdout, and stderr. name is the skill. input is the JSON object it reads on stdin. The skill really runs, so files it writes stay. It also runs a skill that is turned off. Use it to check a skill, including one just registered with write_skill. A skill registered in this run is not callable by its own name until a later run. Delegate the test to the coder. Call it yourself when the coder cannot finish. Open a project first.
 
 Skills, one line each:
@@ -610,7 +610,7 @@ TXT;
             $lines[] = '- send_email: this chat has no mailbox. Say that a mailbox is added on the Setup page, under Email, and linked to this project. There is no Tools tab. Do not describe it as a missing capability.';
         }
         $extra = $lines ? implode("\n", $lines) . "\n" : '';
-        $rules = str_replace("Skills, one line each:", $extra . "Skills, one line each:", $rules);
+        $rules = str_replace("Skills, one line each:\n", $extra, $rules);
         $tail = Prompts::ORCHESTRATOR . "\n\n" . $rules . "\n" . $this->skills->summariesForPrompt();
         $notes = $this->memory->toolNotesForPrompt();
         if ($notes !== '') {
