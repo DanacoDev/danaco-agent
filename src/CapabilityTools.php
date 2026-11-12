@@ -242,8 +242,6 @@ class CapabilityTools
         $refusals = [];
         $sawEmpty = false;
         $terms = $this->queryTerms($query);
-        $bestBlocks = '';
-        $bestScore = -1;
         foreach (['Bing', 'Google', 'DuckDuckGo'] as $name) {
             if ($name === 'Bing') {
                 $found = $this->bingResults($query);
@@ -252,23 +250,14 @@ class CapabilityTools
             } else {
                 $found = $this->duckSearch($query);
             }
-            $blocks = $this->searchBlocks($found['results']);
+            $shown = $this->matchingResults($terms, $found['results']);
+            $blocks = $this->searchBlocks($shown);
             if ($blocks) {
-                $score = $this->resultTermScore($terms, $found['results']);
-                $full = !$terms || $score === count($terms);
-                if ($full || $score > $bestScore) {
-                    $labeled = $blocks;
-                    $labeled[] = 'Results from ' . $name . '.';
-                    $labeled[] = 'Read a page with fetch_url. The result lists links you can open next.';
-                    $bestBlocks = clip_text(implode("\n\n", $labeled), 4000);
-                    $bestScore = $score;
-                    if ($full) {
-                        return $bestBlocks;
-                    }
-                }
-                continue;
+                $blocks[] = 'Results from ' . $name . '.';
+                $blocks[] = 'Read a page with fetch_url. The result lists links you can open next.';
+                return clip_text(implode("\n\n", $blocks), 4000);
             }
-            if ($found['status'] === 'results') {
+            if ($found['status'] === 'results' || $found['results']) {
                 $found['status'] = 'empty';
             }
             if ($found['status'] === 'empty') {
@@ -277,14 +266,11 @@ class CapabilityTools
             }
             $refusals[] = $this->engineMiss($name, $found);
         }
-        if ($bestBlocks !== '') {
-            return $bestBlocks;
-        }
-        $instant = $this->instantAnswer($query);
-        if ($instant !== '') {
-            return $instant;
-        }
         if (!$sawEmpty) {
+            $instant = $this->instantAnswer($query);
+            if ($instant !== '') {
+                return $instant;
+            }
             return $this->providersRejected($refusals);
         }
         if (preg_match('/^site:\s*([a-z0-9.-]+\.[a-z]{2,})\/?$/i', $query, $match) && $this->hostIsPublic($match[1])) {
@@ -347,6 +333,41 @@ class CapabilityTools
             }
         }
         return $score;
+    }
+
+    private function matchingResults(array $terms, array $results): array
+    {
+        if (count($terms) < 2) {
+            return $results;
+        }
+        $later = array_slice($terms, 1);
+        $kept = [];
+        foreach ($results as $row) {
+            $hit = 0;
+            $hasLater = false;
+            foreach ($terms as $index => $term) {
+                if ($this->resultTermScore([$term], [$row]) !== 1) {
+                    continue;
+                }
+                $hit++;
+                if ($index > 0) {
+                    $hasLater = true;
+                }
+            }
+            if (!$hasLater) {
+                continue;
+            }
+            $row['_hit'] = $hit;
+            $kept[] = $row;
+        }
+        if ($this->resultTermScore($later, $kept) < count($later)) {
+            return [];
+        }
+        usort($kept, static fn(array $a, array $b): int => ($b['_hit'] ?? 0) <=> ($a['_hit'] ?? 0));
+        foreach ($kept as &$row) {
+            unset($row['_hit']);
+        }
+        return $kept;
     }
 
     private function engineMiss(string $name, array $found): string
@@ -551,12 +572,26 @@ class CapabilityTools
 
     private function bingResults(string $query): array
     {
-        $url = 'https://www.bing.com/search?format=rss&count=8&q=' . rawurlencode($query);
         $market = $this->bingMarket();
+        $headers = ['Accept-Language: sv-SE,sv;q=0.9,en;q=0.8', 'Referer: https://www.bing.com/'];
+        $cookie = $this->bingCookie();
+        if ($cookie !== '') {
+            $headers[] = 'Cookie: ' . $cookie;
+        }
+        $page = 'https://www.bing.com/search?q=' . rawurlencode($query);
+        if ($market !== '') {
+            $page .= '&mkt=' . rawurlencode($market);
+        }
+        $html = $this->searchFetch($page, null, $headers);
+        $parsed = $this->parseBingHtml((string)$html['body']);
+        if ($parsed && (int)$html['code'] === 200) {
+            return $this->searchOutcome($parsed, 'results', $html);
+        }
+        $url = 'https://www.bing.com/search?format=rss&count=8&q=' . rawurlencode($query);
         if ($market !== '') {
             $url .= '&mkt=' . rawurlencode($market);
         }
-        $fetched = $this->searchFetch($url);
+        $fetched = $this->searchFetch($url, null, $headers);
         $body = (string)$fetched['body'];
         if ($this->searchFailedToConnect($fetched)) {
             return $this->searchOutcome([], 'transport', $fetched);
@@ -589,6 +624,62 @@ class CapabilityTools
     private function bingMarket(): string
     {
         return date_default_timezone_get() === 'Europe/Stockholm' ? 'sv-SE' : '';
+    }
+
+    private function bingCookie(): string
+    {
+        static $cookie = null;
+        if ($cookie !== null) {
+            return $cookie;
+        }
+        $meta = ['code' => 0, 'error' => ''];
+        $final = '';
+        $this->request('https://www.bing.com/', 0, null, $final, $meta, ['Accept-Language: sv-SE,sv;q=0.9,en;q=0.8']);
+        $cookie = $this->setCookieHeader((string)($meta['header'] ?? ''));
+        return $cookie;
+    }
+
+    private function setCookieHeader(string $header): string
+    {
+        if (!preg_match_all('/^Set-Cookie:\s*([^=;\s]+)=([^;]*)/mi', $header, $matches, PREG_SET_ORDER)) {
+            return '';
+        }
+        $pairs = [];
+        foreach ($matches as $match) {
+            $pairs[$match[1]] = $match[1] . '=' . $match[2];
+        }
+        return implode('; ', $pairs);
+    }
+
+    private function parseBingHtml(string $html): array
+    {
+        if (!preg_match_all('/<h2\b[^>]*>\s*<a\b([^>]*)>(.*?)<\/a>/is', $html, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+            return [];
+        }
+        $out = [];
+        $seen = [];
+        foreach ($matches as $match) {
+            $href = $this->htmlAttr($match[1][0], 'href');
+            if (!str_contains($href, '/ck/a')) {
+                continue;
+            }
+            $url = $this->searchResultUrl($href);
+            $title = trim(preg_replace('/\s+/', ' ', html_entity_decode(strip_tags($match[2][0]), ENT_QUOTES | ENT_HTML5, 'UTF-8')) ?? '');
+            if ($url === '' || $title === '' || isset($seen[$url]) || mb_strlen($title) < 2) {
+                continue;
+            }
+            $seen[$url] = true;
+            $end = $match[0][1] + strlen($match[0][0]);
+            $snippet = '';
+            if (preg_match('/<p\b[^>]*>(.*?)<\/p>/is', substr($html, $end, 1400), $paragraph)) {
+                $snippet = trim(preg_replace('/\s+/', ' ', html_entity_decode(strip_tags($paragraph[1]), ENT_QUOTES | ENT_HTML5, 'UTF-8')) ?? '');
+            }
+            $out[] = ['title' => $title, 'url' => $url, 'snippet' => $snippet];
+            if (count($out) >= 8) {
+                break;
+            }
+        }
+        return $out;
     }
 
     private function googleResults(string $query): array
@@ -657,11 +748,11 @@ class CapabilityTools
         return $this->searchResultUrl($href);
     }
 
-    private function searchFetch(string $url, ?string $post = null): array
+    private function searchFetch(string $url, ?string $post = null, array $headers = []): array
     {
         $meta = ['code' => 0, 'error' => ''];
         $finalUrl = $url;
-        $body = $this->request($url, 0, $post, $finalUrl, $meta);
+        $body = $this->request($url, 0, $post, $finalUrl, $meta, $headers);
         return [
             'body' => $body,
             'code' => (int)($meta['code'] ?? 0),
@@ -1039,7 +1130,7 @@ class CapabilityTools
         return $url;
     }
 
-    private function request(string $url, int $hops = 0, ?string $post = null, ?string &$finalUrl = null, ?array &$meta = null): string
+    private function request(string $url, int $hops = 0, ?string $post = null, ?string &$finalUrl = null, ?array &$meta = null, array $extraHeaders = []): string
     {
         $finalUrl = $url;
         if ($hops > 4) {
@@ -1065,10 +1156,7 @@ class CapabilityTools
             CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_USERAGENT => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
             CURLOPT_ENCODING => '',
-            CURLOPT_HTTPHEADER => [
-                'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language: en,sv;q=0.8',
-            ],
+            CURLOPT_HTTPHEADER => $this->requestHeaders($extraHeaders),
         ];
         if ($post !== null) {
             $opts[CURLOPT_POST] = true;
@@ -1092,19 +1180,37 @@ class CapabilityTools
                 $this->rememberResponse($meta, $code, '');
                 return $body;
             }
-            return $this->request($next, $hops + 1, null, $finalUrl, $meta);
+            return $this->request($next, $hops + 1, null, $finalUrl, $meta, $extraHeaders);
         }
-        $this->rememberResponse($meta, $code, $code === 0 ? ($error !== '' ? $error : 'The request failed.') : '');
+        $this->rememberResponse($meta, $code, $code === 0 ? ($error !== '' ? $error : 'The request failed.') : '', $header);
         return $body;
     }
 
-    private function rememberResponse(?array &$meta, int $code, string $error): void
+    private function requestHeaders(array $extraHeaders): array
+    {
+        $headers = ['Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'];
+        $language = 'Accept-Language: en,sv;q=0.8';
+        foreach ($extraHeaders as $header) {
+            if (stripos($header, 'Accept-Language:') === 0) {
+                $language = $header;
+                continue;
+            }
+            $headers[] = $header;
+        }
+        $headers[] = $language;
+        return $headers;
+    }
+
+    private function rememberResponse(?array &$meta, int $code, string $error, string $header = ''): void
     {
         if ($meta === null) {
             return;
         }
         $meta['code'] = $code;
         $meta['error'] = $error;
+        if ($header !== '') {
+            $meta['header'] = $header;
+        }
     }
 
     private function hostIsPublic(string $host): bool
