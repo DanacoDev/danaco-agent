@@ -612,10 +612,16 @@ header('X-Danaco: 1');
               <div class="panel skill-pane">
                 <form v-if="skillCreating || skillEditing" class="skill-editor" @submit.prevent="saveSkillForm">
                   <h3 class="file-title">{{ skillForm.id ? 'Edit skill' : 'New skill' }}</h3>
-                  <label class="field">Name<input v-model="skillForm.name" required></label>
+                  <label class="field">Name<input v-model="skillForm.name" required pattern="[a-z0-9]+(-[a-z0-9]+)*"></label>
                   <label class="field">Description<input v-model="skillForm.description" required></label>
-                  <label class="field">Filename<input v-model="skillForm.filename" required></label>
-                  <label class="field">Source<textarea v-model="skillForm.source" class="file-editor" rows="16"></textarea></label>
+                  <label class="field">Instructions<textarea v-model="skillForm.source" class="file-editor" rows="16"></textarea></label>
+                  <label class="field">Helper script
+                    <select v-model="skillForm.lang">
+                      <option value="php">PHP</option>
+                      <option value="py">Python</option>
+                    </select>
+                  </label>
+                  <label class="field">Script<textarea v-model="skillForm.script" class="file-editor" rows="8" placeholder="Optional. Reads JSON from stdin and prints the result."></textarea></label>
                   <p class="form-error">{{ skillError }}</p>
                   <div class="task-actions">
                     <button class="btn btn-gold" type="submit">Save skill</button>
@@ -635,11 +641,13 @@ header('X-Danaco: 1');
                     </div>
                   </div>
                   <p class="hint">{{ selectedSkill.description }}</p>
+                  <p v-if="selectedSkill.available === false" class="hint">Not available on this computer.</p>
                   <label class="switch-row">Enabled
                     <input type="checkbox" :checked="!!selectedSkill.is_active" @change="toggleSkill(selectedSkill, $event.target.checked)">
                   </label>
                   <p v-if="skillError" class="form-error">{{ skillError }}</p>
                   <pre class="file-view">{{ selectedSkill.source }}</pre>
+                  <pre v-if="selectedSkill.script" class="file-view">{{ selectedSkill.script }}</pre>
                 </template>
               </div>
             </div>

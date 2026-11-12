@@ -1623,31 +1623,31 @@ class Api
             return;
         }
         try {
+            $script = array_key_exists('script', $body) ? (string)$body['script'] : null;
             $skill = app_services()['skills']->saveSource(
-                (string)($body['filename'] ?? ''),
-                (string)($body['source'] ?? ''),
                 (string)($body['name'] ?? ''),
                 (string)($body['description'] ?? ''),
+                (string)($body['source'] ?? ''),
                 !array_key_exists('is_active', $body) || !empty($body['is_active']),
                 'user',
-                true
+                true,
+                $script,
+                (string)($body['lang'] ?? '')
             );
         } catch (InvalidArgumentException | RuntimeException $e) {
             $this->json(['error' => $e->getMessage()], 422);
             return;
         }
-        if ($previous && $previous['script_path'] !== $skill['script_path']) {
-            $old = app_config()['data_dir'] . '/skills/' . basename((string)$previous['script_path']);
-            $skillsDir = realpath(app_config()['data_dir'] . '/skills');
-            $oldReal = realpath($old);
-            if ($skillsDir && $oldReal && str_starts_with($oldReal, $skillsDir . DIRECTORY_SEPARATOR)) {
-                unlink($oldReal);
-            }
-            if ($previous['name'] !== $skill['name']) {
-                $this->db->deleteSkill($previous['id']);
+        if ($previous && $previous['name'] !== $skill['name']) {
+            app_services()['skills']->deleteOwned((int)$previous['id']);
+        }
+        $rows = app_services()['skills']->sync();
+        foreach ($rows as $row) {
+            if ((int)$row['id'] === (int)$skill['id']) {
+                $skill = $row;
+                break;
             }
         }
-        $skill['source'] = app_services()['skills']->readSource($skill);
         $this->json(['skill' => $skill]);
     }
 

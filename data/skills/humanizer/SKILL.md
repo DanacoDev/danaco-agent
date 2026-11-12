@@ -1,51 +1,10 @@
-<?php
-/*
 ---
 name: humanizer
 description: Checklist for prose that should sound human. args text or path, optional voice or voice_path. You rewrite; this does not.
+version: 1.0.0
 ---
-*/
-$args = json_decode(stream_get_contents(STDIN) ?: '', true);
-if (!is_array($args)) {
-    $args = [];
-}
 
-function humanizer_load(string $path): string
-{
-    $path = str_replace('\\', '/', trim($path));
-    if ($path === '' || str_contains($path, "\0") || preg_match('#(^|/)\.\.(/|$)#', $path)) {
-        fwrite(STDERR, "Name a file inside the project.\n");
-        exit(1);
-    }
-    $root = realpath(getcwd() ?: '.');
-    $target = ($root ?: '') . '/' . ltrim($path, '/');
-    $real = realpath($target);
-    if ($root === false || $real === false || !is_file($real) || !str_starts_with($real, $root . DIRECTORY_SEPARATOR)) {
-        fwrite(STDERR, "File not found: {$path}\n");
-        exit(1);
-    }
-    $data = file_get_contents($real);
-    if ($data === false) {
-        fwrite(STDERR, "Could not read {$path}.\n");
-        exit(1);
-    }
-    if (strlen($data) > 60000) {
-        $data = substr($data, 0, 60000) . "\n…[truncated]";
-    }
-    return $data;
-}
-
-$draft = trim((string)($args['text'] ?? ''));
-if ($draft === '' && trim((string)($args['path'] ?? '')) !== '') {
-    $draft = humanizer_load((string)$args['path']);
-}
-$voice = trim((string)($args['voice'] ?? ''));
-if ($voice === '' && trim((string)($args['voice_path'] ?? '')) !== '') {
-    $voice = humanizer_load((string)$args['voice_path']);
-}
-
-echo <<<'TXT'
-Humanizer. Rewrite the draft so a person could have written it. Keep the meaning and the requested tone. If a voice sample is below, copy its sentence length, word choice, openings, and punctuation instead of inventing a new voice.
+Rewrite the draft so a person could have written it. Keep the meaning and the requested tone. If a voice sample was passed, copy its sentence length, word choice, openings, and punctuation instead of inventing a new voice. Read path or voice_path from the project when that is how the draft or the sample was given.
 
 You do the rewrite. This note is only the checklist.
 1. Mark the tells.
@@ -75,14 +34,3 @@ Tells to cut or rewrite:
 - Fake depth: the real question is, at its core, fundamentally.
 - Announcing the next part, or a heading repeated by the next sentence.
 - Metaphors that need a translation, poster fragments, a question you answer yourself, tic openers (So, Interestingly, Crucially), and reassurance nobody asked for.
-
-TXT;
-if ($voice !== '') {
-    echo "Voice sample:\n" . $voice . "\n\n";
-}
-if ($draft !== '') {
-    echo "Draft:\n" . $draft . "\n\n";
-} else {
-    echo "No draft was passed. Apply the checklist to the prose you already have.\n\n";
-}
-echo "Adapted from blader/humanizer (MIT), which tracks Wikipedia's \"Signs of AI writing\" (WikiProject AI Cleanup). Original author Siqi Chen, https://github.com/blader/humanizer. The Danaco port added later tells; this copy is the short form used here.\n";

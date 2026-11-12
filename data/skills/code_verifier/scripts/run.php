@@ -1,10 +1,4 @@
 <?php
-/*
----
-name: code_verifier
-description: Checks syntax of one project file. args file, lang (php or python).
----
-*/
 $args = json_decode(stream_get_contents(STDIN) ?: '', true);
 if (!is_array($args)) {
     $args = [];

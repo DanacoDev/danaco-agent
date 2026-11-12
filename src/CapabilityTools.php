@@ -993,7 +993,161 @@ class CapabilityTools
         if (trim($body) === '') {
             return 'The page returned nothing.';
         }
-        return $this->pageText($body, $final !== '' ? $final : $url);
+        $pageUrl = $final !== '' ? $final : $url;
+        $feed = $this->feedText($body, $pageUrl);
+        if ($feed !== '') {
+            return $feed;
+        }
+        return $this->pageText($body, $pageUrl);
+    }
+
+    private function looksLikeFeed(string $body): bool
+    {
+        $start = ltrim($body, "\xEF\xBB\xBF \t\r\n");
+        $start = preg_replace('/^(?:<\?xml\b[^>]*\?>\s*|<!--.*?-->\s*)+/is', '', $start) ?? $start;
+        return (bool)preg_match('/^<(?:(?:[a-zA-Z0-9]+:)?(?:rss|feed)|rdf:RDF|RDF)\b/i', ltrim($start));
+    }
+
+    private function feedText(string $body, string $pageUrl): string
+    {
+        if (!$this->looksLikeFeed($body)) {
+            return '';
+        }
+        $body = $this->feedCharset($body);
+        $xml = preg_replace('/<(\/?)[a-zA-Z0-9]+:/', '<$1', $body) ?? $body;
+        if (!preg_match_all('/<(item|entry)\b([^>]*)>(.*?)<\/\1>/is', $xml, $matches, PREG_SET_ORDER)) {
+            return '';
+        }
+        $blocks = [];
+        $n = 0;
+        foreach ($matches as $match) {
+            $item = $match[2] . '>' . $match[3];
+            $title = $this->plainFeedText($this->xmlText($match[3], 'title'));
+            $link = $this->feedLink($item, $pageUrl);
+            if ($title === '' && $link === '') {
+                continue;
+            }
+            if ($title === '') {
+                $title = $link;
+            }
+            $n++;
+            $block = $n . '. ' . $title;
+            if ($link !== '') {
+                $block .= "\n" . $link;
+            }
+            $date = $this->feedDate($match[3]);
+            $summary = $this->feedSummary($match[3]);
+            if ($date !== '') {
+                $block .= "\n" . $date;
+            }
+            if ($summary !== '') {
+                $block .= "\n" . $summary;
+            }
+            $blocks[] = $block;
+            if ($n >= 15) {
+                break;
+            }
+        }
+        if (!$blocks) {
+            return '';
+        }
+        $name = $this->plainFeedText($this->xmlText($xml, 'title'));
+        $head = $name !== '' ? 'Items from ' . $name . '.' : 'Items from the feed.';
+        array_unshift($blocks, $head);
+        return clip_text(implode("\n\n", $blocks), 8000);
+    }
+
+    private function feedCharset(string $body): string
+    {
+        $body = $this->normalizeCharset($body);
+        if (!preg_match('/<\?xml\b[^>]*\bencoding\s*=\s*["\']([a-zA-Z0-9_-]+)/i', $body, $match)) {
+            return $body;
+        }
+        $charset = strtoupper($match[1]);
+        if ($charset === 'UTF-8' || $charset === 'UTF8') {
+            return $body;
+        }
+        $converted = @mb_convert_encoding($body, 'UTF-8', $charset);
+        return is_string($converted) && $converted !== '' ? $converted : $body;
+    }
+
+    private function feedLink(string $item, string $pageUrl): string
+    {
+        $text = trim($this->xmlText($item, 'link'));
+        if (preg_match('#^https?://#i', $text) || str_starts_with($text, '/')) {
+            $abs = $this->absoluteUrl($text, $pageUrl);
+            if (preg_match('#^https?://#i', $abs)) {
+                return $abs;
+            }
+        }
+        if (preg_match_all('/<link\b([^>]*)\/?>/i', $item, $matches)) {
+            $fallback = '';
+            foreach ($matches[1] as $attrs) {
+                $href = $this->absoluteUrl(trim($this->htmlAttr($attrs, 'href')), $pageUrl);
+                if (!preg_match('#^https?://#i', $href)) {
+                    continue;
+                }
+                $rel = strtolower(trim($this->htmlAttr($attrs, 'rel')));
+                if ($rel === '' || $rel === 'alternate') {
+                    return $href;
+                }
+                if ($fallback === '' && !in_array($rel, ['self', 'edit', 'replies'], true)) {
+                    $fallback = $href;
+                }
+            }
+            if ($fallback !== '') {
+                return $fallback;
+            }
+        }
+        if (preg_match('/\b(?:rdf:)?about\s*=\s*(["\'])(https?:\/\/.*?)\1/i', $item, $match)) {
+            return $this->absoluteUrl(html_entity_decode($match[2], ENT_QUOTES | ENT_HTML5, 'UTF-8'), $pageUrl);
+        }
+        foreach (['guid', 'id'] as $tag) {
+            $guid = trim($this->xmlText($item, $tag));
+            if (preg_match('#^https?://#i', $guid)) {
+                return $this->absoluteUrl($guid, $pageUrl);
+            }
+        }
+        return '';
+    }
+
+    private function feedDate(string $item): string
+    {
+        foreach (['pubDate', 'published', 'updated', 'date'] as $tag) {
+            $value = trim($this->xmlText($item, $tag));
+            if ($value === '') {
+                continue;
+            }
+            $calendar = preg_replace('/^[A-Za-z]+,\s*/', '', $value) ?? $value;
+            $parsed = date_create($calendar);
+            if ($parsed instanceof DateTimeInterface) {
+                return $parsed->format('Y-m-d H:i');
+            }
+            return $this->plainFeedText($value);
+        }
+        return '';
+    }
+
+    private function feedSummary(string $item): string
+    {
+        $raw = '';
+        foreach (['description', 'summary', 'encoded', 'content'] as $tag) {
+            $raw = $this->xmlText($item, $tag);
+            if (trim($raw) !== '') {
+                break;
+            }
+        }
+        $text = $this->plainFeedText($raw);
+        if (mb_strlen($text) > 240) {
+            $text = rtrim(mb_substr($text, 0, 237)) . '...';
+        }
+        return $text;
+    }
+
+    private function plainFeedText(string $text): string
+    {
+        $text = html_entity_decode(strip_tags($text), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        return trim(preg_replace('/\s+/', ' ', $text) ?? $text);
     }
 
     private function browseUrl(string $url): string

@@ -1,10 +1,4 @@
 <?php
-/*
----
-name: download_large
-description: Resume a download over 100 MB in the background so the chat is not held up. args url, path, optional sha256.
----
-*/
 $args = json_decode(stream_get_contents(STDIN) ?: '', true);
 if (!is_array($args)) {
     $args = [];

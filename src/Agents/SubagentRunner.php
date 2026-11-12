@@ -119,52 +119,43 @@ class SubagentRunner
         if (in_array('send_email', $own, true)) {
             $capLine .= "Call send_email when mail should go out. Do not delegate a send, and do not say the tool is missing. The mailbox on that tool is who the message is from. to is who it is written to.\n";
         }
-        $skills = $this->skills->summariesForPrompt();
-        $skillLine = $skills === '- none'
-            ? 'No extra skills are active.'
-            : "These are the tools at your disposal. Read each for further instructions\n" . $skills;
         $scope = $this->db->fullSystemControl()
             ? 'Paths are relative to the project folder. A path that starts with / reaches any file on this computer, and run_command may use sudo.'
             : 'Paths are relative to the project folder.';
         return <<<TXT
 Team. Delegate by the kind of work. Every subagent can use: {$shared}.
-Those tools cover any file in the project, including the wiki. {$scope} A new or replaced skill, PHP or Python, goes to the coder through write_skill. That registers it in the Skills library, outside the project, so later runs and scheduled tasks can call it by name. You have write_skill when the coder cannot finish it. test_skill runs a skill and returns the exit code, stdout, and stderr. You have that too. Do not write a skill into the project.
+Those skills cover any file in the project, including the wiki. {$scope} A new or replaced skill goes to the coder through write_skill. That registers it in the Skills library, outside the project, so later runs and scheduled tasks can call it by name. You have write_skill when the coder cannot finish it. test_skill runs a skill and returns what it printed. You have that too. Do not write a skill into the project.
 {$capLine}
 - researcher: find and check facts with web_search, fetch_url, and browse_url, parse documents, then log them with research_pipeline in their own wiki file. Do not put research in the project description.
 - writer: draft long-form text, documentation, and communication copy, and save it in the wiki. An article runs write_article and follows every step, including humanizer and a spelling pass. Other prose runs humanizer. A figure, icon, or infographic runs make_graphic, then the file is written and its path comes back. A PDF is the writer's job too. Delegate the brief and the file name. The writer calls create_pdf, and only the file path comes back, so a long document does not fill this chat. Do not give a PDF to the coder.
 - coder: write and debug software, run code_verifier on each changed file, and use download_large for a download over 100 MB. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
 - marketer: campaigns, press copy, brand, and visual direction. An icon or infographic runs make_graphic.
-The Consultant always exists. When it is available it can use the same project file tools. It has no write_skill or test_skill. It is paid and only for a hard multi-step problem.
-{$skillLine}
+The Consultant always exists. When it is available it can use the same project file skills. It has no write_skill or test_skill. It is paid and only for a hard multi-step problem.
 TXT;
     }
 
     private function systemPrompt(string $agent, string $projectFolder, int $projectId): string
     {
-        $toolLines = [
-            '- read_file: args path. Any file in this project, including the wiki.',
-            '- read_pdf: args path, optional question. Reads the text of a PDF in this project. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay. Do not ask the user to type the page out.',
-            '- read_image: args path, optional question. Looks at a png, jpg, gif, or webp in this project. The GPU model can see the picture, including text in it. Use it for a screenshot, photo, or image upload. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.',
-            '- screenshot: args path or url, optional save, width, height. Takes a picture of a page in this project or a public page. path is an html, htm, or php file, or a folder with an index page. url is a public http or https address. Saves a png under screenshots/ unless save is set. Cite that path alone on a line so the user sees the picture. Call read_image on it when you need to see what is wrong.',
-            '- create_pdf: args path, text. Writes a PDF in this project. Put the file in docs/ unless another folder was requested. path ends in .pdf and is not in wiki/. Headings and asterisks are typeset for you. An existing file is kept, and the new one is saved as the next free name, such as document2.pdf. Cite the path the tool wrote, alone on a line. Do not repeat the document.',
-            '- write_file: args path, content. Creates or overwrites a file in this project. It can create folders in the path. Markdown belongs in wiki/. A skill is not a project file. Do not create one unless the main agent explicitly asked. The coder uses write_skill.',
-            '- delete_file: args path. Moves a file or folder out of the project into the trash above it. path is relative, such as projects. Cannot delete backups or trash.',
-            '- move_file: args from, to. Moves a file or folder to another path in this project. It can create folders in the path.',
-            '- list_files: args path, optional',
-            '- list_vault: no args. Backups and trash you can read or restore, with exact size_bytes for each item.',
-            '- read_vault: args kind (backup or trash), stored_as',
-            '- restore_file: args kind, stored_as',
-            '- wiki_search: args query',
-            '- wiki_write: args content, append, and optional name. name is a markdown filename in wiki/. Omit it only to update the general description: what the project is, contributors, credentials, and main goals. Pass a new name for research, findings, and specific data.',
-            '- kanban: args action (list or result). list shows the board. result needs id and result, and that is the only change you can make. You cannot create, move, edit, or delete a card. The main agent checks the result and then moves or updates the card.',
-        ];
-        if ($agent === 'coder') {
-            $toolLines[] = '- write_skill: Do not call this unless the main agent explicitly asked you to create or replace a skill. args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there.';
-            $toolLines[] = '- test_skill: args name, input. Runs that skill in this project and returns the exit code, stdout, and stderr. name is the skill. input is the JSON object it reads on stdin. The skill really runs, so files it writes stay. It also runs a skill that is turned off. Call it after write_skill. A skill registered in this run is not callable by its own name until a later run. Do not finish while the test result is wrong.';
+        $omit = ['delegate', 'consult', 'wiki_read', 'wiki_reindex', 'task_breakdown'];
+        if ($agent !== 'coder') {
+            $omit[] = 'write_skill';
+            $omit[] = 'test_skill';
         }
-        $toolLines = array_merge($toolLines, $this->capabilities->descriptions($projectId));
-        $toolLines[] = $this->skills->summariesForPrompt();
+        if ($projectId <= 0 || !$this->db->emailAccounts($projectId)) {
+            $omit[] = 'send_email';
+        }
+        if ($projectId <= 0 || !$this->db->ftpAccounts($projectId)) {
+            $omit[] = 'ftp';
+        }
+        $catalog = $this->skills->promptCatalog($omit);
+        $extra = [];
+        foreach ($this->capabilities->descriptions($projectId) as $line) {
+            if (!preg_match('/^- (send_email|ftp|mcp):/', $line, $match) || in_array($match[1], $omit, true)) {
+                continue;
+            }
+            $extra[] = $line;
+        }
         $identity = 'Assigned project folder: ' . $projectFolder;
         $named = $projectFolder !== '' ? $this->db->projectByFolder($projectFolder) : null;
         if (is_array($named)) {
@@ -211,12 +202,15 @@ Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> 
 Do not print a tool call in the reply. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_write or write_file first, then answer.
 
-These are the tools at your disposal. Read each for further instructions
+These are the skills at your disposal. Read each for further instructions
 TXT;
         if ($this->db->fullSystemControl()) {
             $rules .= "\nFull system control is on. You may use sudo, and a path that starts with / can read or change any file on this computer. Prefer {$projectFolder}/ unless the task needs something outside it.\n";
         }
-        $tail = Prompts::forAgent($agent) . "\n\n" . $rules . "\n" . implode("\n", $toolLines);
+        $tail = Prompts::forAgent($agent) . "\n\n" . $rules . "\n" . $catalog;
+        if ($extra !== []) {
+            $tail .= "\n\n" . implode("\n\n", $extra);
+        }
         $notes = $this->memory->toolNotesForPrompt();
         if ($notes !== '') {
             $tail .= "\n\n" . $notes;
@@ -365,25 +359,11 @@ TXT;
         ];
         if ($agent === 'coder') {
             $tools['write_skill'] = function (array $args): string {
-                $name = (string)($args['name'] ?? '');
-                $filename = (string)($args['filename'] ?? ($name !== '' ? $name . '.php' : ''));
-                $overwrite = in_array(strtolower(trim((string)($args['overwrite'] ?? ''))), ['1', 'true', 'yes'], true);
-                $before = $this->db->skillByName($name);
                 try {
-                    $skill = $this->skills->saveSource(
-                        $filename,
-                        (string)($args['source'] ?? ''),
-                        $name,
-                        (string)($args['description'] ?? ''),
-                        true,
-                        'coder',
-                        $overwrite
-                    );
+                    return $this->skills->register($args, 'coder');
                 } catch (InvalidArgumentException | RuntimeException $e) {
                     return $e->getMessage();
                 }
-                $verb = $before ? 'Replaced' : 'Registered';
-                return $verb . ' skill ' . $skill['name'] . ' (' . $skill['script_path'] . ') in the Skills library. It is listed on the Skills page and can be called by name, including from a scheduled task. Syntax check passed. Call test_skill with name ' . $skill['name'] . ' and input set to the JSON that skill reads. Check the exit code, stdout, and stderr. This run cannot call the skill by its own name yet.';
             };
             $tools['test_skill'] = function (array $args) use ($projectFolder): string {
                 return $this->skills->testCall($args, $projectFolder);
@@ -421,11 +401,14 @@ TXT;
             if ($name === 'sqlite_helper') {
                 $tools[$name] = function (array $args) use ($handler): string {
                     $action = strtolower(trim((string)($args['action'] ?? '')));
+                    if ($action === '') {
+                        $action = strtolower(trim((string)($args['command'] ?? '')));
+                    }
                     $sql = trim((string)($args['sql'] ?? ''));
                     $destructive = in_array($action, ['drop', 'delete'], true)
                         || ($action === 'execute' && preg_match('/^\s*DROP\s+TABLE\b/i', $sql));
                     if ($destructive) {
-                        return 'SQLite table drops require approval from the main agent. Do not retry this action.';
+                        return 'SQLite table drops are approved by the user through the main agent. Stop. Report the database filename and the table name. The main agent calls sqlite_helper with action drop. Do not retry, do not use sqlite3 or run_command, and do not tell the user to run a command.';
                     }
                     return $handler($args);
                 };
@@ -439,6 +422,11 @@ TXT;
             }
             if (!isset($tools[$name])) {
                 $tools[$name] = $handler;
+            }
+        }
+        foreach (array_keys($tools) as $name) {
+            if (!$this->skills->offered($name)) {
+                unset($tools[$name]);
             }
         }
         return $tools;

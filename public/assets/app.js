@@ -2770,10 +2770,11 @@
           this.skillCreating = true;
           this.skillEditing = true;
           this.skillForm = {
-            name: 'my_skill',
-            description: 'What this skill does',
-            filename: 'my_skill.php',
-            source: "<?php\n/*\n---\nname: my_skill\ndescription: What this skill does\n---\n*/\n$raw = stream_get_contents(STDIN);\n$args = json_decode($raw ?: '', true) ?: [];\necho \"ok\\n\";\n",
+            name: 'my-skill',
+            description: 'What this skill does and when to use it.',
+            source: "---\nname: my-skill\ndescription: What this skill does and when to use it.\nversion: 0.1.0\n---\n\n# My skill\n\n## When to Use\n\n## Procedure\n\n## Pitfalls\n\n## Verification\n",
+            script: '',
+            lang: 'php',
             is_active: 1
           };
         },
@@ -2787,8 +2788,9 @@
             id: skill.id,
             name: skill.name,
             description: skill.description,
-            filename: skill.script_path,
             source: skill.source || '',
+            script: skill.script || '',
+            lang: skill.script_lang || 'php',
             is_active: skill.is_active
           };
         },

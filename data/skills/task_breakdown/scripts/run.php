@@ -1,10 +1,4 @@
 <?php
-/*
----
-name: task_breakdown
-description: Only the main agent calls this. Adds in_progress cards for work that should run now. A subagent does not. Not for an idea, and not for a later task with no time. Check the board for a duplicate or a similar task first. An exact duplicate is not added and returns an error. args project_id, tasks (each has title and agent). Not a user todo.
----
-*/
 $args = json_decode(stream_get_contents(STDIN) ?: '', true);
 if (!is_array($args)) {
     $args = [];

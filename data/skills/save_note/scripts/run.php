@@ -1,10 +1,4 @@
 <?php
-/*
----
-name: save_note
-description: Append a short reminder or idea to wiki/NOTES.md, the project doodle board. Does not write the project description. args note.
----
-*/
 $raw = stream_get_contents(STDIN);
 $args = json_decode($raw ?: '', true);
 if (!is_array($args)) {

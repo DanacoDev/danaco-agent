@@ -1,12 +1,5 @@
 <?php
 /*
----
-name: sqlite_helper
-description: Creates or changes a SQLite file in database/, including the folder. Use this instead of mkdir, run_command, or a new skill. Pass database as the filename.
----
-*/
-
-/*
 Usage:
   database is the filename or the path, such as link_database.db or database/link_database.db. action, or command, is count, inspect, insert, query, drop, or ensure.
   Create workflow: always check the database and table first. If either already exists, do not recreate it. The schema is returned so you can compare columns.

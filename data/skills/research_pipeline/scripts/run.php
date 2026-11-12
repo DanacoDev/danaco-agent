@@ -1,10 +1,4 @@
 <?php
-/*
----
-name: research_pipeline
-description: Appends a research log to its own wiki file, wiki/research.md by default. Never writes the project description. args query, notes, and optional name for a different wiki markdown file.
----
-*/
 $args = json_decode(stream_get_contents(STDIN) ?: '', true);
 if (!is_array($args)) {
     $args = [];

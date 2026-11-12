@@ -497,9 +497,7 @@ TXT;
         }
         $now = app_local_stamp();
         $state = $this->db->consultantState();
-        $consultLine = '';
         if ($state['active']) {
-            $consultLine = "- consult: args instruction. Paid external Consultant. Last resort only, for a complicated or multi-step assignment the team should not handle alone. It costs the user money.\n";
             $consultNote = "The Consultant is on. Use consult only as a last resort. Each call costs the user money.\n";
         } elseif (($state['reason'] ?? '') === 'no_key') {
             $consultNote = "The Consultant exists, but you cannot call it until an API key is saved. It is a paid external model for a hard multi-step problem the team should not handle alone, and it can use the same project file tools. If that would help, tell the user that adding a key on the Setup page, under External LLM provider, and using that API for the Consultant, gives the agent superpowers on hard work. Do not describe the Consultant as missing.\n";
@@ -512,36 +510,9 @@ TXT;
             ? "Full system control is on. You may use sudo, and a path that starts with / can read or change any file on this computer. Prefer the assigned project when there is one. When this chat is not tied to a project, do not invent paths or settings. Guessing can hallucinate and can break the computer.\n"
             : '';
         $installNote = "Only you may install dependencies on this machine. The chat asks the user before an install runs. Subagents are stopped if they try. If one reports a missing install, run it yourself only after the user agrees.\n";
-        $fileTools = '';
-        if ($project !== null) {
-            $fileTools = <<<TXT
-- list_files: args path, optional. Lists this project's files.
-- read_file: args path. Any file in this project, including the wiki.
-- read_pdf: args path, optional question. Reads the text of a PDF in this project. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay. Do not ask the user to type the page out.
-- read_image: args path, optional question. Looks at a png, jpg, gif, or webp in this project. The GPU model can see the picture, including text in it. Use it for a screenshot, photo, or image upload. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.
-- screenshot: args path or url, optional save, width, height. Takes a picture of a page in this project or a public page. path is an html, htm, or php file, or a folder with an index page. url is a public http or https address. Saves a png under screenshots/ unless save is set. Cite that path alone on a line so the user sees the picture. Call read_image on it when you need to see what is wrong.
-A PDF is not written in this chat. Delegate it to the writer with the file name and the brief. The coder does not make PDFs.
-
-TXT;
-        } else {
-            if ($full) {
-                $fileTools = <<<TXT
-- list_files: args path. Use uploads for files attached in this chat. A full path, such as /Users/name, lists that folder.
-- read_file: args path. A file under uploads/, such as uploads/notes.txt, or a full path.
-- read_pdf: args path, optional question. A PDF under uploads/, or a full path. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay. Do not ask the user to type the page out.
-- read_image: args path, optional question. A png, jpg, gif, or webp under uploads/, or a full path. The GPU model can see the picture, including text in it. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.
-
-TXT;
-            } else {
-                $fileTools = <<<TXT
-- list_files: args path. Use uploads to list files attached in this chat.
-- read_file: args path. A file under uploads/, such as uploads/notes.txt.
-- read_pdf: args path, optional question. A PDF under uploads/. A scan or a page with no text is read from the page image, including amounts and totals. Pass question when you need one fact, such as the total to pay. Do not ask the user to type the page out.
-- read_image: args path, optional question. A png, jpg, gif, or webp under uploads/. The GPU model can see the picture, including text in it. Use it for a screenshot, photo, or image upload. A scanned PDF is read_pdf. An svg is text, so use read_file. Cite the path alone on a line when the user should see the picture.
-
-TXT;
-            }
-        }
+        $pdfNote = $project !== null
+            ? "A PDF is not written in this chat. Delegate it to the writer with the file name and the brief. The coder does not make PDFs.\n"
+            : '';
         $rules = <<<TXT
 {$context}
 {$controlNote}{$installNote}Local time now: {$now}
@@ -571,52 +542,42 @@ Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> 
 Do not print a tool call in the reply. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_write or write_file first, then answer.
 
-These are the tools at your disposal. Read each for further instructions
-- delegate: args agent (researcher, writer, coder, analyst, or marketer), instruction, project, task_id. One subagent at a time. Pick the agent from the team section. Delegating a card moves it to in_progress. Pass task_id when that card already exists. A subagent can only add a result to that card. When it returns, list the kanban, check that the work was done, and you move or update the card before the next step, even if you have no recollection of any tasks.
-{$fileTools}
-{$consultLine}- kanban: the task board. args action (list, create, move, or delete).
-  list: no other args.
-  create: title, description, agent, status, schedule_time (YYYY-MM-DD HH:MM), recurrence (none, 5min, 15min, 30min, hourly, daily, weekly, or monthly). none means run once. Leave schedule_time empty only when the card should run immediately. A later card needs a real clock time. Do not invent one. Set schedule_time to never to inactivate a card and keep it. That card stays on the board and does not run. Before create, list the board and check for a duplicate or a similar task. Do not add a card for work that is already there. An exact duplicate is not added. The tool returns an error that names the existing card. Use that card.
-  move: id, plus any of status, description, result, agent, schedule_time, recurrence. A card marked held was stopped by the user. Leave it held unless the user asked you to change, resume, or end it. A new schedule or repeat resumes it. Set schedule_time to never to inactivate a card and keep it, almost like a backlog. It stays in in_progress and does not run. A real time, or an empty time, turns it back on. Moving a run-once card to review ends it.
-  delete: id. Removes that card from the board. Use it when a card is wrong, stale, or the user asks you to remove it.
-  The board has two columns. in_progress = work happening now, a card with a time or a repeat, or a card set to never. A repeating card stays in in_progress. review = a finished run-once card waiting for the user; include result. There is no backlog. Never (inactivated) is how you disable a card and keep it. An idea for later is not a card. Write it in the project wiki. Only you create, move, edit, or delete cards. A subagent can only add a result. You check that result, then move or update the card. You cannot set done, and you cannot move a repeating card to review.
-  Cards are for an agent, or a reminder that will send something or take an action. Not a static todo for the user.
-  After the user has chosen now or scheduled, every future event needs its own card. A scheduled card needs schedule_time. Saying you will do it later does not schedule it. Split several events into separate cards. When the work repeats, set recurrence and have the coder register a PHP or Python skill with write_skill for the repeated steps when that is possible. Name that skill in the card description. A file in the project is not a skill.
-  A result is assigned to the subagent who produces it. Planning with the user is assigned to orchestrator.
-  Do not create a card while you are still planning. Move a task to in_progress when the user chose now and you start it, or when a scheduled card is due. Move a finished run-once card to review. Leave a repeating card in in_progress, with its repeat still set. Do not leave a finished run-once card in in_progress. Do not delegate new cards in the planning turn unless the user chose now.
-  After every delegated job, list the board and update the matching cards before you reply or delegate again, even when this chat does not mention any tasks. A cleared context still has cards. Do not explain the workflow in place of updating them.
-- wiki_search: args query
-- wiki_read: args name. Reads one project wiki file. Omit name to read wiki/PROJECT.md, which is only the general description. General chat has no project wiki.
-- wiki_write: args name, content, append. Writes wiki/<name>.md in the current project. Omit name only to edit the general description: what the project is, contributors, credentials, and main goals. Pass name for research, findings, and specific data. Read the file first when you are changing it. Use append to add to what is already there. When the chat has reached conclusions, update the matching wiki file in this same turn.
-- wiki_reindex: no args
-- list_vault: no args. Backups and trash with exact size_bytes for each item. Read or restore only. Never delete them.
-- read_vault: args kind (backup or trash), stored_as
-- restore_file: args kind, stored_as
-- write_skill: args name, description, filename, source, overwrite. filename is a lowercase .php or .py file. source reads JSON from stdin and prints the result. This is the only way to create a skill. It registers the skill in the Skills library, outside the project, so the Skills page lists it and later runs, including scheduled tasks, can call it by name. A PHP skill has a YAML header in a /* */ block and no closing PHP tag. A Python skill uses the same header as # comments. If that name already exists, the tool names the skill and does not change it. Pass overwrite true to replace a skill the agent created. A built-in skill cannot be replaced. It then checks that the file parses. If the check fails, the skill is not kept. Send the complete source again. Do not write_file a skill into the project, and do not create a skills or data/skills folder there. A subagent creates a skill only when you explicitly ask for that new or replaced skill in the instruction. Delegate this to the coder. Call it yourself when the coder cannot finish.
-- test_skill: args name, input. Runs that skill in this project and returns the exit code, stdout, and stderr. name is the skill. input is the JSON object it reads on stdin. The skill really runs, so files it writes stay. It also runs a skill that is turned off. Use it to check a skill, including one just registered with write_skill. A skill registered in this run is not callable by its own name until a later run. Delegate the test to the coder. Call it yourself when the coder cannot finish. Open a project first.
-
-Skills, one line each:
+{$pdfNote}These are the skills at your disposal. Read each for further instructions
 TXT;
+        $projectId = $project ? (int)$project['id'] : 0;
+        $omit = ['write_file', 'delete_file', 'move_file', 'create_pdf', 'run_command'];
+        if (!$state['active']) {
+            $omit[] = 'consult';
+        }
+        if ($projectId <= 0 || !$this->db->emailAccounts($projectId)) {
+            $omit[] = 'send_email';
+        }
+        if ($projectId <= 0 || !$this->db->ftpAccounts($projectId)) {
+            $omit[] = 'ftp';
+        }
+        $catalog = $this->skills->promptCatalog($omit, [
+            'web_search' => $this->researchToolLine('web_search'),
+            'fetch_url' => $this->researchToolLine('fetch_url'),
+            'browse_url' => $this->researchToolLine('browse_url'),
+        ]);
         $lines = [];
         $sawEmail = false;
-        foreach ((new CapabilityTools($this->db))->descriptions($project ? (int)$project['id'] : 0) as $line) {
-            if (preg_match('/^- (web_search|fetch_url|browse_url):/', $line, $match)) {
-                $lines[] = $this->researchToolLine($match[1]);
+        foreach ((new CapabilityTools($this->db))->descriptions($projectId) as $line) {
+            if (!preg_match('/^- (send_email|ftp|mcp):/', $line, $match) || in_array($match[1], $omit, true)) {
                 continue;
             }
-            if (preg_match('/^- (send_email|ftp|mcp|remember):/', $line)) {
-                $lines[] = $line;
-                if (str_starts_with($line, '- send_email:')) {
-                    $sawEmail = true;
-                }
+            $lines[] = $line;
+            if ($match[1] === 'send_email') {
+                $sawEmail = true;
             }
         }
         if (!$sawEmail) {
             $lines[] = '- send_email: this chat has no mailbox. Say that a mailbox is added on the Setup page, under Email, and linked to this project. There is no Tools tab. Do not describe it as a missing capability.';
         }
-        $extra = $lines ? implode("\n", $lines) . "\n" : '';
-        $rules = str_replace("Skills, one line each:\n", $extra, $rules);
-        $tail = Prompts::ORCHESTRATOR . "\n\n" . $rules . "\n" . $this->skills->summariesForPrompt();
+        $tail = Prompts::ORCHESTRATOR . "\n\n" . $rules . "\n" . $catalog;
+        if ($lines !== []) {
+            $tail .= "\n\n" . implode("\n\n", $lines);
+        }
         $notes = $this->memory->toolNotesForPrompt();
         if ($notes !== '') {
             $tail .= "\n\n" . $notes;
@@ -978,25 +939,11 @@ TXT;
                 return 'Restored ' . $result['restored'] . ' into ' . $result['project_folder'] . '.';
             },
             'write_skill' => function (array $args): string {
-                $name = (string)($args['name'] ?? '');
-                $filename = (string)($args['filename'] ?? ($name !== '' ? $name . '.php' : ''));
-                $overwrite = in_array(strtolower(trim((string)($args['overwrite'] ?? ''))), ['1', 'true', 'yes'], true);
-                $before = $this->db->skillByName($name);
                 try {
-                    $skill = $this->skills->saveSource(
-                        $filename,
-                        (string)($args['source'] ?? ''),
-                        $name,
-                        (string)($args['description'] ?? ''),
-                        true,
-                        'orchestrator',
-                        $overwrite
-                    );
+                    return $this->skills->register($args, 'orchestrator');
                 } catch (InvalidArgumentException | RuntimeException $e) {
                     return $e->getMessage();
                 }
-                $verb = $before ? 'Replaced' : 'Registered';
-                return $verb . ' skill ' . $skill['name'] . ' (' . $skill['script_path'] . ') in the Skills library. It is listed on the Skills page and can be called by name, including from a scheduled task. Syntax check passed. Call test_skill with name ' . $skill['name'] . ' and input set to the JSON that skill reads. Check the exit code, stdout, and stderr. This run cannot call the skill by its own name yet.';
             },
             'test_skill' => function (array $args) use ($folder): string {
                 return $this->skills->testCall($args, $folder);
@@ -1061,6 +1008,9 @@ TXT;
                     if ($name === 'sqlite_helper') {
                         $tools[$name] = function (array $args) use ($handler, $emit, $shouldStop, $projectId): string {
                             $action = strtolower(trim((string)($args['action'] ?? '')));
+                            if ($action === '') {
+                                $action = strtolower(trim((string)($args['command'] ?? '')));
+                            }
                             $sql = trim((string)($args['sql'] ?? ''));
                             $destructive = in_array($action, ['drop', 'delete'], true)
                                 || ($action === 'execute' && preg_match('/^\s*DROP\s+TABLE\b/i', $sql));
@@ -1079,6 +1029,11 @@ TXT;
                     }
                     $tools[$name] = $handler;
                 }
+            }
+        }
+        foreach (array_keys($tools) as $name) {
+            if (!$this->skills->offered($name)) {
+                unset($tools[$name]);
             }
         }
         return $tools;

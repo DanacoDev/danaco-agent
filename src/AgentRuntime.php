@@ -631,7 +631,7 @@ class AgentRuntime
                 if ($cutOff) {
                     $prompt = 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.';
                 } elseif ($emptyFences) {
-                    $prompt = 'That reply was an empty code fence, so nothing was called or saved. ```markdown is not a tool call. Do not output ``` at all. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill, PHP or Python, is write_skill with the full source in args.source. A project file is write_file or wiki_write with the full content.';
+                    $prompt = 'That reply was an empty code fence, so nothing was called or saved. ```markdown is not a tool call. Do not output ``` at all. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill is write_skill with name, description, and source. source is the SKILL.md instructions. A project file is write_file or wiki_write with the full content.';
                 } elseif ($proseTools) {
                     $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Do not open a markdown code fence. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
                     if (preg_match('/\bdelegat/i', $turnText)) {
@@ -639,7 +639,7 @@ class AgentRuntime
                     } elseif (($xmlTool = $this->fakeXmlToolName($turnText)) !== null) {
                         $prompt = 'XML tags are not a tool call. Do not write <' . $xmlTool . '>. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"' . $xmlTool . '","args":{}}' . "\n" . '<<end>>' . "\n" . 'Fill args with the real JSON for that tool, then stop.';
                     } elseif ($this->claimedSkillWithoutCall($turnText)) {
-                        $prompt = 'That did not register a skill. Do not write it into the project and do not open a code fence. Pick PHP or Python yourself. Call write_skill now with the full source, then stop.';
+                        $prompt = 'That did not register a skill. Do not write it into the project and do not open a code fence. Call write_skill now with name, description, and source, then stop.';
                     } elseif ($this->claimedFileWriteWithoutCall($turnText)) {
                         $prompt = $this->claimedWriteRetryPrompt($turnText);
                     }

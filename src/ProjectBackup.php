@@ -347,16 +347,12 @@ class ProjectBackup
             if ((string)($skill['created_by'] ?? '') === 'system') {
                 continue;
             }
-            $source = (string)($skill['source'] ?? '');
-            if ($source === '') {
-                throw new RuntimeException('Could not read custom skill ' . (string)($skill['name'] ?? '') . '.');
-            }
             $custom[] = [
                 'name' => (string)$skill['name'],
                 'description' => (string)$skill['description'],
                 'script_path' => (string)$skill['script_path'],
                 'is_active' => !empty($skill['is_active']),
-                'source' => $source,
+                'files' => app_services()['skills']->exportFiles($skill),
             ];
         }
         return $custom;
@@ -683,14 +679,15 @@ class ProjectBackup
             if (!is_array($skill)) {
                 throw new InvalidArgumentException('The custom skills in that backup could not be read.');
             }
-            app_services()['skills']->saveSource(
-                (string)($skill['script_path'] ?? ''),
-                (string)($skill['source'] ?? ''),
+            $files = $skill['files'] ?? null;
+            if (!is_array($files)) {
+                continue;
+            }
+            app_services()['skills']->restoreTree(
                 (string)($skill['name'] ?? ''),
                 (string)($skill['description'] ?? ''),
-                !empty($skill['is_active']),
-                'user',
-                true
+                $files,
+                !empty($skill['is_active'])
             );
             $restored++;
         }

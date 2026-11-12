@@ -854,13 +854,11 @@ class SafetyInterceptor
     private function rejectProjectSkill(string $relativePath): void
     {
         $path = strtolower(str_replace('\\', '/', $relativePath));
-        if (!preg_match('/\.(php|py)$/', $path)) {
+        $skillFile = (bool)preg_match('/\.(php|py)$/', $path) || str_ends_with($path, 'skill.md');
+        if (!$skillFile || !preg_match('#(^|/)skills/#', $path)) {
             return;
         }
-        if (!preg_match('#(^|/)skills/#', $path)) {
-            return;
-        }
-        throw new RuntimeException('A skill is not a project file. Call write_skill with a .php or .py filename so it is registered in the Skills library. Later runs and scheduled tasks call it by name.');
+        throw new RuntimeException('A skill is not a project file. Call write_skill so it is registered in the Skills library. Later runs and scheduled tasks call it by name.');
     }
 
     private function assertMarkdownLocation(string $relativePath): void
