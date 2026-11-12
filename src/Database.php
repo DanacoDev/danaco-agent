@@ -1136,6 +1136,60 @@ SQL);
         return $this->getSetting($this->chatStopKey($projectId), '0') === '1';
     }
 
+    public function chatGeneration(int $projectId): string
+    {
+        return (string)$this->getSetting($this->chatGenKey($projectId), '');
+    }
+
+    public function markChatFollowup(int $projectId, int $jobId): void
+    {
+        if ($jobId <= 0) {
+            return;
+        }
+        $this->setSetting($this->chatFollowupKey($projectId), (string)$jobId);
+    }
+
+    public function takeChatFollowup(int $projectId, int $jobId): bool
+    {
+        if ($jobId <= 0) {
+            return false;
+        }
+        $key = $this->chatFollowupKey($projectId);
+        $on = (int)$this->getSetting($key, '0') === $jobId;
+        if ($on) {
+            $this->setSetting($key, '0');
+        }
+        return $on;
+    }
+
+    public function markChatAnswerSaved(int $jobId): void
+    {
+        if ($jobId <= 0) {
+            return;
+        }
+        $this->setSetting($this->chatAnswerSavedKey($jobId), '1');
+    }
+
+    public function chatAnswerSaved(int $jobId): bool
+    {
+        if ($jobId <= 0) {
+            return false;
+        }
+        return $this->getSetting($this->chatAnswerSavedKey($jobId), '0') === '1';
+    }
+
+    public function runningChatJob(int $projectId): ?array
+    {
+        if ($projectId > 0) {
+            $stmt = $this->pdo->prepare("SELECT * FROM jobs WHERE kind = 'chat' AND project_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1");
+            $stmt->execute([$projectId]);
+        } else {
+            $stmt = $this->pdo->query("SELECT * FROM jobs WHERE kind = 'chat' AND project_id IS NULL AND status = 'running' ORDER BY id DESC LIMIT 1");
+        }
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
     public function stopAllChats(): void
     {
         $ids = [0];
@@ -1160,6 +1214,16 @@ SQL);
     private function chatStopGenKey(int $projectId): string
     {
         return 'chat_stop_gen_' . max(0, $projectId);
+    }
+
+    private function chatFollowupKey(int $projectId): string
+    {
+        return 'chat_followup_' . max(0, $projectId);
+    }
+
+    private function chatAnswerSavedKey(int $jobId): string
+    {
+        return 'chat_answer_saved_' . $jobId;
     }
 
     public function requestRunStop(int $projectId, array $jobIds): void

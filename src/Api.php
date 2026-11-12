@@ -552,6 +552,7 @@ class Api
         if (strlen($generation) > 64 || !preg_match('/^[A-Za-z0-9_.-]+$/', $generation)) {
             $generation = bin2hex(random_bytes(8));
         }
+        $this->settlePreviousChat($projectId);
         $this->db->beginChat($projectId, $generation);
         Recovery::reset($this->db);
         if (!empty($body['retry'])) {
@@ -561,7 +562,9 @@ class Api
         }
         $jobId = $this->db->startJob('chat', $projectId > 0 ? $projectId : null, ['message' => $message]);
         $this->db->loopPush($jobId, $projectId > 0 ? $projectId : null);
-        session_write_close();
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
         $this->beginSse();
         $turn = new ChatTurn();
         $emit = function (array $event): void {
@@ -605,16 +608,26 @@ class Api
                     throw new RuntimeException('The model returned an empty answer.');
                 }
                 $saved = $this->db->addMessage($projectId, 'assistant', $answer, 'orchestrator', false, $detail);
+                $this->db->markChatAnswerSaved($jobId);
+                $this->db->takeChatFollowup($projectId, $jobId);
                 $this->db->loop('orchestrator', 'process', 'Answer saved · job ' . $jobId . ' finished');
                 $this->db->finishJob($jobId);
                 $this->sse('done', ['message' => $saved]);
             } catch (ChatStopped $e) {
                 $text = trim($turn->streamed);
+                $followup = $this->db->takeChatFollowup($projectId, $jobId);
                 $runStop = $this->db->runStopRequested($projectId);
                 $closed = !$this->db->jobIsRunning($jobId);
                 $asked = $this->db->chatStopRequested($projectId);
                 $this->db->finishJob($jobId);
-                if ($runStop || $closed) {
+                if ($followup && !$runStop) {
+                    $this->db->loop('orchestrator', 'process', 'Follow-up · answer kept · job ' . $jobId . ' finished');
+                    if ($text !== '') {
+                        $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, ChatTurn::encodeDetail($turn->detail));
+                    }
+                    $this->db->setAgentStatus('orchestrator', 'idle');
+                    $this->sse('stopped', ['text' => 'Stopped.']);
+                } elseif ($runStop || $closed) {
                     $this->db->acknowledgeRunStop($projectId, $jobId);
                     $this->db->loop('orchestrator', 'process', 'Stopped by user · job ' . $jobId . ' finished');
                     if ($text !== '') {
@@ -636,6 +649,7 @@ class Api
                     $this->db->setAgentStatus('orchestrator', 'idle');
                     $this->sse('error', ['text' => $why]);
                 }
+                $this->db->markChatAnswerSaved($jobId);
             } catch (Throwable $e) {
                 $reason = $e->getMessage();
                 $retry = str_contains($reason, 'cut off before it finished') ? 1 : Heartbeat::MAX_ATTEMPTS;
@@ -652,6 +666,8 @@ class Api
                 $text = trim($turn->streamed);
                 $text = $text !== '' ? $text . "\n\n" . $error : $error;
                 $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
+                $this->db->markChatAnswerSaved($jobId);
+                $this->db->takeChatFollowup($projectId, $jobId);
                 $this->sse('status', ['agent' => 'orchestrator', 'status' => 'error']);
                 $this->sse('error', ['text' => $error]);
             }
@@ -659,6 +675,32 @@ class Api
             app_services()['llm']->releaseIfIdle();
             $this->db->loopPop();
         }
+    }
+
+    private function settlePreviousChat(int $projectId): void
+    {
+        $job = $this->db->runningChatJob($projectId);
+        if (!$job) {
+            return;
+        }
+        $jobId = (int)$job['id'];
+        $this->db->markChatFollowup($projectId, $jobId);
+        $generation = $this->db->chatGeneration($projectId);
+        if ($generation !== '') {
+            $this->db->requestChatStop($projectId, $generation);
+        }
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
+        $deadline = microtime(true) + 20;
+        while (microtime(true) < $deadline) {
+            if ($this->db->chatAnswerSaved($jobId)) {
+                return;
+            }
+            usleep(200000);
+        }
+        $scope = $projectId > 0 ? $projectId : null;
+        $this->db->loopWrite(null, $scope, 'heartbeat', 'process', 'Follow-up did not settle · job ' . $jobId);
     }
 
     private function stopChat(): void

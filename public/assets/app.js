@@ -1242,13 +1242,16 @@
           this.draft = '';
           this.attachments = [];
           this.fitComposer();
-          this.messages.push({ id: 'local-' + Date.now(), role: 'user', agent_name: 'human', content: message });
-          this.scrollChat(true);
           if (this.sending) {
+            this.flushLive();
+            this.messages.push({ id: 'local-' + Date.now(), role: 'user', agent_name: 'human', content: message });
+            this.scrollChat(true);
             this.steerText = message;
             this.stopRun();
             return;
           }
+          this.messages.push({ id: 'local-' + Date.now(), role: 'user', agent_name: 'human', content: message });
+          this.scrollChat(true);
           await this.runChat(message);
         },
         async retryMessage(msg) {
