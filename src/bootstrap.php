@@ -31,7 +31,7 @@ function app_local_stamp(?string $stored = null): string
     } catch (Exception $e) {
         $time = new DateTimeImmutable('now', $zone);
     }
-    return $time->setTimezone($zone)->format('l j F Y \a\t H:i T');
+    return $time->setTimezone($zone)->format('l j F Y \a\t H:i');
 }
 
 function error_text(string $message): string

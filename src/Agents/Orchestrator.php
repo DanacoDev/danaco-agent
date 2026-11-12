@@ -545,6 +545,7 @@ TXT;
         $rules = <<<TXT
 {$context}
 {$controlNote}{$installNote}Local time now: {$now}
+That is the server clock. Use it for schedules and for any time you say. Do not name a timezone, such as CET or UTC, and do not convert the hour, unless the user asks.
 Each message from the user starts with the local time it was sent, in brackets. Trust that time. Do not repeat the brackets in your reply.
 
 {$team}
