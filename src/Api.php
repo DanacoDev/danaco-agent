@@ -2047,14 +2047,6 @@ class Api
             $turns = (int)$body['cloud_max_turns'];
             $this->db->setSetting('cloud_max_turns', (string)max(10, min(500, $turns)));
         }
-        if (array_key_exists('search_provider', $body)) {
-            $provider = (string)$body['search_provider'];
-            if (!in_array($provider, ['duckduckgo', 'bing'], true)) {
-                $this->json(['error' => 'Choose DuckDuckGo or Bing for web search.'], 422);
-                return;
-            }
-            $this->db->setSetting('search_provider', $provider);
-        }
         if (array_key_exists('chat_font_size', $body)) {
             $size = (int)$body['chat_font_size'];
             if ($size < 13 || $size > 22) {

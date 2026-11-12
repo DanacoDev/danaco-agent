@@ -2594,7 +2594,6 @@
             cloud_api_use: this.settings.cloud_api_use,
             cloud_max_turns: Number(this.settings.cloud_max_turns),
             chat_font_size: this.chatFontPx,
-            search_provider: this.settings.search_provider === 'bing' ? 'bing' : 'duckduckgo',
             ai_act_applies: this.settings.ai_act_applies || ''
           };
           if (this.cloudKeyDraft) body.cloud_api_key = this.cloudKeyDraft;

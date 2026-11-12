@@ -755,6 +755,12 @@ class AgentRuntime
                 $this->db->loop($agent, 'tool', $this->toolResultTrace($toolName, $result), $projectId);
                 $this->db->logAgent($agent, $projectId, 'output', $result);
                 $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => $tool['name'], 'text' => $result]);
+                if ($toolName === 'web_search' && str_starts_with($result, 'The search provider rejected this request.')) {
+                    $this->db->loop($agent, 'stop', 'search provider rejected', $projectId);
+                    $this->db->setAgentStatus($agent, 'completed');
+                    $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
+                    return $this->finishVisible($result);
+                }
                 $messages[] = ['role' => 'user', 'content' => "TOOL RESULT {$tool['name']}:\n{$result}"];
                 if ($this->kanbanFollowsDelegate($agent, (string)($tool['name'] ?? ''), $result)) {
                     $this->db->loop($agent, 'steer', 'kanban after delegate', $projectId);

@@ -786,16 +786,6 @@ header('X-Danaco: 1');
                 <p class="hint" :style="{ fontSize: chatFontPx + 'px' }">This is how messages look in chat.</p>
               </div>
               <div class="setup-box">
-                <h3>Web search</h3>
-                <label class="field">Search provider
-                  <select v-model="settings.search_provider">
-                    <option value="duckduckgo">DuckDuckGo</option>
-                    <option value="bing">Bing</option>
-                  </select>
-                </label>
-                <p class="hint">DuckDuckGo is free and does not need an API key.</p>
-              </div>
-              <div class="setup-box">
                 <h3>Model</h3>
                 <label class="field">Choose what to use as the main model provider
                   <select v-model="settings.model_mode">

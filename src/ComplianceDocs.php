@@ -94,7 +94,7 @@ class ComplianceDocs
             '- External API use: ' . ($cloudUse !== '' ? $cloudUse : 'not in use'),
             '- External model: ' . (string)($settings['cloud_model'] ?? ''),
             '- External base URL: ' . (string)($settings['cloud_base_url'] ?? ''),
-            '- Search provider: ' . (string)($settings['search_provider'] ?? 'duckduckgo'),
+            '- Search: Bing, Google, and DuckDuckGo, with no API key',
             '- Full system control: ' . $full,
             '',
             '## Human oversight features',

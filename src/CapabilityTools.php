@@ -29,7 +29,7 @@ class CapabilityTools
     public function descriptions(int $projectId = 0): array
     {
         $lines = [];
-        $lines[] = '- web_search: args query. One idea, as in a normal search box: two to four plain words. Every word must match, so extra words and synonyms make it miss. Quotes are only for one exact title of several words, plus at most one plain word. Do not quote a single word, do not stack quoted phrases, and do not use OR, AND, NOT, or parentheses to join alternatives. Search the other wording on its own. site:example.com is the only operator. Returns a title, link, and snippet. Then read a result with fetch_url. Rewrite only when the message starts with "This query was not searched" or gives a shorter query, and call once more. If the search provider rejected the request, or the results page could not be read, stop. Do not call web_search again this turn.';
+        $lines[] = '- web_search: args query. One idea, as in a normal search box: two to four plain words. Every word must match, so extra words and synonyms make it miss. Quotes are only for one exact title of several words, plus at most one plain word. Do not quote a single word, do not stack quoted phrases, and do not use OR, AND, NOT, or parentheses to join alternatives. Search the other wording on its own. site:example.com is the only operator. Returns a title, link, and snippet. Then read a result with fetch_url. Rewrite only when the message starts with "This query was not searched" or gives a shorter query, and call once more. If the search provider rejected the request, end the run. Do not call another tool. Do not fetch pages, rewrite the query, or log research. Reply with that failure so the main agent hears it. If the results page could not be read, stop. Do not call web_search again this turn.';
         $lines[] = '- fetch_url: args url. Reads a public page and lists links on it. Open those links to keep crawling.';
         $lines[] = '- browse_url: args url. Opens a public page in the headless browser so scripts run, then returns the text and links. Use it when fetch_url shows an empty or unfinished page.';
         $lines[] = $this->db->fullSystemControl()
@@ -239,11 +239,50 @@ class CapabilityTools
         if ($problem !== '') {
             return $problem;
         }
-        $provider = $this->searchProvider();
-        $found = $provider === 'bing' ? $this->bingResults($query) : $this->duckSearch($query);
+        $refusals = [];
+        $sawEmpty = false;
+        foreach (['Bing', 'Google', 'DuckDuckGo'] as $name) {
+            if ($name === 'Bing') {
+                $found = $this->bingResults($query);
+            } elseif ($name === 'Google') {
+                $found = $this->googleResults($query);
+            } else {
+                $found = $this->duckSearch($query);
+            }
+            $blocks = $this->searchBlocks($found['results']);
+            if ($blocks) {
+                $blocks[] = 'Results from ' . $name . '.';
+                $blocks[] = 'Read a page with fetch_url. The result lists links you can open next.';
+                return clip_text(implode("\n\n", $blocks), 4000);
+            }
+            if ($found['status'] === 'results') {
+                $found['status'] = 'empty';
+            }
+            if ($found['status'] === 'empty') {
+                $sawEmpty = true;
+                continue;
+            }
+            $refusals[] = $this->engineMiss($name, $found);
+        }
+        $instant = $this->instantAnswer($query);
+        if ($instant !== '') {
+            return $instant;
+        }
+        if (!$sawEmpty) {
+            return $this->providersRejected($refusals);
+        }
+        if (preg_match('/^site:\s*([a-z0-9.-]+\.[a-z]{2,})\/?$/i', $query, $match) && $this->hostIsPublic($match[1])) {
+            $home = 'https://' . strtolower($match[1]) . '/';
+            return "No search hits for that query. Opened {$home} instead.\n\n" . $this->fetchUrl($home);
+        }
+        return $this->emptySearchMessage($query);
+    }
+
+    private function searchBlocks(array $results): array
+    {
         $blocks = [];
         $n = 0;
-        foreach ($found['results'] as $row) {
+        foreach ($results as $row) {
             $host = (string)(parse_url($row['url'], PHP_URL_HOST) ?? '');
             if ($host === '' || !$this->hostIsPublic($host)) {
                 continue;
@@ -258,27 +297,24 @@ class CapabilityTools
                 break;
             }
         }
-        if ($blocks) {
-            $blocks[] = 'Read a page with fetch_url. The result lists links you can open next.';
-            return clip_text(implode("\n\n", $blocks), 4000);
+        return $blocks;
+    }
+
+    private function engineMiss(string $name, array $found): string
+    {
+        $reason = (string)($found['reason'] ?? '');
+        if ($reason === '' && ($found['status'] ?? '') === 'unparsed') {
+            $reason = 'could not be read';
         }
-        if ($provider === 'duckduckgo' && $found['allowInstant']) {
-            $instant = $this->instantAnswer($query);
-            if ($instant !== '') {
-                return $instant . "\n\nThe HTML search was rejected.";
-            }
+        $detail = $name . ' HTTP ' . (int)($found['code'] ?? 0);
+        if ($reason !== '') {
+            $detail .= ', ' . $reason;
         }
-        if ($found['status'] === 'rejected' || $found['status'] === 'transport') {
-            return $this->providerRejectionMessage((int)$found['code'], (string)$found['error'], (string)$found['reason']);
+        $error = trim((string)($found['error'] ?? ''));
+        if ($error !== '') {
+            $detail .= '. ' . $error;
         }
-        if ($found['status'] === 'unparsed') {
-            return 'The search provider returned a results page, but it could not be read. This is not a wording problem. Do not rewrite the query and do not call web_search again this turn.';
-        }
-        if (preg_match('/^site:\s*([a-z0-9.-]+\.[a-z]{2,})\/?$/i', $query, $match) && $this->hostIsPublic($match[1])) {
-            $home = 'https://' . strtolower($match[1]) . '/';
-            return "No search hits for that query. Opened {$home} instead.\n\n" . $this->fetchUrl($home);
-        }
-        return $this->emptySearchMessage($query);
+        return $detail;
     }
 
     private function searchQueryProblem(string $query): string
@@ -452,7 +488,8 @@ class CapabilityTools
             return $this->searchOutcome($results, 'results', $first);
         }
         $status = $this->duckPageStatus($first);
-        if ($status !== 'transport') {
+        $blocked = $this->isSearchBotWall((string)$first['body']) || ((int)$first['code'] !== 200 && (int)$first['code'] !== 0 && trim((string)$first['body']) !== '');
+        if ($blocked) {
             return $this->searchOutcome([], $status, $first);
         }
         $lite = $this->searchFetch('https://lite.duckduckgo.com/lite/', $post);
@@ -493,6 +530,72 @@ class CapabilityTools
             return $this->searchOutcome([], 'unparsed', $fetched);
         }
         return $this->searchOutcome($out, 'results', $fetched);
+    }
+
+    private function googleResults(string $query): array
+    {
+        $fetched = $this->searchFetch('https://www.google.com/search?gbv=1&hl=en&num=8&q=' . rawurlencode($query));
+        $body = (string)$fetched['body'];
+        if ($this->searchFailedToConnect($fetched)) {
+            return $this->searchOutcome([], 'transport', $fetched);
+        }
+        if ((int)$fetched['code'] !== 200 || trim($body) === '' || $this->isSearchBotWall($body)) {
+            return $this->searchOutcome([], 'rejected', $fetched);
+        }
+        $out = $this->parseGoogleResults($body);
+        if ($out) {
+            return $this->searchOutcome($out, 'results', $fetched);
+        }
+        if (stripos($body, 'did not match any documents') !== false || stripos($body, 'no results') !== false) {
+            return $this->searchOutcome([], 'empty', $fetched);
+        }
+        if (stripos($body, '/url?q=') !== false) {
+            return $this->searchOutcome([], 'unparsed', $fetched);
+        }
+        return $this->searchOutcome([], 'rejected', $fetched);
+    }
+
+    private function parseGoogleResults(string $html): array
+    {
+        if (!preg_match_all('/<a\b([^>]*)>(.*?)<\/a>/is', $html, $matches, PREG_SET_ORDER)) {
+            return [];
+        }
+        $out = [];
+        $seen = [];
+        foreach ($matches as $match) {
+            $href = $this->htmlAttr($match[1], 'href');
+            $url = $this->googleResultUrl($href);
+            $title = trim(preg_replace('/\s+/', ' ', html_entity_decode(strip_tags($match[2]), ENT_QUOTES | ENT_HTML5, 'UTF-8')) ?? '');
+            if ($url === '' || $title === '' || isset($seen[$url]) || mb_strlen($title) < 2) {
+                continue;
+            }
+            $seen[$url] = true;
+            $out[] = ['title' => $title, 'url' => $url, 'snippet' => ''];
+            if (count($out) >= 8) {
+                break;
+            }
+        }
+        return $out;
+    }
+
+    private function googleResultUrl(string $href): string
+    {
+        $href = trim(html_entity_decode($href, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        if ($href === '') {
+            return '';
+        }
+        if (str_starts_with($href, '/url?') || str_starts_with($href, 'url?')) {
+            $href = 'https://www.google.com/' . ltrim($href, '/');
+        }
+        $parts = parse_url($href);
+        if (is_array($parts) && isset($parts['query'])) {
+            $host = strtolower((string)($parts['host'] ?? ''));
+            parse_str($parts['query'], $query);
+            if (!empty($query['q']) && is_string($query['q']) && str_contains($host, 'google.')) {
+                $href = $query['q'];
+            }
+        }
+        return $this->searchResultUrl($href);
     }
 
     private function searchFetch(string $url, ?string $post = null): array
@@ -569,7 +672,7 @@ class CapabilityTools
     private function isSearchBotWall(string $body): bool
     {
         $hay = strtolower($body);
-        foreach (['anomaly', 'bots use duckduckgo', 'challenge-form', 'challenge form'] as $needle) {
+        foreach (['anomaly', 'bots use duckduckgo', 'challenge-form', 'challenge form', 'unusual traffic', 'g-recaptcha', '/sorry/index', 'our systems have detected'] as $needle) {
             if (str_contains($hay, $needle)) {
                 return true;
             }
@@ -577,21 +680,10 @@ class CapabilityTools
         return false;
     }
 
-    private function providerRejectionMessage(int $code, string $error, string $reason): string
+    private function providersRejected(array $misses): string
     {
-        $detail = 'HTTP ' . $code;
-        if ($reason !== '') {
-            $detail .= ', ' . $reason;
-        }
-        if ($error !== '') {
-            $detail .= '. ' . $error;
-        }
-        return 'The search provider rejected this request. The query was accepted (' . $detail . '). Do not rewrite the query and do not call web_search again this turn.';
-    }
-
-    private function searchProvider(): string
-    {
-        return (string)$this->db->getSetting('search_provider', 'duckduckgo') === 'bing' ? 'bing' : 'duckduckgo';
+        $detail = $misses ? implode('; ', $misses) : 'no search engine answered';
+        return 'The search provider rejected this request. The query was accepted (' . $detail . '). End this run now. Do not call another tool. Do not fetch pages, rewrite the query, or log research. Report this failure to the main agent.';
     }
 
     private function parseSearchResults(string $html): array
@@ -686,7 +778,7 @@ class CapabilityTools
         }
         $parts = parse_url($href);
         $host = strtolower((string)($parts['host'] ?? ''));
-        if ($host === '' || str_ends_with($host, 'duckduckgo.com') || str_ends_with($host, 'bing.com')) {
+        if ($host === '' || str_ends_with($host, 'duckduckgo.com') || str_ends_with($host, 'bing.com') || str_ends_with($host, 'google.com') || str_contains($host, '.google.')) {
             return '';
         }
         return $this->absoluteUrl($href, $href);
