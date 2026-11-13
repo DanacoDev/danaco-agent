@@ -117,10 +117,11 @@ def recommended_model():
     """Match the hardware choice in install.sh."""
     vram_mb = 0
     compute = ""
+    driver = ""
     if shutil.which("nvidia-smi"):
         try:
             result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=memory.total,compute_cap", "--format=csv,noheader,nounits"],
+                ["nvidia-smi", "--query-gpu=memory.total,compute_cap,driver_version", "--format=csv,noheader,nounits"],
                 capture_output=True,
                 text=True,
                 timeout=8,
@@ -135,6 +136,7 @@ def recommended_model():
             if memory > vram_mb:
                 vram_mb = memory
                 compute = parts[1]
+                driver = parts[2] if len(parts) > 2 else ""
     ram_mb = 0
     try:
         with open("/proc/meminfo", "r", encoding="utf-8") as handle:
@@ -148,8 +150,13 @@ def recommended_model():
     head = compute.split(".", 1)[0]
     if head.isdigit():
         major = int(head)
+    driver_major = 0
+    driver_head = driver.split(".", 1)[0]
+    if driver_head.isdigit():
+        driver_major = int(driver_head)
     if vram_mb >= 15360:
-        if major >= 10:
+        # Ollama runs NVFP4 on CUDA 13, which needs driver 580 or newer.
+        if major >= 10 and driver_major >= 580:
             return "local", "qwen3.6:35b-a3b-nvfp4"
         return "local", "qwen3.6:35b-a3b-q4_K_M"
     if ram_mb >= 7168:

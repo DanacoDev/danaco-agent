@@ -156,22 +156,27 @@ echo "Hardware"
 VRAM_MB=0
 RAM_MB=0
 NVIDIA_CC=""
+NVIDIA_DRIVER=""
 GPU_LABEL=""
 if command -v nvidia-smi >/dev/null 2>&1; then
   while IFS= read -r gpu_line; do
     [[ -z "$gpu_line" ]] && continue
-    gpu_cap="${gpu_line##*, }"
+    gpu_driver="${gpu_line##*, }"
     gpu_rest="${gpu_line%, *}"
+    gpu_cap="${gpu_rest##*, }"
+    gpu_rest="${gpu_rest%, *}"
     gpu_mem="${gpu_rest##*, }"
     gpu_name="${gpu_rest%, *}"
     gpu_mem="${gpu_mem// /}"
     gpu_cap="${gpu_cap// /}"
+    gpu_driver="${gpu_driver// /}"
     if [[ "$gpu_mem" =~ ^[0-9]+$ ]] && [[ "$gpu_mem" -gt "$VRAM_MB" ]]; then
       VRAM_MB="$gpu_mem"
       NVIDIA_CC="$gpu_cap"
+      NVIDIA_DRIVER="$gpu_driver"
       GPU_LABEL="$gpu_name"
     fi
-  done < <(nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits 2>/dev/null || true)
+  done < <(nvidia-smi --query-gpu=name,memory.total,compute_cap,driver_version --format=csv,noheader,nounits 2>/dev/null || true)
 fi
 if [[ "$OS" == "Darwin" ]]; then
   RAM_MB="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1048576 ))"
@@ -212,7 +217,9 @@ FAILSAFE_MODEL="qwen2.5:0.5b"
 SUGGESTED_MODE="local"
 if [[ "$VRAM_MB" -ge 15360 ]]; then
   nvfp4=0
-  if [[ -n "$NVIDIA_CC" ]] && awk -v cc="$NVIDIA_CC" 'BEGIN { split(cc, a, "."); exit ((a[1] + 0) >= 10 ? 0 : 1) }'; then
+  driver_major="${NVIDIA_DRIVER%%.*}"
+  # Ollama runs NVFP4 on CUDA 13, which needs driver 580 or newer.
+  if [[ -n "$NVIDIA_CC" && "$driver_major" =~ ^[0-9]+$ && "$driver_major" -ge 580 ]] && awk -v cc="$NVIDIA_CC" 'BEGIN { split(cc, a, "."); exit ((a[1] + 0) >= 10 ? 0 : 1) }'; then
     nvfp4=1
   fi
   if [[ "$nvfp4" -eq 1 ]]; then
