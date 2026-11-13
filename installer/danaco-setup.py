@@ -536,6 +536,9 @@ class LogFeed:
             or "gb/s" in low
             or low.startswith("verifying")
             or low.startswith("writing manifest")
+            or "gathering model" in low
+            or low.startswith("using existing layer")
+            or low.startswith("creating new layer")
         )
 
     def _status(self):
@@ -554,6 +557,8 @@ class LogFeed:
             return "Verifying the download"
         if low.startswith("writing manifest"):
             return "Writing the model manifest"
+        if "gathering model" in low or low.startswith("using existing layer") or low.startswith("creating new layer"):
+            return "Preparing the model"
         if "pulling manifest" in low and "%" not in text and "/" not in text:
             return "Downloading the model manifest"
         size = re.search(r"(\d+(?:\.\d+)?\s*[KMG]B)\s*/\s*(\d+(?:\.\d+)?\s*[KMG]B)", text, re.I)
@@ -608,6 +613,8 @@ def main():
             self._clean_lock = threading.Lock()
             self._cancelling = False
             self._download_dir = ""
+            self._ready = False
+            self._finish_ui = False
 
             self.win = Gtk.ApplicationWindow(application=app, title="Danaco Agent Setup")
             self.win.set_default_size(720, 560)
@@ -1026,6 +1033,8 @@ def main():
             self.next_btn.set_visible(False)
             self._cancelling = False
             self._download_dir = ""
+            self._ready = False
+            self._finish_ui = False
             self.cancel_btn.set_visible(True)
             self.cancel_btn.set_sensitive(True)
             self.run_status.set_text("Installing…")
@@ -1060,12 +1069,11 @@ def main():
                     if kind == "line":
                         self.progress = None
                         self.lines.append(item[1])
-                        match = URL_RE.search(item[1])
-                        if match:
-                            self.url = match.group(1)
+                        self.note_running(item[1])
                     elif kind == "progress":
                         self.progress = item[1]
-                        if item[1].startswith("Downloading"):
+                        self.note_running(item[1])
+                        if item[1].startswith("Downloading") and not self._ready:
                             self.run_status.set_text(item[1])
                     elif kind == "finished":
                         finished = item
@@ -1073,24 +1081,29 @@ def main():
                 pass
             if changed:
                 self.render_log()
+            if self._finish_ui:
+                self.show_finished()
+                return False
             if finished is None:
                 return True
             _kind, code, url = finished
             if url:
                 self.url = url
+                self.succeeded = True
             self.running = False
             self.timer = 0
             self.cancel_btn.set_visible(False)
             if code == 0:
                 self.succeeded = True
-            if code == 0 and self.url and self.on_open():
-                self.win.close()
-                return False
             if code == 0 and self.url:
-                self.run_status.set_text(f"Danaco Agent is running at {self.url}")
-                self.open_btn.set_visible(True)
-            elif code == 0:
-                self.run_status.set_text("Setup finished.")
+                self.show_finished()
+                return False
+            if code == 0:
+                self.run_status.set_text("Install is finished.")
+                self.next_btn.set_label("Close")
+                self.next_btn.set_visible(True)
+                self.next_btn.set_sensitive(True)
+                return False
             elif self._cancelling or self.stop:
                 self.run_status.set_text("Setup was cancelled.")
             else:
@@ -1121,6 +1134,29 @@ def main():
                 else:
                     env.pop("XDG_DATA_DIRS", None)
             return env
+
+        def note_running(self, text):
+            match = URL_RE.search(text or "")
+            if not match:
+                return
+            self.url = match.group(1)
+            self.succeeded = True
+            self._finish_ui = True
+
+        def show_finished(self):
+            """The agent is running. Closing this window must leave it in place."""
+            if self._ready:
+                return
+            self._ready = True
+            self.succeeded = True
+            self.running = False
+            self.cancel_btn.set_visible(False)
+            self.run_status.set_text("Install is finished.")
+            self.next_btn.set_label("Close")
+            self.next_btn.set_visible(True)
+            self.next_btn.set_sensitive(True)
+            self.on_open()
+            self.win.close()
 
         def on_open(self):
             if not self.url:
@@ -1194,6 +1230,11 @@ def main():
             return False
 
         def on_close_request(self, _win):
+            if self.succeeded:
+                if self.timer:
+                    GLib.source_remove(self.timer)
+                    self.timer = 0
+                return False
             self.stop = True
             proc = self.proc
             if proc is not None and proc.poll() is None:
@@ -1201,8 +1242,7 @@ def main():
                     os.killpg(proc.pid, 15)
                 except OSError:
                     pass
-            if not self.succeeded:
-                self.cleanup_failed()
+            self.cleanup_failed()
             if self.timer:
                 GLib.source_remove(self.timer)
                 self.timer = 0
