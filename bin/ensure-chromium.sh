@@ -90,6 +90,40 @@ if [[ "$os" == "Linux" ]] && command -v apt-get >/dev/null 2>&1; then
   exit 10
 fi
 
+if [[ "$os" == "Linux" ]] && command -v dnf >/dev/null 2>&1; then
+  if [[ "$need_chrome" -eq 1 ]]; then
+    echo "Chromium is missing. Screenshots and the headless browser need it."
+  fi
+  if [[ "$need_pdf" -eq 1 ]]; then
+    echo "poppler-utils is missing. Scanned PDFs need it."
+  fi
+  packages=()
+  [[ "$need_chrome" -eq 1 ]] && packages+=(chromium liberation-fonts)
+  [[ "$need_pdf" -eq 1 ]] && packages+=(poppler-utils)
+  if ! run_root dnf install -y "${packages[@]}"; then
+    echo "Could not install Chromium or poppler-utils with dnf." >&2
+    exit 1
+  fi
+  exit 10
+fi
+
+if [[ "$os" == "Linux" ]] && command -v pacman >/dev/null 2>&1; then
+  if [[ "$need_chrome" -eq 1 ]]; then
+    echo "Chromium is missing. Screenshots and the headless browser need it."
+  fi
+  if [[ "$need_pdf" -eq 1 ]]; then
+    echo "poppler-utils is missing. Scanned PDFs need it."
+  fi
+  packages=()
+  [[ "$need_chrome" -eq 1 ]] && packages+=(chromium ttf-liberation)
+  [[ "$need_pdf" -eq 1 ]] && packages+=(poppler)
+  if ! run_root pacman -Sy --needed --noconfirm "${packages[@]}"; then
+    echo "Could not install Chromium or poppler with pacman." >&2
+    exit 1
+  fi
+  exit 10
+fi
+
 if [[ "$need_chrome" -eq 1 ]]; then
   echo "Chromium is missing. Screenshots and the headless browser need it." >&2
 fi
@@ -100,5 +134,5 @@ if [[ "$os" == "Darwin" ]]; then
   echo "Linux installs these with the agent. On this Mac, install Google Chrome or Chromium. A scanned PDF is read with Quick Look until poppler is installed." >&2
   exit 0
 fi
-echo "Install chromium and poppler-utils, then run this again." >&2
+echo "Install Chromium and poppler-utils with this system's package manager, then run this again." >&2
 exit 1

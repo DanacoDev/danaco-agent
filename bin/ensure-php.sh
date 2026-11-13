@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bash "$ROOT/bin/save-github-credentials.sh" "$ROOT" || true
 
 PACKAGES=(php-cli php-sqlite3 sqlite3 php-curl php-mbstring php-xml php-zip bubblewrap python3-pip)
+FEDORA_PACKAGES=(php-cli php-pdo php-sqlite3 sqlite bubblewrap python3-pip)
+ARCH_PACKAGES=(php sqlite bubblewrap python-pip)
 
 php_has() {
   # grep -q in a pipeline makes php exit early, and pipefail then treats that as failure.
@@ -62,13 +64,21 @@ run_root() {
 }
 
 install_packages() {
-  local os
+  local os package_manager
   os="$(uname -s)"
   if [[ "$os" == "Linux" ]] && command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     # One root prompt for both apt steps. The variable is set again inside the
     # root shell because sudo and pkexec drop it.
     run_root bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y "$@"' bash "${PACKAGES[@]}" || return 1
+    return
+  fi
+  if [[ "$os" == "Linux" ]] && command -v dnf >/dev/null 2>&1; then
+    run_root dnf install -y "${FEDORA_PACKAGES[@]}" || return 1
+    return
+  fi
+  if [[ "$os" == "Linux" ]] && command -v pacman >/dev/null 2>&1; then
+    run_root pacman -Sy --needed --noconfirm "${ARCH_PACKAGES[@]}" || return 1
     return
   fi
   if [[ "$os" == "Darwin" ]] && command -v brew >/dev/null 2>&1; then
@@ -86,7 +96,7 @@ fi
 
 echo "PHP is missing: $missing"
 if ! install_packages; then
-  echo "Could not install the PHP packages. On Ubuntu, run: sudo apt-get install -y ${PACKAGES[*]}" >&2
+  echo "Could not install the PHP packages. Install PHP, SQLite, bubblewrap, and pip with this system's package manager, then run this again." >&2
   exit 1
 fi
 

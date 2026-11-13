@@ -1,0 +1,32 @@
+name: Build Linux installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "installer-*"
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install AppImage builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip
+          python3 -m pip install --user appimage-builder
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build AppImage
+        run: sh installer/build-appimage.sh
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: danaco-agent-linux-installer
+          path: dist/*.AppImage
+          retention-days: 1
