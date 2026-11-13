@@ -68,6 +68,16 @@ chmod +x "$APPDIR/usr/bin/python3"
 bundle_deps "$APPDIR/usr/bin/python3"
 cp -a "/usr/lib/python${py_ver}" "$APPDIR/usr/lib/"
 cp -a /usr/lib/python3/dist-packages/gi "$APPDIR/usr/lib/python3/dist-packages/"
+for extra in /usr/lib/python3/dist-packages/_gi*.so \
+  /usr/lib/python3/dist-packages/gi_cairo.py \
+  /usr/lib/python3/dist-packages/_gi_cairo*; do
+  if [ -e "$extra" ]; then
+    cp -a "$extra" "$APPDIR/usr/lib/python3/dist-packages/"
+  fi
+done
+if [ -d /usr/lib/python3/dist-packages/pygtkcompat ]; then
+  cp -a /usr/lib/python3/dist-packages/pygtkcompat "$APPDIR/usr/lib/python3/dist-packages/"
+fi
 if [ -d /usr/lib/python3/dist-packages/cairo ]; then
   cp -a /usr/lib/python3/dist-packages/cairo "$APPDIR/usr/lib/python3/dist-packages/"
 fi
@@ -95,17 +105,28 @@ if [ -e /usr/lib/x86_64-linux-gnu/libgtk-4.so.1 ]; then
 fi
 
 cp "$ROOT/installer/appimage/AppRun" "$APPDIR/AppRun"
+cp "$ROOT/installer/appimage/danaco-agent-setup" "$APPDIR/usr/bin/danaco-agent-setup"
 cp "$ROOT/installer/appimage/danaco-agent-setup.desktop" "$APPDIR/danaco-agent-setup.desktop"
 cp "$ROOT/installer/danaco-setup.py" "$APPDIR/usr/share/danaco-agent-setup/danaco-setup.py"
 cp "$ROOT/public/assets/logo.png" "$APPDIR/danaco-agent-setup.png"
-chmod +x "$APPDIR/AppRun"
+chmod +x "$APPDIR/AppRun" "$APPDIR/usr/bin/danaco-agent-setup"
+
+if ! ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'; then
+  echo "Installing the library a double-clicked AppImage needs..."
+  sudo apt-get update
+  sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64
+fi
 
 echo "Downloading the AppImage packager..."
 curl -fsSL -o "$WORK/appimagetool.AppImage" \
   "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
-chmod +x "$WORK/appimagetool.AppImage"
-(cd "$WORK" && "$WORK/appimagetool.AppImage" --appimage-extract >/dev/null)
+curl -fsSL -o "$WORK/runtime-x86_64" \
+  "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64"
+chmod +x "$WORK/appimagetool.AppImage" "$WORK/runtime-x86_64"
+(cd "$WORK" && APPIMAGE_EXTRACT_AND_RUN=1 "$WORK/appimagetool.AppImage" --appimage-extract >/dev/null)
 mkdir -p "$ROOT/dist"
-ARCH=x86_64 "$WORK/squashfs-root/AppRun" "$APPDIR" "$OUT"
+ARCH=x86_64 "$WORK/squashfs-root/AppRun" --runtime-file "$WORK/runtime-x86_64" "$APPDIR" "$OUT"
 chmod +x "$OUT"
-printf '%s\n' "$OUT"
+cp "$OUT" "$ROOT/installer/danaco-agent-setup-${VERSION}-x86_64.AppImage"
+chmod +x "$ROOT/installer/danaco-agent-setup-${VERSION}-x86_64.AppImage"
+printf '%s\n' "$ROOT/installer/danaco-agent-setup-${VERSION}-x86_64.AppImage"

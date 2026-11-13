@@ -1,5 +1,35 @@
 #!/bin/sh
 set -eu
 
-exec "$APPDIR/usr/bin/python3" \
-  "$APPDIR/usr/share/danaco-agent-setup/danaco-setup.py" "$@"
+if [ -z "${APPDIR:-}" ]; then
+  APPDIR="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
+fi
+export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GI_TYPELIB_PATH="$APPDIR/usr/lib/girepository-1.0"
+export PYTHONHOME="$APPDIR/usr"
+export PYTHONPATH="$APPDIR/usr/lib/python3/dist-packages${PYTHONPATH:+:$PYTHONPATH}"
+export PATH="$APPDIR/usr/bin:$PATH"
+if [ -d "$APPDIR/usr/lib/gdk-pixbuf-2.0" ]; then
+  pixbuf_loaders="$(find "$APPDIR/usr/lib/gdk-pixbuf-2.0" -type d -name loaders 2>/dev/null | head -n 1 || true)"
+  if [ -n "$pixbuf_loaders" ]; then
+    export GDK_PIXBUF_MODULEDIR="$pixbuf_loaders"
+  fi
+fi
+export XDG_DATA_DIRS="$APPDIR/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+
+PY="$APPDIR/usr/bin/python3"
+SCRIPT="$APPDIR/usr/share/danaco-agent-setup/danaco-setup.py"
+if ! "$PY" -c 'import gi; gi.require_version("Gtk", "4.0"); from gi.repository import Gtk' >/dev/null 2>&1; then
+  unset PYTHONHOME PYTHONPATH GI_TYPELIB_PATH LD_LIBRARY_PATH GDK_PIXBUF_MODULEDIR
+  if [ -x /usr/bin/python3 ] && /usr/bin/python3 -c 'import gi; gi.require_version("Gtk", "4.0"); from gi.repository import Gtk' >/dev/null 2>&1; then
+    exec /usr/bin/python3 "$SCRIPT" "$@"
+  fi
+  message="Danaco Agent Setup could not open its window."
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --error --title="Danaco Agent Setup" --text="$message" || true
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "Danaco Agent Setup" "$message" || true
+  fi
+  exit 1
+fi
+exec "$PY" "$SCRIPT" "$@"

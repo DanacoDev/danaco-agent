@@ -74,8 +74,8 @@ def clone_command(dest):
             stderr=subprocess.DEVNULL,
         )
         if probe.returncode == 0:
-            return ["gh", "repo", "clone", "DanacoDev/danaco-agent", dest, "--", "--branch", "installer-appimage", "--single-branch"]
-    return ["git", "clone", "--branch", "installer-appimage", "--single-branch", REPO_URL, dest]
+            return ["gh", "repo", "clone", "DanacoDev/danaco-agent", dest, "--", "--branch", "main", "--single-branch"]
+    return ["git", "clone", "--branch", "main", "--single-branch", REPO_URL, dest]
 
 
 def run_terminal_install():
@@ -1405,9 +1405,9 @@ def main():
                 return 1
             env = self.browser_env()
             if os.path.isdir(os.path.join(dest, ".git")):
-                self.queue.put(("line", "Using the installer version."))
-                if self.run_proc(["git", "fetch", "origin", "installer-appimage"], dest, env) == 0:
-                    self.run_proc(["git", "checkout", "-B", "installer-appimage", "FETCH_HEAD"], dest, env)
+                self.queue.put(("line", "Using the main version."))
+                if self.run_proc(["git", "fetch", "origin", "main"], dest, env) == 0:
+                    self.run_proc(["git", "checkout", "-B", "main", "FETCH_HEAD"], dest, env)
                     self.run_proc(["git", "reset", "--hard", "FETCH_HEAD"], dest, env)
             script = os.path.join(dest, "install.sh")
             if not os.path.isfile(script):
