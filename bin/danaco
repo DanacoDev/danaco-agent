@@ -511,7 +511,7 @@ write_linux_desktop() {
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=Danaco Agent
+Name=Agent Danaco
 Comment=Open the agent in the browser
 Exec=${exec_line}
 Icon=${icon}
@@ -601,9 +601,9 @@ write_mac_app() {
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>Danaco Agent</string>
+  <string>Agent Danaco</string>
   <key>CFBundleDisplayName</key>
-  <string>Danaco Agent</string>
+  <string>Agent Danaco</string>
   <key>CFBundleIdentifier</key>
   <string>com.danaco.launcher</string>
   <key>CFBundleVersion</key>
