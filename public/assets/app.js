@@ -271,6 +271,7 @@
           updateMessage: '',
           ollamaModels: [],
           ollamaError: '',
+          ollamaInstallError: '',
           ollamaProgress: '',
           ollamaPullName: '',
           ollamaBusy: false,
@@ -2690,7 +2691,7 @@
           const name = this.ollamaPullName.trim();
           if (!name || this.ollamaBusy) return;
           this.ollamaBusy = true;
-          this.ollamaError = '';
+          this.ollamaInstallError = '';
           this.ollamaProgress = 'Starting download of ' + name + '…';
           try {
             const res = await fetch('/api/setup/models/pull', {
@@ -2711,7 +2712,7 @@
             this.ollamaProgress = (installed || name) + ' is installed.';
             await this.loadOllamaModels();
           } catch (error) {
-            this.ollamaError = error.message;
+            this.ollamaInstallError = error.message;
             this.ollamaProgress = '';
           } finally {
             this.ollamaBusy = false;
