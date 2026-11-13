@@ -13,6 +13,8 @@ import time
 
 REPO_URL = "https://github.com/DanacoDev/danaco-agent.git"
 URL_RE = re.compile(r"Agent Danaco is running at (https://\S+)")
+NEW_COPY_RE = re.compile(r"Installing a new copy at (.+)$")
+REPLACED_RE = re.compile(r"Replacing the old files in (.+)$")
 
 
 def next_install_dir(root):
@@ -30,6 +32,29 @@ def next_install_dir(root):
 
 def graphical_session():
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def remove_install_tree(path):
+    """Delete a Danaco folder left by a failed setup. Leave home and system directories alone."""
+    if not path:
+        return False
+    try:
+        resolved = os.path.realpath(path)
+    except OSError:
+        return False
+    home = os.path.realpath(os.path.expanduser("~"))
+    if resolved in {"/", home, "/usr", "/bin", "/sbin", "/etc", "/var", "/opt", "/tmp", "/home", "/root"}:
+        return False
+    if not os.path.isdir(resolved):
+        return False
+    if not (
+        os.path.isfile(os.path.join(resolved, "install.sh"))
+        or os.path.isfile(os.path.join(resolved, "bin", "danaco"))
+        or os.path.isdir(os.path.join(resolved, ".git"))
+    ):
+        return False
+    shutil.rmtree(resolved)
+    return True
 
 
 def clone_command(dest):
@@ -211,6 +236,12 @@ def main():
             self.progress = None
             self.url = ""
             self.model_buttons = []
+            self.job = None
+            self.succeeded = False
+            self._cleaned = False
+            self._new_copy = ""
+            self._replaced = False
+            self._clean_lock = threading.Lock()
 
             self.win = Gtk.ApplicationWindow(application=app, title="Danaco Agent Setup")
             self.win.set_default_size(720, 560)
@@ -608,6 +639,11 @@ def main():
                 "password": self.pass1.get_text(),
                 "ai_act": self.ai_act(),
             }
+            self.job = job
+            self.succeeded = False
+            self._cleaned = False
+            self._new_copy = ""
+            self._replaced = False
             self.running = True
             self.stop = False
             self.url = ""
@@ -666,6 +702,8 @@ def main():
                 self.url = url
             self.running = False
             self.timer = 0
+            if code == 0:
+                self.succeeded = True
             if code == 0 and self.url and self.on_open():
                 self.win.close()
                 return False
@@ -718,6 +756,32 @@ def main():
             )
             return True
 
+        def cleanup_failed(self):
+            with self._clean_lock:
+                if self.succeeded or self._cleaned:
+                    return
+                job = self.job
+                if not job or job.get("reuse") == "2":
+                    self._cleaned = True
+                    return
+                target = ""
+                if job.get("reuse") == "3":
+                    target = self._new_copy
+                elif job.get("reuse") == "1":
+                    if self._replaced:
+                        target = job["folder"]
+                else:
+                    target = job["folder"]
+                self._cleaned = True
+            try:
+                removed = bool(target) and remove_install_tree(target)
+            except OSError:
+                with self._clean_lock:
+                    self._cleaned = False
+                return
+            if removed:
+                self.queue.put(("line", f"Setup did not finish. Removed {target}"))
+
         def on_close_request(self, _win):
             self.stop = True
             proc = self.proc
@@ -726,6 +790,8 @@ def main():
                     os.killpg(proc.pid, 15)
                 except OSError:
                     pass
+            if not self.succeeded:
+                self.cleanup_failed()
             if self.timer:
                 GLib.source_remove(self.timer)
                 self.timer = 0
@@ -740,6 +806,8 @@ def main():
             except Exception as exc:
                 self.queue.put(("line", f"Setup failed: {exc}"))
                 code = 1
+            if code != 0:
+                self.cleanup_failed()
             self.queue.put(("finished", code, url))
 
         def url_from_log(self):
@@ -849,6 +917,11 @@ def main():
             match = URL_RE.search(event[1])
             if match:
                 self._worker_url = match.group(1)
+            copy = NEW_COPY_RE.search(event[1])
+            if copy:
+                self._new_copy = copy.group(1).strip()
+            if REPLACED_RE.search(event[1]):
+                self._replaced = True
 
     class SetupApp(Gtk.Application):
         def __init__(self):

@@ -9,6 +9,28 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 OS="$(uname -s)"
 
+remove_failed_install() {
+  status=$?
+  resolved=""
+  home=""
+  if [[ "$status" -ne 0 && "${DANACO_REMOVE_ON_FAIL:-}" == "1" && -d "$ROOT" ]]; then
+    resolved="$(cd "$ROOT" && pwd)" || true
+    home="$(cd ~ && pwd)" || true
+    case "$resolved" in
+      /|"$home"|/usr|/bin|/sbin|/etc|/var|/opt|/tmp|/home|/root) ;;
+      "") ;;
+      *)
+        if [[ -f "$resolved/install.sh" || -f "$resolved/bin/danaco" || -d "$resolved/.git" ]]; then
+          echo "Setup did not finish. Removing ${resolved}"
+          rm -rf "$resolved" || true
+        fi
+        ;;
+    esac
+  fi
+  exit "$status"
+}
+trap remove_failed_install EXIT
+
 if [[ "${DANACO_NONINTERACTIVE:-}" != "1" && ! -t 0 ]]; then
   echo "install.sh needs an interactive terminal."
   exit 1
@@ -103,15 +125,25 @@ if [[ -f "$ROOT/data/app.sqlite" ]]; then
   fi
   if [[ "$REUSE_CHOICE" == "1" ]]; then
     echo "Replacing the old files in $ROOT"
+    export DANACO_REMOVE_ON_FAIL=1
     replace_existing_files
     exec bash "$ROOT/install.sh"
   elif [[ "$REUSE_CHOICE" == "3" ]]; then
     echo "Installing a new copy at $next_dir"
-    clone_repo "$next_dir"
+    if ! clone_repo "$next_dir"; then
+      rm -rf "$next_dir"
+      exit 1
+    fi
+    export DANACO_REMOVE_ON_FAIL=1
     exec bash "$next_dir/install.sh"
   else
     echo "Using the existing files."
+    DANACO_REMOVE_ON_FAIL=0
   fi
+fi
+
+if [[ "${DANACO_REMOVE_ON_FAIL:-}" != "0" ]]; then
+  DANACO_REMOVE_ON_FAIL=1
 fi
 
 if [[ ! -f "$ROOT/bin/danaco" ]]; then
