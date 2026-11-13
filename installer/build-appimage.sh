@@ -1,39 +1,111 @@
 #!/bin/sh
 # Build a portable x86_64 AppImage for the graphical setup window.
+# Uses this computer's apt packages. Build it on Ubuntu 22.04 or 24.04 so the
+# result can run on newer distributions.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 OUT="$ROOT/dist/danaco-agent-setup-${VERSION}-x86_64.AppImage"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/danaco-appimage.XXXXXX")"
+APPDIR="$WORK/AppDir"
+SEEN="$WORK/seen"
 trap 'rm -rf "$WORK"' EXIT
 
-if [ "$(uname -s)" != "Linux" ]; then
-  echo "AppImage builds must run on Linux (or in the Linux CI workflow)." >&2
+if [ "$(uname -s)" != "Linux" ] || [ "$(uname -m)" != "x86_64" ]; then
+  echo "This builder supports Linux x86_64 only." >&2
   exit 1
 fi
-if ! command -v appimage-builder >/dev/null 2>&1; then
-  echo "Install appimage-builder before running this script." >&2
+if ! command -v apt-get >/dev/null 2>&1; then
+  echo "This builder needs apt-get. Run it on Ubuntu, Debian, Mint, or Kali." >&2
   exit 1
 fi
+if ! command -v curl >/dev/null 2>&1; then
+  sudo apt-get update
+  sudo apt-get install -y curl ca-certificates
+fi
 
-cp "$ROOT/installer/appimage/appimage-builder.yml" "$WORK/"
-sed "s/version: 1.0.45/version: $VERSION/" \
-  "$ROOT/installer/appimage/appimage-builder.yml" > "$WORK/appimage-builder.yml"
-mkdir -p "$WORK/AppDir/usr/share/danaco-agent-setup"
-cp "$ROOT/installer/appimage/AppRun" "$WORK/AppDir/AppRun"
-mkdir -p "$WORK/AppDir/usr/bin"
-cp "$ROOT/installer/appimage/danaco-agent-setup" \
-  "$WORK/AppDir/usr/bin/danaco-agent-setup"
-cp "$ROOT/installer/appimage/danaco-agent-setup.desktop" \
-  "$WORK/AppDir/danaco-agent-setup.desktop"
-cp "$ROOT/installer/danaco-setup.py" \
-  "$WORK/AppDir/usr/share/danaco-agent-setup/danaco-setup.py"
-cp "$ROOT/public/assets/logo.png" "$WORK/AppDir/danaco-agent-setup.png"
-chmod +x "$WORK/AppDir/AppRun"
-chmod +x "$WORK/AppDir/usr/bin/danaco-agent-setup"
+if ! python3 -c 'import gi' >/dev/null 2>&1 || [ ! -f /usr/lib/x86_64-linux-gnu/girepository-1.0/Gtk-4.0.typelib ]; then
+  echo "Installing the GTK setup libraries..."
+  sudo apt-get update
+  sudo apt-get install -y python3 python3-gi gir1.2-gtk-4.0
+fi
 
-(cd "$WORK" && appimage-builder --recipe appimage-builder.yml)
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/lib/girepository-1.0" \
+  "$APPDIR/usr/lib/python3/dist-packages" "$APPDIR/usr/share/danaco-agent-setup"
+: > "$SEEN"
+
+skip_lib() {
+  case "$(basename "$1")" in
+    ld-linux*.so*|libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|libresolv.so.*|libutil.so.*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+bundle_deps() {
+  ldd "$1" 2>/dev/null | awk '/=> \// { print $3 }' | while read -r dep; do
+    [ -f "$dep" ] || continue
+    name="$(basename "$dep")"
+    real="$(readlink -f "$dep")"
+    if skip_lib "$real"; then
+      continue
+    fi
+    if grep -Fxq "$name" "$SEEN"; then
+      continue
+    fi
+    printf '%s\n' "$name" >> "$SEEN"
+    cp -a "$real" "$APPDIR/usr/lib/$name"
+    bundle_deps "$APPDIR/usr/lib/$name"
+  done
+}
+
+py_real="$(readlink -f "$(command -v python3)")"
+py_ver="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+cp -a "$py_real" "$APPDIR/usr/bin/python3"
+chmod +x "$APPDIR/usr/bin/python3"
+bundle_deps "$APPDIR/usr/bin/python3"
+cp -a "/usr/lib/python${py_ver}" "$APPDIR/usr/lib/"
+cp -a /usr/lib/python3/dist-packages/gi "$APPDIR/usr/lib/python3/dist-packages/"
+if [ -d /usr/lib/python3/dist-packages/cairo ]; then
+  cp -a /usr/lib/python3/dist-packages/cairo "$APPDIR/usr/lib/python3/dist-packages/"
+fi
+cp -a /usr/lib/x86_64-linux-gnu/girepository-1.0/. "$APPDIR/usr/lib/girepository-1.0/"
+if [ -d /usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0 ]; then
+  mkdir -p "$APPDIR/usr/lib/gdk-pixbuf-2.0"
+  cp -a /usr/lib/x86_64-linux-gnu/gdk-pixbuf-2.0/. "$APPDIR/usr/lib/gdk-pixbuf-2.0/"
+fi
+if [ -f /usr/share/glib-2.0/schemas/gschemas.compiled ]; then
+  mkdir -p "$APPDIR/usr/share/glib-2.0/schemas"
+  cp -a /usr/share/glib-2.0/schemas/gschemas.compiled "$APPDIR/usr/share/glib-2.0/schemas/"
+fi
+
+find "$APPDIR/usr/lib/python${py_ver}/lib-dynload" "$APPDIR/usr/lib/python3/dist-packages" \
+  "$APPDIR/usr/lib/gdk-pixbuf-2.0" \
+  -name '*.so' -type f 2>/dev/null | while read -r so; do
+  bundle_deps "$so"
+done
+if [ -e /usr/lib/x86_64-linux-gnu/libgtk-4.so.1 ]; then
+  if ! grep -Fxq "libgtk-4.so.1" "$SEEN"; then
+    printf '%s\n' "libgtk-4.so.1" >> "$SEEN"
+    cp -a "$(readlink -f /usr/lib/x86_64-linux-gnu/libgtk-4.so.1)" "$APPDIR/usr/lib/libgtk-4.so.1"
+  fi
+  bundle_deps "$APPDIR/usr/lib/libgtk-4.so.1"
+fi
+
+cp "$ROOT/installer/appimage/AppRun" "$APPDIR/AppRun"
+cp "$ROOT/installer/appimage/danaco-agent-setup.desktop" "$APPDIR/danaco-agent-setup.desktop"
+cp "$ROOT/installer/danaco-setup.py" "$APPDIR/usr/share/danaco-agent-setup/danaco-setup.py"
+cp "$ROOT/public/assets/logo.png" "$APPDIR/danaco-agent-setup.png"
+chmod +x "$APPDIR/AppRun"
+
+echo "Downloading the AppImage packager..."
+curl -fsSL -o "$WORK/appimagetool.AppImage" \
+  "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+chmod +x "$WORK/appimagetool.AppImage"
+(cd "$WORK" && "$WORK/appimagetool.AppImage" --appimage-extract >/dev/null)
 mkdir -p "$ROOT/dist"
-mv "$WORK"/Danaco_Agent_Setup*.AppImage "$OUT"
+ARCH=x86_64 "$WORK/squashfs-root/AppRun" "$APPDIR" "$OUT"
+chmod +x "$OUT"
 printf '%s\n' "$OUT"

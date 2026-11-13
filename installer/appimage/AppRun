@@ -2,4 +2,15 @@
 set -eu
 
 APPDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export GI_TYPELIB_PATH="$APPDIR/usr/lib/girepository-1.0"
+export PYTHONHOME="$APPDIR/usr"
+export PYTHONPATH="$APPDIR/usr/lib/python3/dist-packages${PYTHONPATH:+:$PYTHONPATH}"
+if [ -d "$APPDIR/usr/lib/gdk-pixbuf-2.0" ]; then
+  pixbuf_loaders="$(find "$APPDIR/usr/lib/gdk-pixbuf-2.0" -type d -name loaders 2>/dev/null | head -n 1)"
+  if [ -n "$pixbuf_loaders" ]; then
+    export GDK_PIXBUF_MODULEDIR="$pixbuf_loaders"
+  fi
+fi
+export XDG_DATA_DIRS="$APPDIR/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
 exec "$APPDIR/usr/bin/python3" "$APPDIR/usr/share/danaco-agent-setup/danaco-setup.py" "$@"
