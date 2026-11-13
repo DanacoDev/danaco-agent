@@ -825,9 +825,10 @@ cmd_update() {
     echo "No GitHub remote is configured. Add one with: git remote add origin <url>" >&2
     exit 1
   fi
+  # The install can change tracked program files. Put those back so the
+  # fast-forward can run. Database, projects, and other ignored files stay.
   if [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ]]; then
-    echo "Local changes are present. Commit or stash them, then run danaco update again." >&2
-    exit 1
+    git -C "$ROOT" reset --hard HEAD >/dev/null
   fi
   save_github_credentials
   if [[ ! -t 0 || -f "$ROOT/data/.github-credentials" ]]; then

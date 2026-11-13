@@ -1869,11 +1869,8 @@ class Api
         if ($remoteCount === '') {
             $remoteCount = substr($remote, 0, 7);
         }
-        $dirty = Process::run(['git', '-C', $root, 'status', '--porcelain', '--untracked-files=no'], $root, null, 5);
         $blocked = '';
-        if (trim($dirty['stdout']) !== '') {
-            $blocked = 'Local changes are present. Commit or stash them, then run danaco update again.';
-        } elseif (ctype_digit($ahead) && (int)$ahead > 0) {
+        if (ctype_digit($ahead) && (int)$ahead > 0) {
             $blocked = 'Local history has diverged from GitHub. Nothing will be overwritten.';
         }
         $web = '';
