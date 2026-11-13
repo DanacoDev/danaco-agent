@@ -2,16 +2,23 @@
 """Setup for Danaco Agent. A window when this computer has a graphical session, otherwise install.sh."""
 
 import codecs
+import grp
 import os
+import pwd
 import queue
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
 REPO_URL = "https://github.com/DanacoDev/danaco-agent.git"
+UNSLOTH_FILES = {
+    "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_S": "Qwen3.6-35B-A3B-UD-Q3_K_S.gguf",
+    "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+}
 URL_RE = re.compile(r"Agent Danaco is running at (https://\S+)")
 NEW_COPY_RE = re.compile(r"Installing a new copy at (.+)$")
 REPLACED_RE = re.compile(r"Replacing the old files in (.+)$")
@@ -108,6 +115,151 @@ def run_terminal_install():
     except OSError as exc:
         print(f"Could not run install.sh: {exc}", file=sys.stderr)
         return 1
+
+
+def linux_boot_enabled():
+    if shutil.which("systemctl") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-enabled", "danaco.service"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return (result.stdout or "").strip() == "enabled"
+
+
+def register_linux_autostart(dest, env, log):
+    """Register the boot service. A graphical install has no terminal for sudo."""
+    if sys.platform != "linux" or linux_boot_enabled():
+        return
+    root = os.path.abspath(dest)
+    if not os.path.isfile(os.path.join(root, "bin", "run-agent.sh")):
+        return
+    user = pwd.getpwuid(os.getuid())
+    group = grp.getgrgid(os.getgid())
+    system_unit = (
+        "[Unit]\n"
+        "Description=Danaco Agent web UI\n"
+        "After=network.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"User={user.pw_name}\n"
+        f"Group={group.gr_name}\n"
+        f"WorkingDirectory={root}\n"
+        f"ExecStart=/bin/bash {root}/bin/run-agent.sh\n"
+        "Restart=always\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+    staging = os.path.join(root, "data", ".danaco.service")
+    try:
+        os.makedirs(os.path.dirname(staging), exist_ok=True)
+        with open(staging, "w", encoding="utf-8") as handle:
+            handle.write(system_unit)
+    except OSError as exc:
+        log(f"Could not prepare the boot service: {exc}")
+        return
+    config_home = env.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    user_unit_path = os.path.join(config_home, "systemd", "user", "danaco.service")
+    if os.path.isfile(user_unit_path) and shutil.which("systemctl"):
+        subprocess.run(
+            ["systemctl", "--user", "disable", "--now", "danaco.service"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    script = 'cp "$1" "/etc/systemd/system/$2" && systemctl daemon-reload && systemctl enable --now "$2"'
+    command = ["bash", "-c", script, "bash", staging, "danaco.service"]
+    if os.geteuid() != 0:
+        if shutil.which("pkexec") is None:
+            command = None
+        else:
+            log("Administrator permission is required so the agent starts at boot.")
+            command = ["pkexec", *command]
+    registered = False
+    if command is not None:
+        try:
+            registered = subprocess.run(command, env=env).returncode == 0
+        except OSError:
+            registered = False
+    try:
+        os.remove(staging)
+    except OSError:
+        pass
+    if registered:
+        try:
+            with open(os.path.join(root, "data", "service.mode"), "w", encoding="utf-8") as handle:
+                handle.write("systemd\n")
+        except OSError:
+            pass
+        log("The agent starts automatically on boot.")
+        return
+    user_unit = (
+        "[Unit]\n"
+        "Description=Danaco Agent web UI\n"
+        "After=network.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"WorkingDirectory={root}\n"
+        f"ExecStart=/bin/bash {root}/bin/run-agent.sh\n"
+        "Restart=always\n"
+        "RestartSec=5\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+    try:
+        os.makedirs(os.path.dirname(user_unit_path), exist_ok=True)
+        with open(user_unit_path, "w", encoding="utf-8") as handle:
+            handle.write(user_unit)
+        if shutil.which("systemctl") is None:
+            return
+        reloaded = subprocess.run(["systemctl", "--user", "daemon-reload"], env=env).returncode == 0
+        enabled = subprocess.run(
+            ["systemctl", "--user", "enable", "--now", "danaco.service"],
+            env=env,
+        ).returncode == 0
+    except OSError as exc:
+        log(f"Could not register automatic startup: {exc}")
+        return
+    if reloaded and enabled:
+        try:
+            with open(os.path.join(root, "data", "service.mode"), "w", encoding="utf-8") as handle:
+                handle.write("systemd-user\n")
+        except OSError:
+            pass
+        log("The agent starts automatically when you log in.")
+    else:
+        log("Automatic startup was not registered. Start it later with: danaco")
+
+
+def ollama_listed(name, env):
+    if not name or shutil.which("ollama", path=env.get("PATH")) is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    wanted = {name.lower(), f"{name}:latest".lower()}
+    for line in (result.stdout or "").splitlines():
+        part = line.split()
+        if part and part[0].lower() in wanted:
+            return True
+    return False
 
 
 def ollama_models():
@@ -1001,6 +1153,69 @@ def main():
         def url_from_log(self):
             return getattr(self, "_worker_url", "")
 
+        def prepare_unsloth_model(self, name, dest, env):
+            """Download a Hugging Face GGUF when this install.sh only knows ollama pull."""
+            filename = UNSLOTH_FILES.get(name)
+            if not filename:
+                return True
+            env["PATH"] = "/usr/local/bin:/usr/bin:" + env.get("PATH", "")
+            if shutil.which("ollama", path=env["PATH"]) is None:
+                self.queue.put(("line", "Installing Ollama..."))
+                script_fd, script_path = tempfile.mkstemp(prefix="ollama-install-")
+                os.close(script_fd)
+                if self.run_proc(["curl", "-fsSL", "-o", script_path, "https://ollama.com/install.sh"], dest, env) != 0:
+                    os.remove(script_path)
+                    self.queue.put(("line", f"Could not download {name}. The browser was not opened."))
+                    return False
+                command = ["sh", script_path] if os.geteuid() == 0 else ["pkexec", "sh", script_path]
+                installed = self.run_proc(command, dest, env) == 0
+                os.remove(script_path)
+                if not installed:
+                    self.queue.put(("line", f"Could not download {name}. The browser was not opened."))
+                    return False
+            if ollama_listed(name, env):
+                self.queue.put(("line", f"{name} is already downloaded."))
+                return True
+            self.queue.put(("line", f"Downloading {name}."))
+            self.queue.put(("line", "Progress stays on screen. The install will not continue until the download finishes."))
+            if self.run_proc(["ollama", "pull", name], dest, env) == 0 and ollama_listed(name, env):
+                self.queue.put(("line", f"Finished downloading {name}."))
+                return True
+            parent = "/var/tmp" if os.path.isdir("/var/tmp") and os.access("/var/tmp", os.W_OK) else None
+            workdir = tempfile.mkdtemp(prefix="danaco-model-", dir=parent)
+            gguf = os.path.join(workdir, filename)
+            url = f"https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/{filename}"
+            modelfile = os.path.join(workdir, "Modelfile")
+            self.queue.put(("line", f"Downloading {filename} directly."))
+            try:
+                if self.run_proc(["curl", "-fL", "--retry", "3", "--retry-delay", "2", "-o", gguf, url], workdir, env) != 0:
+                    self.queue.put(("line", f"Could not download {name}. The browser was not opened."))
+                    return False
+                try:
+                    size = os.path.getsize(gguf)
+                except OSError:
+                    size = 0
+                if size < 1000000000:
+                    self.queue.put(("line", f"Could not download {name}. The browser was not opened."))
+                    return False
+                with open(modelfile, "w", encoding="utf-8") as handle:
+                    handle.write(
+                        f"FROM {gguf}\n"
+                        "PARAMETER min_p 0\n"
+                        "PARAMETER num_ctx 32768\n"
+                        "PARAMETER temperature 1\n"
+                        "PARAMETER top_k 20\n"
+                        "PARAMETER top_p 0.95\n"
+                        "PARAMETER draft_num_predict 2\n"
+                    )
+                if self.run_proc(["ollama", "create", name, "-f", modelfile], workdir, env) != 0 or not ollama_listed(name, env):
+                    self.queue.put(("line", f"Could not download {name}. The browser was not opened."))
+                    return False
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
+            self.queue.put(("line", f"Finished downloading {name}."))
+            return True
+
         def install(self, job):
             self._worker_url = ""
             dest = job["folder"]
@@ -1028,9 +1243,19 @@ def main():
             if shutil.which("stdbuf"):
                 # Unbuffered stdout so carriage-return progress is not held until a newline.
                 command = ["stdbuf", "-o0", "-eL", "bash", script]
+            with open(script, encoding="utf-8", errors="replace") as handle:
+                script_text = handle.read()
+            if "import_unsloth_gguf" not in script_text:
+                if not self.prepare_unsloth_model(job.get("local") or "", dest, env):
+                    env["DANACO_PASSWORD"] = ""
+                    job["password"] = ""
+                    return 1
             code = self.run_proc(command, dest, env)
             env["DANACO_PASSWORD"] = ""
             job["password"] = ""
+            if code == 0:
+                installed = self._new_copy if job.get("reuse") == "3" and self._new_copy else dest
+                register_linux_autostart(installed, env, lambda text: self.queue.put(("line", text)))
             return code
 
         def run_proc(self, command, cwd, env=None):

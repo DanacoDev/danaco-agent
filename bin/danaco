@@ -100,6 +100,26 @@ can_sudo() {
   return 1
 }
 
+run_root() {
+  if [[ "$(id -u)" -eq 0 ]]; then
+    "$@"
+    return
+  fi
+  if sudo -n true 2>/dev/null; then
+    sudo -n "$@"
+    return
+  fi
+  if [[ -t 0 ]]; then
+    sudo "$@"
+    return
+  fi
+  if command -v pkexec >/dev/null 2>&1; then
+    pkexec "$@"
+    return
+  fi
+  return 1
+}
+
 write_plist() {
   local dest="$1"
   local include_user="$2"
@@ -257,6 +277,7 @@ install_launchagent() {
 write_systemd_unit() {
   local dest="$1"
   local user_line="$2"
+  local wanted_by="$3"
   mkdir -p "$(dirname "$dest")"
   cat > "$dest" <<EOF
 [Unit]
@@ -271,7 +292,7 @@ Restart=always
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=${wanted_by}
 EOF
 }
 
@@ -283,19 +304,21 @@ install_systemd() {
 Group=$(id -gn)
 "
   fi
-  write_systemd_unit "$staging" "$user_line"
-  sudo cp "$staging" "/etc/systemd/system/${UNIT}"
+  write_systemd_unit "$staging" "$user_line" "multi-user.target"
+  if ! run_root bash -c 'cp "$1" "/etc/systemd/system/$2" && systemctl daemon-reload && systemctl enable --now "$2"' bash "$staging" "$UNIT"; then
+    rm -f "$staging"
+    return 1
+  fi
   rm -f "$staging"
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now "$UNIT"
   echo systemd > "$ROOT/data/service.mode"
 }
 
 install_systemd_user() {
   local dest="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${UNIT}"
-  write_systemd_unit "$dest" ""
-  systemctl --user daemon-reload
-  systemctl --user enable --now "$UNIT"
+  write_systemd_unit "$dest" "" "default.target"
+  if ! systemctl --user daemon-reload || ! systemctl --user enable --now "$UNIT"; then
+    return 1
+  fi
   if command -v loginctl >/dev/null 2>&1 && can_sudo; then
     sudo loginctl enable-linger "$(id -un)" || true
   fi
@@ -327,19 +350,20 @@ install_service() {
       return 0
     fi
   elif [[ "$os" == "Linux" ]]; then
-    if can_sudo; then
-      install_systemd
+    if install_systemd; then
       if wait_for_http; then
         echo "The agent starts automatically on boot."
-        return 0
+      else
+        echo "The agent is registered to start on boot."
       fi
-      echo "The boot service did not come up. It will start at login instead." >&2
-      remove_systemd || true
-      rm -f "$ROOT/data/service.mode"
+      return 0
     fi
-    install_systemd_user
-    if wait_for_http; then
-      echo "The agent starts automatically when you log in."
+    if install_systemd_user; then
+      if wait_for_http; then
+        echo "The agent starts automatically when you log in."
+      else
+        echo "The agent is registered to start when you log in."
+      fi
       return 0
     fi
   else

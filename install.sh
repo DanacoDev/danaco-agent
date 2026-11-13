@@ -670,8 +670,70 @@ install_ollama() {
 }
 
 model_is_installed() {
-  local name="$1"
-  ollama list 2>/dev/null | awk 'NR>1 { print $1 }' | grep -Fxq "$name"
+  local name="$1" listed
+  listed="$(ollama list 2>/dev/null | awk 'NR>1 { print $1 }')"
+  printf '%s\n' "$listed" | grep -Fxqi "$name" && return 0
+  printf '%s\n' "$listed" | grep -Fxqi "${name}:latest" && return 0
+  return 1
+}
+
+ollama_version() {
+  local text
+  text="$(ollama --version 2>&1 || true)"
+  if [[ "$text" =~ server\ version\ is\ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return
+  fi
+  if [[ "$text" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
+}
+
+version_older_than() {
+  local current="$1" floor="$2"
+  [[ -z "$current" ]] && return 0
+  [[ "$(printf '%s\n%s\n' "$current" "$floor" | sort -V | head -n1)" == "$current" && "$current" != "$floor" ]]
+}
+
+OLLAMA_REFRESHED=0
+refresh_ollama() {
+  local script attempt
+  if [[ "$OLLAMA_REFRESHED" == "1" ]]; then
+    return 0
+  fi
+  echo "Updating Ollama so Hugging Face models can be downloaded."
+  if [[ "$OS" == "Darwin" ]]; then
+    if ! command -v brew >/dev/null 2>&1 || ! brew upgrade ollama; then
+      return 1
+    fi
+  else
+    script="$(mktemp "${TMPDIR:-/tmp}/ollama-install.XXXXXX")"
+    if ! curl -fsSL -o "$script" https://ollama.com/install.sh; then
+      rm -f "$script"
+      return 1
+    fi
+    if ! as_root sh "$script"; then
+      rm -f "$script"
+      return 1
+    fi
+    rm -f "$script"
+  fi
+  OLLAMA_REFRESHED=1
+  export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:${PATH}"
+  hash -r || true
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled ollama >/dev/null 2>&1; then
+    as_root systemctl restart ollama || true
+    for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+      if ollama_api_up; then
+        return 0
+      fi
+      sleep 0.5
+    done
+    return 1
+  fi
+  if ! ollama_api_up; then
+    ensure_ollama_server || return 1
+  fi
 }
 
 tune_model() {
@@ -693,32 +755,94 @@ EOF
   echo "Saving Ollama settings for ${name}: context 32768, temperature 1, top_k 20, top_p 0.95, min_p 0, draft_num_predict 2."
   if ! ollama create "$name" -f "$file"; then
     rm -f "$file"
-    echo "Could not save the Ollama settings for ${name}. The browser was not opened." >&2
-    exit 1
+    echo "Could not save the Ollama settings for ${name}. The model is still installed." >&2
+    return 1
   fi
   rm -f "$file"
 }
 
+import_unsloth_gguf() {
+  local name="$1" file url dest modelfile model_tmp
+  case "$name" in
+    hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_S) file="Qwen3.6-35B-A3B-UD-Q3_K_S.gguf" ;;
+    hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M) file="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" ;;
+    *) return 1 ;;
+  esac
+  url="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/${file}"
+  model_tmp="${TMPDIR:-/tmp}"
+  if [[ "$OS" == "Linux" && -d /var/tmp && -w /var/tmp ]]; then
+    model_tmp="/var/tmp"
+  fi
+  dest="$(mktemp -d "${model_tmp}/danaco-model.XXXXXX")"
+  echo "Downloading ${file} directly."
+  if ! curl -fL --retry 3 --retry-delay 2 -o "${dest}/${file}" "$url"; then
+    rm -rf "$dest"
+    return 1
+  fi
+  modelfile="${dest}/Modelfile"
+  cat > "$modelfile" <<EOF
+FROM ${dest}/${file}
+PARAMETER min_p 0
+PARAMETER num_ctx 32768
+PARAMETER temperature 1
+PARAMETER top_k 20
+PARAMETER top_p 0.95
+PARAMETER draft_num_predict 2
+EOF
+  if ! ollama create "$name" -f "$modelfile"; then
+    rm -rf "$dest"
+    return 1
+  fi
+  rm -rf "$dest"
+  model_is_installed "$name"
+}
+
 fetch_model() {
-  local name="$1"
+  local name="$1" err pulled
   if model_is_installed "$name"; then
     echo "${name} is already downloaded."
-    tune_model "$name"
+    tune_model "$name" || true
     return 0
+  fi
+  if [[ "$name" == hf.co/* ]] && version_older_than "$(ollama_version)" "0.34.3"; then
+    refresh_ollama || true
   fi
   echo
   echo "Downloading ${name}."
   echo "Progress stays on screen. The install will not continue until the download finishes."
-  if ! ollama pull "$name"; then
-    echo "Could not download ${name}. The browser was not opened." >&2
+  err="$(mktemp "${TMPDIR:-/tmp}/ollama-pull.XXXXXX")"
+  pulled=0
+  if ollama pull "$name" 2>&1 | tee "$err"; then
+    pulled=1
+  fi
+  if [[ "$pulled" == "1" ]] && model_is_installed "$name"; then
+    rm -f "$err"
+    tune_model "$name" || true
+    echo "Finished downloading ${name}."
+    return 0
+  fi
+  if grep -qiE 'no space left|not enough space' "$err"; then
+    rm -f "$err"
+    echo "Could not download ${name}. There is not enough free disk space. The browser was not opened." >&2
     exit 1
   fi
-  if ! model_is_installed "$name"; then
-    echo "${name} is still missing after the download. The browser was not opened." >&2
-    exit 1
+  rm -f "$err"
+  if [[ "$name" == hf.co/unsloth/* ]]; then
+    if [[ "$OLLAMA_REFRESHED" != "1" ]]; then
+      echo "The Ollama download did not finish. Updating Ollama and trying again."
+      if refresh_ollama && ollama pull "$name" && model_is_installed "$name"; then
+        tune_model "$name" || true
+        echo "Finished downloading ${name}."
+        return 0
+      fi
+    fi
+    if import_unsloth_gguf "$name"; then
+      echo "Finished downloading ${name}."
+      return 0
+    fi
   fi
-  tune_model "$name"
-  echo "Finished downloading ${name}."
+  echo "Could not download ${name}. The browser was not opened." >&2
+  exit 1
 }
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:${PATH}"
