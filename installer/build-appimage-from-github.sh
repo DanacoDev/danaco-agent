@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPOSITORY="${DANACO_REPOSITORY:-DanacoDev/danaco-agent}"
+BRANCH="${DANACO_BRANCH:-installer-appimage}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/danaco-appimage-build.XXXXXX")"
 VENV_DIR="$WORK_DIR/venv"
@@ -39,7 +40,7 @@ if ! python3 -m venv "$VENV_DIR" >/dev/null 2>&1; then
 fi
 
 echo "Fetching $REPOSITORY..."
-gh repo clone "$REPOSITORY" "$REPO_DIR" -- --depth=1
+gh repo clone "$REPOSITORY" "$REPO_DIR" -- --branch "$BRANCH" --depth=1
 
 echo "Installing the AppImage builder..."
 "$VENV_DIR/bin/pip" install --quiet appimage-builder
