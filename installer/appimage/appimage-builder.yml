@@ -30,9 +30,6 @@ AppDir:
       - policykit-1
       - python3
       - python3-gi
-  runtime:
-    env:
-      PATH: ${APPDIR}/usr/bin:${PATH}
   test:
     fedora:
       image: fedora:40
