@@ -175,41 +175,227 @@ def recommended_model():
 
 
 class LogFeed:
-    """Split process output into finished lines and one in-progress line.
+    """Turn installer output into plain lines and one short progress line.
 
-    A carriage return, as Ollama uses for download progress, replaces the
-    in-progress line instead of starting another one.
+    Ollama redraws a download with cursor and color codes. Those codes are
+    applied here, then the visible row is reduced to one line that fits.
     """
 
     def __init__(self):
-        self.current = ""
-        self.replace = False
+        self.rows = [""]
+        self.row = 0
+        self.col = 0
+        self.esc = None
 
     def feed(self, text):
-        events = []
+        scrolled = []
+        changed = False
         for char in text:
+            if self.esc is not None:
+                self.esc += char
+                if len(self.esc) > 64:
+                    self.esc = None
+                    continue
+                if self._esc_done(char):
+                    self._apply_esc(self.esc)
+                    self.esc = None
+                    changed = True
+                continue
+            if char == "\x1b":
+                self.esc = ""
+                continue
             if char == "\r":
-                self.replace = True
-            elif char == "\n":
-                events.append(("line", self.current))
-                self.current = ""
-                self.replace = False
-            else:
-                if self.replace:
-                    self.current = ""
-                    self.replace = False
-                self.current += char
-        if self.current or self.replace:
-            events.append(("progress", self.current))
+                self.col = 0
+                changed = True
+                continue
+            if char == "\n":
+                self._newline(scrolled)
+                changed = True
+                continue
+            if char == "\b":
+                self.col = max(0, self.col - 1)
+                changed = True
+                continue
+            if ord(char) < 32:
+                continue
+            self._put(char)
+            changed = True
+        events = [("line", line) for line in scrolled]
+        if changed:
+            events.append(("progress", self._status()))
         return events
 
     def finish(self):
-        if not self.current:
-            return []
-        line = self.current
-        self.current = ""
-        self.replace = False
-        return [("line", line)]
+        events = []
+        for row in self.rows:
+            text = self._plain(row)
+            if text and not self._is_live(text):
+                events.append(("line", text))
+        self.rows = [""]
+        self.row = 0
+        self.col = 0
+        events.append(("progress", ""))
+        return events
+
+    def _esc_done(self, char):
+        if not self.esc:
+            return False
+        kind = self.esc[0]
+        if kind == "[":
+            return char.isalpha() or char in "@`{|}~"
+        if kind == "]":
+            return char == "\x07" or self.esc.endswith("\x1b\\")
+        return True
+
+    def _apply_esc(self, seq):
+        if not seq.startswith("["):
+            return
+        body = seq[1:]
+        if not body or body[0] == "?":
+            return
+        final = body[-1]
+        nums = []
+        for part in body[:-1].split(";"):
+            if part.isdigit():
+                nums.append(int(part))
+
+        def count(index, default):
+            if index < len(nums) and nums[index] > 0:
+                return nums[index]
+            return default
+
+        if final == "A":
+            self.row = max(0, self.row - count(0, 1))
+        elif final == "B":
+            self.row += count(0, 1)
+        elif final == "C":
+            self.col += count(0, 1)
+        elif final == "D":
+            self.col = max(0, self.col - count(0, 1))
+        elif final == "G":
+            self.col = max(0, count(0, 1) - 1)
+        elif final in ("H", "f"):
+            self.row = max(0, count(0, 1) - 1)
+            self.col = max(0, count(1, 1) - 1)
+        elif final == "K":
+            self._erase_line(nums[0] if nums else 0)
+        elif final == "J" and (nums[0] if nums else 0) == 2:
+            self.rows = [""]
+            self.row = 0
+            self.col = 0
+        while self.row >= len(self.rows):
+            self.rows.append("")
+        if len(self.rows) > 12:
+            self.rows = self.rows[-12:]
+            self.row = min(self.row, len(self.rows) - 1)
+
+    def _erase_line(self, mode):
+        while self.row >= len(self.rows):
+            self.rows.append("")
+        row = self.rows[self.row]
+        if mode == 2:
+            self.rows[self.row] = ""
+            self.col = 0
+            return
+        if mode == 1:
+            self.rows[self.row] = row[self.col:]
+            self.col = 0
+            return
+        self.rows[self.row] = row[:self.col]
+
+    def _put(self, char):
+        while self.row >= len(self.rows):
+            self.rows.append("")
+        row = self.rows[self.row]
+        if self.col > len(row):
+            row += " " * (self.col - len(row))
+        if self.col == len(row):
+            row += char
+        else:
+            row = row[:self.col] + char + row[self.col + 1:]
+        self.rows[self.row] = row
+        self.col += 1
+
+    def _newline(self, scrolled):
+        text = self._plain(self.rows[self.row]) if self.row < len(self.rows) else ""
+        if text and self._is_live(text):
+            extra = re.search(r"([A-Z][A-Za-z][A-Za-z ].*)$", text)
+            if extra and not self._is_live(extra.group(1)) and extra.start() > 0:
+                scrolled.append(extra.group(1).strip())
+                self.rows = [""]
+                self.row = 0
+                self.col = 0
+                return
+            self.row += 1
+            self.col = 0
+            while self.row >= len(self.rows):
+                self.rows.append("")
+            return
+        if text:
+            scrolled.append(text)
+            self.rows = [""]
+            self.row = 0
+            self.col = 0
+            return
+        self.row += 1
+        self.col = 0
+        while self.row >= len(self.rows):
+            self.rows.append("")
+
+    def _plain(self, text):
+        text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"[\u2500-\u259f\u2800-\u28ff]", "", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _is_live(self, text):
+        low = text.lower()
+        if re.fullmatch(r"\d+[hms](?:\d+[hms])*", low):
+            return True
+        return (
+            low.startswith("pulling ")
+            or "mb/s" in low
+            or "kb/s" in low
+            or "gb/s" in low
+            or low.startswith("verifying")
+            or low.startswith("writing manifest")
+        )
+
+    def _status(self):
+        chosen = ""
+        for row in self.rows:
+            text = self._plain(row)
+            if not text or not self._is_live(text):
+                continue
+            if not chosen or "%" in text or "/" in text:
+                chosen = text
+        return self._short(chosen) if chosen else ""
+
+    def _short(self, text):
+        low = text.lower()
+        if low.startswith("verifying"):
+            return "Verifying the download"
+        if low.startswith("writing manifest"):
+            return "Writing the model manifest"
+        if "pulling manifest" in low and "%" not in text and "/" not in text:
+            return "Downloading the model manifest"
+        size = re.search(r"(\d+(?:\.\d+)?\s*[KMG]B)\s*/\s*(\d+(?:\.\d+)?\s*[KMG]B)", text, re.I)
+        speed = re.search(r"(\d+(?:\.\d+)?\s*[KMG]B/s)", text, re.I)
+        percent = re.search(r"(\d+)\s*%", text)
+        if size:
+            message = "Downloading "
+            if percent:
+                message += percent.group(1) + "%, "
+            message += size.group(1) + " / " + size.group(2)
+            if speed:
+                message += ", " + speed.group(1)
+            return message
+        if percent and low.startswith("pulling "):
+            return "Downloading " + percent.group(1) + "%"
+        if low.startswith("pulling "):
+            return "Downloading the model"
+        if len(text) <= 72:
+            return text
+        return text[:69] + "..."
 
 
 def main():
@@ -659,7 +845,7 @@ def main():
 
         def render_log(self):
             body = "\n".join(self.lines)
-            if self.progress is not None:
+            if self.progress:
                 body = f"{body}\n{self.progress}" if body else self.progress
             self.logbuf.set_text(body)
             adjustment = self.log_scroll.get_vadjustment()
