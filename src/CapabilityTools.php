@@ -4,6 +4,8 @@ class CapabilityTools
 {
     public array $blockedInstalls = [];
 
+    public array $missingPython = [];
+
     public function __construct(private Database $db)
     {
     }
@@ -15,6 +17,7 @@ class CapabilityTools
         $handlers['fetch_url'] = fn(array $args): string => $this->fetchUrl((string)($args['url'] ?? ''));
         $handlers['browse_url'] = fn(array $args): string => $this->browseUrl((string)($args['url'] ?? ''));
         $handlers['run_command'] = fn(array $args): string => $this->runCommand((string)($args['command'] ?? ''), $projectFolder, $allowInstall);
+        $handlers['run_python'] = fn(array $args): string => $this->runPython((string)($args['path'] ?? $args['file'] ?? ''), $projectFolder);
         if ($projectId > 0 && $this->db->emailAccounts($projectId)) {
             $handlers['send_email'] = fn(array $args): string => $this->sendForProject($projectId, $args);
         }
@@ -33,8 +36,9 @@ class CapabilityTools
         $lines[] = '- fetch_url: args url. Reads a public page and lists links on it. Open those links to keep crawling.';
         $lines[] = '- browse_url: args url. Opens a public page in the headless browser so scripts run, then returns the text and links. Use it when fetch_url shows an empty or unfinished page.';
         $lines[] = $this->db->fullSystemControl()
-            ? '- run_command: args command. May use sudo. Starts in the project folder when there is one. A path that starts with / is anywhere on this computer. Do not install software. Only the main agent can install a dependency, and the user is asked first.'
-            : '- run_command: unavailable while full system control is off. Use the available tools or registered skills instead.';
+            ? '- run_command: args command. May use sudo. Starts in the project folder when there is one. A path that starts with / is anywhere on this computer. Do not install software. Only the main agent can install a dependency, and the user is asked first. Do not run Python. A .py file runs through run_python.'
+            : '- run_command: unavailable while full system control is off. A Python file runs through run_python. Use the other tools or a registered skill for anything else.';
+        $lines[] = '- run_python: args path. Runs one project .py file inside the project without full system control. It cannot see other folders or a database file. Prefer PHP. Use Python only when a Python library is required.';
         if ($projectId > 0 && ($accounts = $this->db->emailAccounts($projectId))) {
             if (count($accounts) === 1) {
                 $row = $accounts[0];
@@ -1457,15 +1461,18 @@ class CapabilityTools
         if ($command === '' || strlen($command) > 2000) {
             return 'Command is empty or too long.';
         }
+        if ($this->isInstallCommand($command) && !$allowInstall) {
+            $this->blockedInstalls[] = $command;
+            return 'Install stopped. Only the main agent can install dependencies, and only after the user agrees. Do not try another install. Tell the main agent what was needed and why.';
+        }
+        if ($this->isPythonCommand($command)) {
+            return 'Python runs through run_python. Pass path as the project .py file. Do not use run_command.';
+        }
         if (!$this->db->fullSystemControl()) {
             return 'Full system control is off.';
         }
         if (preg_match('/(?:^|[\/\s\'"])[A-Za-z0-9._-]+\.(?:db|sqlite|sqlite3)(?:$|[\s\'"])/i', $command)) {
             return 'Database commands are blocked in run_command. Use sqlite_helper so the database filename is explicit and a recoverable backup is created before a write.';
-        }
-        if ($this->isInstallCommand($command) && !$allowInstall) {
-            $this->blockedInstalls[] = $command;
-            return 'Install stopped. Only the main agent can install dependencies, and only after the user agrees. Do not try another install. Tell the main agent what was needed and why.';
         }
         $full = $this->db->fullSystemControl();
         $denied = [
@@ -1502,5 +1509,352 @@ class CapabilityTools
             $output .= ($output === '' ? '' : "\n") . $result['stderr'];
         }
         return 'exit ' . $result['code'] . "\n" . clip_text($output);
+    }
+
+    private function isPythonCommand(string $command): bool
+    {
+        return (bool)preg_match('/\bpython[0-9.]*(?=\s|$)/i', $command);
+    }
+
+    private function runPython(string $path, string $projectFolder): string
+    {
+        $path = str_replace('\\', '/', trim($path));
+        if ($path === '' || str_contains($path, "\0") || str_starts_with($path, '/') || preg_match('#(^|/)\.\.(/|$)#', $path)) {
+            return 'Name a .py file inside the project.';
+        }
+        if (!str_ends_with(strtolower($path), '.py')) {
+            return 'run_python only runs a .py file. Write the program in PHP when you can. A skill program is PHP and is called by its skill name.';
+        }
+        if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $projectFolder)) {
+            return 'Invalid project.';
+        }
+        try {
+            $root = Projects::root($projectFolder);
+        } catch (RuntimeException $e) {
+            return 'Invalid project.';
+        }
+        if (!is_dir($root) && !mkdir($root, 0775, true) && !is_dir($root)) {
+            return 'Invalid project.';
+        }
+        $rootReal = realpath($root);
+        if ($rootReal === false) {
+            return 'Invalid project.';
+        }
+        $relative = ltrim($path, '/');
+        if (str_starts_with($relative, 'database/')) {
+            return 'Put the .py file outside database/. A database file is sqlite_helper, not a script.';
+        }
+        $full = $rootReal . '/' . $relative;
+        if (is_link($full)) {
+            return 'Symlinks are not allowed.';
+        }
+        $real = realpath($full);
+        if ($real === false || !is_file($real) || !str_starts_with($real, $rootReal . DIRECTORY_SEPARATOR)) {
+            return 'File not found: ' . $relative;
+        }
+        $source = file_get_contents($real);
+        if ($source === false) {
+            return 'File not found: ' . $relative;
+        }
+        if (strlen($source) > 200000) {
+            return 'That Python file is too large to run.';
+        }
+        if (str_contains($source, "\0")) {
+            return 'That Python file cannot be run.';
+        }
+        $refusal = $this->pythonDatabaseRefusal($source);
+        if ($refusal !== '') {
+            return $refusal;
+        }
+        $bwrap = $this->programPath('bwrap');
+        if ($bwrap === '') {
+            return 'run_python needs bubblewrap (bwrap). It is not installed, so the script was not started. Install or update Agent Danaco, which installs bubblewrap on Linux. Do not use run_command instead.';
+        }
+        $python = $this->programPath('python3');
+        if ($python === '') {
+            return 'python3 is not available, so the script was not started.';
+        }
+        $result = Process::run($this->pythonJailCommand($bwrap, $rootReal, $python, ['-B', $real]), $rootReal, null, 180, $this->pythonEnv($rootReal));
+        $output = $result['stdout'];
+        if ($result['stderr'] !== '') {
+            $output .= ($output === '' ? '' : "\n") . $result['stderr'];
+        }
+        $missing = $this->missingPythonPackage($output);
+        if ($missing !== '') {
+            $this->missingPython[] = $missing;
+            $output .= "\nMissing Python library: " . $missing . ". Stop. Report that name. Do not install it and do not use run_command.";
+        }
+        return 'exit ' . $result['code'] . "\n" . clip_text($output);
+    }
+
+    public function pythonPackageNames(mixed $value): array
+    {
+        $items = [];
+        if (is_string($value)) {
+            $items = preg_split('/[\s,]+/', trim($value)) ?: [];
+        } elseif (is_array($value)) {
+            foreach ($value as $item) {
+                if (is_string($item)) {
+                    foreach (preg_split('/[\s,]+/', trim($item)) ?: [] as $part) {
+                        $items[] = $part;
+                    }
+                }
+            }
+        }
+        $names = [];
+        foreach ($items as $item) {
+            $item = trim((string)$item);
+            if ($item === '' || !$this->validPythonPackage($item) || isset($names[$item])) {
+                continue;
+            }
+            $names[$item] = $item;
+            if (count($names) >= 8) {
+                break;
+            }
+        }
+        return array_values($names);
+    }
+
+    public function installPythonPackages(string $projectFolder, array $names): string
+    {
+        $names = $this->pythonPackageNames($names);
+        if ($names === []) {
+            return 'Name the Python library to install, such as yfinance.';
+        }
+        if (!preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $projectFolder)) {
+            return 'Invalid project.';
+        }
+        try {
+            $root = Projects::root($projectFolder);
+        } catch (RuntimeException $e) {
+            return 'Invalid project.';
+        }
+        if (!is_dir($root) && !mkdir($root, 0775, true) && !is_dir($root)) {
+            return 'Invalid project.';
+        }
+        $rootReal = realpath($root);
+        if ($rootReal === false) {
+            return 'Invalid project.';
+        }
+        $bwrap = $this->programPath('bwrap');
+        if ($bwrap === '') {
+            return 'Python libraries need bubblewrap (bwrap). It is not installed. Install or update Agent Danaco, which installs it on Linux.';
+        }
+        $python = $this->programPath('python3');
+        if ($python === '') {
+            return 'python3 is not available, so the library was not installed.';
+        }
+        $probe = Process::run([$python, '-m', 'pip', '--version'], null, null, 15);
+        if ($probe['code'] !== 0) {
+            return 'python3-pip is not installed, so the library was not installed. Install or update Agent Danaco, which installs it on Linux.';
+        }
+        $args = ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir', '--target', $rootReal . '/.py-packages'];
+        foreach ($names as $name) {
+            $args[] = $name;
+        }
+        $result = Process::run($this->pythonJailCommand($bwrap, $rootReal, $python, $args), $rootReal, null, 300, $this->pythonEnv($rootReal));
+        $output = $result['stdout'];
+        if ($result['stderr'] !== '') {
+            $output .= ($output === '' ? '' : "\n") . $result['stderr'];
+        }
+        if ($result['code'] !== 0) {
+            return 'Could not install ' . implode(', ', $names) . ".\n" . clip_text($output);
+        }
+        return 'Installed ' . implode(', ', $names) . ' inside the project. Run the Python file again with run_python.' . "\n" . clip_text($output);
+    }
+
+    private function pythonDatabaseRefusal(string $source): string
+    {
+        if (preg_match('/sqlite3/i', $source) || preg_match('/\.(?:db|sqlite|sqlite3)\b/i', $source)) {
+            return 'This script opens a database. Use sqlite_helper to query or insert, write those rows to a JSON or CSV file in the project, and have the script read that file. Do not import sqlite3.';
+        }
+        return '';
+    }
+
+    private function programPath(string $name): string
+    {
+        if (!preg_match('/^[a-zA-Z0-9._+-]+$/', $name)) {
+            return '';
+        }
+        $result = Process::run(['/bin/sh', '-c', 'command -v ' . $name], null, null, 5);
+        $path = trim($result['stdout']);
+        if ($result['code'] !== 0 || !str_starts_with($path, '/') || str_contains($path, "\n") || !is_file($path)) {
+            return '';
+        }
+        $real = realpath($path);
+        return $real !== false ? $real : '';
+    }
+
+    private function pythonEnv(string $root): array
+    {
+        return [
+            'PATH' => '/usr/bin:/bin',
+            'HOME' => '/tmp',
+            'TMPDIR' => '/tmp',
+            'LANG' => 'C.UTF-8',
+            'LC_ALL' => 'C.UTF-8',
+            'PYTHONDONTWRITEBYTECODE' => '1',
+            'PYTHONNOUSERSITE' => '1',
+            'PYTHONPATH' => $root . '/.py-packages',
+            'PIP_DISABLE_PIP_VERSION_CHECK' => '1',
+        ];
+    }
+
+    private function missingPythonPackage(string $output): string
+    {
+        if (!preg_match("/No module named ['\"]([^'\"]+)['\"]/", $output, $match)) {
+            return '';
+        }
+        $module = explode('.', $match[1])[0];
+        $map = [
+            'PIL' => 'Pillow',
+            'cv2' => 'opencv-python',
+            'sklearn' => 'scikit-learn',
+            'yaml' => 'PyYAML',
+            'bs4' => 'beautifulsoup4',
+            'dateutil' => 'python-dateutil',
+        ];
+        $package = $map[$module] ?? $module;
+        return $this->validPythonPackage($package) ? $package : '';
+    }
+
+    private function validPythonPackage(string $name): bool
+    {
+        return (bool)preg_match('/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/', $name);
+    }
+
+    private function pythonJailCommand(string $bwrap, string $root, string $python, array $args): array
+    {
+        $cmd = [
+            $bwrap,
+            '--unshare-user',
+            '--unshare-pid',
+            '--unshare-ipc',
+            '--unshare-uts',
+            '--die-with-parent',
+            '--new-session',
+            '--proc', '/proc',
+            '--dev', '/dev',
+            '--tmpfs', '/tmp',
+        ];
+        foreach (['/usr', '/lib', '/lib64', '/bin'] as $host) {
+            $this->bindSystemPath($cmd, $host);
+        }
+        foreach (['/etc/ssl', '/etc/ca-certificates', '/etc/ld.so.cache', '/etc/passwd', '/etc/group'] as $host) {
+            if (is_file($host) || (is_dir($host) && !is_link($host))) {
+                $cmd[] = '--ro-bind';
+                $cmd[] = $host;
+                $cmd[] = $host;
+            }
+        }
+        foreach (['/etc/resolv.conf', '/etc/hosts', '/etc/nsswitch.conf'] as $host) {
+            $source = $this->plainFile($host);
+            if ($source === '') {
+                continue;
+            }
+            $cmd[] = '--ro-bind';
+            $cmd[] = $source;
+            $cmd[] = $host;
+        }
+        $pythonDir = dirname($python);
+        if (!str_starts_with($pythonDir, '/usr/') && !str_starts_with($pythonDir, '/bin/') && $pythonDir !== '/usr' && $pythonDir !== '/bin') {
+            $cmd[] = '--ro-bind';
+            $cmd[] = $python;
+            $cmd[] = $python;
+        }
+        $cmd[] = '--bind';
+        $cmd[] = $root;
+        $cmd[] = $root;
+        $cmd[] = '--tmpfs';
+        $cmd[] = $root . '/database';
+        $cmd[] = '--remount-ro';
+        $cmd[] = $root . '/database';
+        foreach ($this->projectDatabaseFiles($root) as $db) {
+            if (str_starts_with($db, $root . '/database/')) {
+                continue;
+            }
+            $cmd[] = '--ro-bind';
+            $cmd[] = '/dev/null';
+            $cmd[] = $db;
+        }
+        $cmd[] = '--chdir';
+        $cmd[] = $root;
+        $cmd[] = '--';
+        $cmd[] = $python;
+        foreach ($args as $arg) {
+            $cmd[] = $arg;
+        }
+        return $cmd;
+    }
+
+    private function bindSystemPath(array &$cmd, string $host): void
+    {
+        if (is_link($host)) {
+            $target = readlink($host);
+            if (is_string($target) && $target !== '' && !str_contains($target, "\0")) {
+                $cmd[] = '--symlink';
+                $cmd[] = $target;
+                $cmd[] = $host;
+            }
+            return;
+        }
+        if (is_dir($host)) {
+            $cmd[] = '--ro-bind';
+            $cmd[] = $host;
+            $cmd[] = $host;
+        }
+    }
+
+    private function plainFile(string $path): string
+    {
+        if (!is_file($path) && !is_link($path)) {
+            return '';
+        }
+        if (!is_link($path)) {
+            return $path;
+        }
+        $data = @file_get_contents($path);
+        if (!is_string($data)) {
+            return '';
+        }
+        $dir = rtrim(sys_get_temp_dir(), '/') . '/danaco-py';
+        if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
+            return '';
+        }
+        $file = $dir . '/' . basename($path);
+        if (file_put_contents($file, $data) === false) {
+            return '';
+        }
+        return $file;
+    }
+
+    private function projectDatabaseFiles(string $root): array
+    {
+        $found = [];
+        $this->collectDatabaseFiles($root, $found, 0);
+        return $found;
+    }
+
+    private function collectDatabaseFiles(string $dir, array &$found, int $depth): void
+    {
+        if ($depth > 8 || count($found) >= 200) {
+            return;
+        }
+        foreach (scandir($dir) ?: [] as $name) {
+            if ($name === '.' || $name === '..' || $name === '.py-packages') {
+                continue;
+            }
+            $full = $dir . '/' . $name;
+            if (is_link($full)) {
+                continue;
+            }
+            if (is_dir($full)) {
+                $this->collectDatabaseFiles($full, $found, $depth + 1);
+                continue;
+            }
+            if (is_file($full) && preg_match('/\.(?:db|sqlite|sqlite3)$/i', $name)) {
+                $found[] = $full;
+            }
+        }
     }
 }

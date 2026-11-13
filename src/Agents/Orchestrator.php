@@ -624,7 +624,7 @@ Do not say you wrote, updated, or created a file until a tool result confirms it
 {$pdfNote}These are the skills at your disposal. Read each for further instructions
 TXT;
         $projectId = $project ? (int)$project['id'] : 0;
-        $omit = ['create_pdf', 'run_command'];
+        $omit = ['create_pdf', 'run_command', 'run_python'];
         if ($projectId <= 0 || !$this->db->emailAccounts($projectId)) {
             $omit[] = 'send_email';
         }
@@ -650,6 +650,7 @@ TXT;
         if (!$sawEmail) {
             $lines[] = '- send_email: this chat has no mailbox. Say that a mailbox is added on the Setup page, under Email, and linked to this project. There is no Tools tab. Do not describe it as a missing capability.';
         }
+        $lines[] = '- py_install: args packages. Installs a Python library into the open project, such as yfinance. The chat asks the user first. Call this only after run_python says that library is missing. It is saved inside the project. Then delegate the script again.';
         $tail = Prompts::ORCHESTRATOR . "\n\n" . $rules . "\n" . $catalog;
         if ($lines !== []) {
             $tail .= "\n\n" . implode("\n\n", $lines);
@@ -1157,6 +1158,21 @@ TXT;
             },
             'remember' => function (array $args): string {
                 return $this->memory->remember((string)($args['tool'] ?? ''), (string)($args['note'] ?? ''));
+            },
+            'py_install' => function (array $args) use ($folder, $emit, $shouldStop, $projectId): string {
+                if ($folder === '') {
+                    return 'Open a project before installing a Python library.';
+                }
+                $tools = new CapabilityTools($this->db);
+                $names = $tools->pythonPackageNames($args['packages'] ?? $args['package'] ?? '');
+                if ($names === []) {
+                    return 'Name the Python library to install, such as yfinance.';
+                }
+                $summary = 'Install Python ' . (count($names) === 1 ? 'library' : 'libraries') . ' into this project: ' . implode(', ', $names);
+                if (!$this->confirmAction('install', $summary, $emit, $shouldStop, $projectId > 0 ? $projectId : null)) {
+                    return 'The user did not approve this Python library install.';
+                }
+                return $tools->installPythonPackages($folder, $names);
             },
             'web_search' => function (): string {
                 return $this->researchDelegationNotice('web_search');

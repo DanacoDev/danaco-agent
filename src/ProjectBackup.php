@@ -331,7 +331,7 @@ class ProjectBackup
             'project_type' => (string)($project['project_type'] ?? ''),
             'status' => (string)($project['status'] ?? 'active'),
             'created_at' => (string)($project['created_at'] ?? ''),
-            'tasks' => $this->plainRows('SELECT title, description, status, assigned_agent, schedule_time, recurrence_interval, result, finished_at, created_at FROM tasks WHERE project_id = ? ORDER BY id', $id),
+            'tasks' => $this->plainRows('SELECT title, description, status, assigned_agent, schedule_time, recurrence_interval, result, finished_at, held, created_at FROM tasks WHERE project_id = ? ORDER BY id', $id),
             'messages' => $this->plainRows('SELECT role, agent_name, content, failed, detail, created_at FROM messages WHERE project_id = ? ORDER BY id', $id),
             'email_accounts' => $this->plainRows('SELECT label, from_name, from_email, smtp_host, smtp_port, smtp_security, username, password, created_at FROM email_accounts WHERE project_id = ? ORDER BY id', $id),
             'ftp_accounts' => $this->plainRows('SELECT label, host, port, security, username, password, created_at FROM ftp_accounts WHERE project_id = ? ORDER BY id', $id),
@@ -679,16 +679,23 @@ class ProjectBackup
             if (!is_array($skill)) {
                 throw new InvalidArgumentException('The custom skills in that backup could not be read.');
             }
+            $name = (string)($skill['name'] ?? '');
+            $description = (string)($skill['description'] ?? '');
+            $active = !empty($skill['is_active']);
             $files = $skill['files'] ?? null;
-            if (!is_array($files)) {
+            if (is_array($files)) {
+                app_services()['skills']->restoreTree($name, $description, $files, $active);
+                $restored++;
                 continue;
             }
-            app_services()['skills']->restoreTree(
-                (string)($skill['name'] ?? ''),
-                (string)($skill['description'] ?? ''),
-                $files,
-                !empty($skill['is_active'])
-            );
+            $source = (string)($skill['source'] ?? '');
+            if (trim($source) === '') {
+                continue;
+            }
+            if (trim($description) === '') {
+                $description = 'Restored skill.';
+            }
+            app_services()['skills']->saveSource($name, $description, $source, $active, 'user', true);
             $restored++;
         }
         return $restored;
@@ -705,6 +712,7 @@ class ProjectBackup
             'recurrence_interval' => $this->token($row['recurrence_interval'] ?? 'none', 'none'),
             'result' => $this->nullableText($row['result'] ?? null, 20000),
             'finished_at' => $this->looseStamp($row['finished_at'] ?? null),
+            'held' => !empty($row['held']) ? 1 : 0,
             'created_at' => $this->looseStamp($row['created_at'] ?? null),
         ];
     }
@@ -1099,7 +1107,7 @@ class ProjectBackup
     private function insertChildren(int $projectId, array $record): void
     {
         $pdo = $this->db->pdo();
-        $task = $pdo->prepare('INSERT INTO tasks (project_id, title, description, status, assigned_agent, schedule_time, recurrence_interval, result, finished_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))');
+        $task = $pdo->prepare('INSERT INTO tasks (project_id, title, description, status, assigned_agent, schedule_time, recurrence_interval, result, finished_at, held, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))');
         foreach ($record['tasks'] as $row) {
             $task->execute([
                 $projectId,
@@ -1111,6 +1119,7 @@ class ProjectBackup
                 $row['recurrence_interval'],
                 $row['result'],
                 $row['finished_at'],
+                $row['held'] ?? 0,
                 $row['created_at'],
             ]);
         }

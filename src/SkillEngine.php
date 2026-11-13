@@ -5,14 +5,14 @@ class SkillEngine
     public const BUILTIN = [
         'filesystem', 'read_image', 'read_pdf', 'screenshot', 'create_pdf',
         'wiki_memory', 'list_vault', 'read_vault', 'restore_file', 'kanban', 'delegate',
-        'web_search', 'fetch_url', 'browse_url', 'run_command', 'send_email',
+        'web_search', 'fetch_url', 'browse_url', 'run_command', 'run_python', 'send_email',
         'ftp', 'mcp', 'remember', 'write_skill', 'test_skill',
     ];
 
     public const SYSTEM = [
         'filesystem', 'read_image', 'read_pdf', 'screenshot', 'create_pdf',
         'wiki_memory', 'list_vault', 'read_vault', 'restore_file', 'kanban', 'delegate',
-        'web_search', 'fetch_url', 'browse_url', 'run_command', 'send_email',
+        'web_search', 'fetch_url', 'browse_url', 'run_command', 'run_python', 'send_email',
         'ftp', 'mcp', 'remember', 'write_skill', 'test_skill', 'sqlite_helper', 'save_note',
         'code_verifier', 'research_pipeline', 'task_breakdown', 'download_large',
         'write_article', 'humanizer', 'make_graphic',
@@ -390,21 +390,17 @@ class SkillEngine
         if (!isset($written['SKILL.md'])) {
             throw new InvalidArgumentException('The custom skills in that backup could not be read.');
         }
-        $script = '';
-        $lang = '';
-        if (isset($written['scripts/run.php'])) {
-            $script = $written['scripts/run.php'];
-            $lang = 'php';
-        } elseif (isset($written['scripts/run.py'])) {
-            $script = $written['scripts/run.py'];
-            $lang = 'py';
+        $description = trim($description);
+        if ($description === '' || strlen($description) > 1024) {
+            throw new InvalidArgumentException('The custom skills in that backup could not be read.');
         }
-        $saved = $this->saveSource($name, $description, $written['SKILL.md'], $active, 'user', true, $script, $lang);
+        $this->assertEditable($name);
         $dir = $this->absoluteDir($name);
+        $this->removeSkillDir($name);
+        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new RuntimeException('Could not restore skill ' . $name . '.');
+        }
         foreach ($written as $path => $content) {
-            if ($path === 'SKILL.md' || $path === 'scripts/run.php' || $path === 'scripts/run.py') {
-                continue;
-            }
             $full = $dir . '/' . $path;
             $parent = dirname($full);
             if (!is_dir($parent) && !mkdir($parent, 0775, true) && !is_dir($parent)) {
@@ -414,6 +410,7 @@ class SkillEngine
                 throw new RuntimeException('Could not restore skill ' . $name . '.');
             }
         }
+        $saved = $this->db->saveSkill($name, $description, $name, $active, 'user');
         $this->synced = null;
         return $saved;
     }

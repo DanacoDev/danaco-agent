@@ -28,6 +28,7 @@ class SubagentRunner
             throw new RuntimeException('Only one subagent can run at a time.');
         }
         $this->capabilities->blockedInstalls = [];
+        $this->capabilities->missingPython = [];
         $messages = [
             ['role' => 'system', 'content' => $this->systemPrompt($agent, $projectFolder, $projectId)],
             ['role' => 'user', 'content' => "project: {$projectFolder}\n\n{$instruction}"],
@@ -64,6 +65,7 @@ class SubagentRunner
             return 'The Consultant is already working. Wait, then ask again.';
         }
         $this->capabilities->blockedInstalls = [];
+        $this->capabilities->missingPython = [];
         $watch = function () use ($shouldStop): bool {
             $this->db->setSetting('consultant_lock', (string)time());
             return $shouldStop && $shouldStop();
@@ -128,7 +130,7 @@ Those skills cover any file in the project, including the wiki. {$scope} A new o
 {$capLine}
 - researcher: find and check facts with web_search, fetch_url, and browse_url, parse documents, then log them with research_pipeline in their own wiki file. Do not put research in the project description.
 - writer: draft long-form text, documentation, and communication copy, and save it in the wiki. An article runs write_article and follows every step, including humanizer and a spelling pass. Other prose runs humanizer. A figure, icon, or infographic runs make_graphic, then the file is written and its path comes back. A PDF is the writer's job too. Delegate the brief and the file name. The writer calls create_pdf, and only the file path comes back, so a long document does not fill this chat. Do not give a PDF to the coder.
-- coder: write and debug software, run code_verifier on each changed file, and use download_large for a download over 100 MB. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
+- coder: write and debug software in PHP, run code_verifier on each changed file, and use download_large for a download over 100 MB. Use Python only when a Python library is required, and run that file with run_python. If run_python says a library is missing, stop and name it. Do not install it. Do not use run_command for Python, and do not ask for full system control to run a script. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A skill program is PHP. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
 - marketer: campaigns, press copy, brand, and visual direction. An icon or infographic runs make_graphic.
 - consultant: a subagent for a hard multi-step problem. Delegate with agent consultant. It uses an external paid model and the same project file skills. It has no write_skill or test_skill. Delegate only when the note says the Consultant is on.
@@ -205,7 +207,7 @@ Do not say you wrote, updated, or created a file until a tool result confirms it
 These are the skills at your disposal. Read each for further instructions
 TXT;
         if ($this->db->fullSystemControl()) {
-            $rules .= "\nFull system control is on. You may use sudo, and a path that starts with / can read or change any file on this computer. Prefer {$projectFolder}/ unless the task needs something outside it.\n";
+            $rules .= "\nFull system control is on. You may use sudo, and a path that starts with / can read or change any file on this computer. Prefer {$projectFolder}/ unless the task needs something outside it. Python still runs through run_python and stays inside the project.\n";
         }
         $tail = Prompts::forAgent($agent) . "\n\n" . $rules . "\n" . $catalog;
         if ($extra !== []) {
@@ -450,7 +452,7 @@ TXT;
                     $destructive = in_array($action, ['drop', 'delete'], true)
                         || ($action === 'execute' && preg_match('/^\s*DROP\s+TABLE\b/i', $sql));
                     if ($destructive) {
-                        return 'SQLite table drops are approved by the user through the main agent. Stop. Report the database filename and the table name. The main agent calls sqlite_helper with action drop. Do not retry, do not use sqlite3 or run_command, and do not tell the user to run a command.';
+                        return 'SQLite table drops are approved by the user through the main agent. Stop. Report the database filename and the table name. The main agent calls sqlite_helper with action drop. Do not retry, do not use sqlite3, run_command, or run_python, and do not tell the user to run a command.';
                     }
                     return $handler($args);
                 };
@@ -476,15 +478,23 @@ TXT;
 
     private function finishSubagent(string $result): string
     {
-        if (!$this->capabilities->blockedInstalls) {
+        $notes = [];
+        if ($this->capabilities->blockedInstalls) {
+            $lines = [];
+            foreach ($this->capabilities->blockedInstalls as $command) {
+                $lines[] = '- ' . $command;
+            }
+            $this->capabilities->blockedInstalls = [];
+            $notes[] = "Install stopped. A subagent tried to install dependencies. Only you can install them. Run the install yourself. The chat asks the user before it runs.\n" . implode("\n", $lines);
+        }
+        if ($this->capabilities->missingPython) {
+            $names = array_values(array_unique($this->capabilities->missingPython));
+            $this->capabilities->missingPython = [];
+            $notes[] = 'A Python library is missing: ' . implode(', ', $names) . '. Call py_install with packages set to ' . implode(' ', $names) . '. The chat asks the user before it installs. The library is saved inside the project. Then run the script again with run_python.';
+        }
+        if ($notes === []) {
             return $result;
         }
-        $lines = [];
-        foreach ($this->capabilities->blockedInstalls as $command) {
-            $lines[] = '- ' . $command;
-        }
-        $this->capabilities->blockedInstalls = [];
-        $note = "Install stopped. A subagent tried to install dependencies. Only you can install them. Run the install yourself. The chat asks the user before it runs.\n" . implode("\n", $lines);
-        return rtrim($result) . "\n\n" . $note;
+        return rtrim($result) . "\n\n" . implode("\n\n", $notes);
     }
 }

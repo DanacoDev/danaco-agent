@@ -1,6 +1,6 @@
 ---
 name: sqlite_helper
-description: Creates or changes a SQLite file in database/. Pass the filename. drop removes one table. Do not use sqlite3 or run_command.
+description: Creates or changes a SQLite file in database/. Pass the filename. drop removes one table. Do not use sqlite3, run_command, or run_python.
 version: 1.0.0
 ---
 
@@ -18,4 +18,4 @@ drop: {"database":"link_database.db","table":"links"} deletes that table. if_exi
 execute: run a parameterized write. CREATE TABLE is checked first and is not run when that table exists. DROP TABLE is the drop action.
 init: only for a preset schema the user already named. For any other file, use ensure with that same filename, table, and columns. Do not invent a filename.
 
-Every existing database is snapshotted in the project backup vault before a write. Do not use the sqlite3 CLI. Do not ask anyone to open the database file.
+Every existing database is snapshotted in the project backup vault before a write. Do not use the sqlite3 CLI. Do not open the file from Python. Do not ask anyone to open the database file.

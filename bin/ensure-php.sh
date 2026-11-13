@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Install the PHP packages Danaco needs. Exit 10 when packages were installed, 0 when they were already present.
+# Install the PHP packages Danaco needs, including bubblewrap and pip for run_python. Exit 10 when packages were installed, 0 when they were already present.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bash "$ROOT/bin/save-github-credentials.sh" "$ROOT" || true
 
-PACKAGES=(php-cli php-sqlite3 sqlite3 php-curl php-mbstring php-xml php-zip)
+PACKAGES=(php-cli php-sqlite3 sqlite3 php-curl php-mbstring php-xml php-zip bubblewrap python3-pip)
 
 php_has() {
   # grep -q in a pipeline makes php exit early, and pipefail then treats that as failure.
@@ -27,6 +27,14 @@ missing_php() {
   php_has mbstring || missing+=("mbstring")
   php_has dom || missing+=("dom (DOMDocument)")
   php_has zip || missing+=("zip")
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    if ! command -v bwrap >/dev/null 2>&1; then
+      missing+=("bubblewrap")
+    fi
+    if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then
+      missing+=("python3-pip")
+    fi
+  fi
   if [[ ${#missing[@]} -eq 0 ]]; then
     return 1
   fi
@@ -88,5 +96,5 @@ if [[ -n "$missing" ]]; then
   exit 1
 fi
 
-echo "Installed the PHP and SQLite packages Danaco needs, including the sqlite3 command-line tool."
+echo "Installed the PHP, SQLite, and bubblewrap packages Danaco needs."
 exit 10
