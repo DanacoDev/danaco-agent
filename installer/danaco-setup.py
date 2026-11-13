@@ -1135,6 +1135,12 @@ def main():
             ):
                 env.pop(key, None)
             appdir = env.get("APPDIR", "")
+            if appdir:
+                bundled_bin = os.path.join(appdir, "usr", "bin")
+                path = env.get("PATH", "")
+                kept = [part for part in path.split(":") if part and part != bundled_bin]
+                if kept:
+                    env["PATH"] = ":".join(kept)
             data_dirs = env.get("XDG_DATA_DIRS", "")
             if appdir and data_dirs:
                 prefix = os.path.join(appdir, "usr", "share")

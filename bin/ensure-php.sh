@@ -2,9 +2,17 @@
 # Install the PHP packages Danaco needs, including bubblewrap and pip for run_python. Exit 10 when packages were installed, 0 when they were already present.
 set -euo pipefail
 
-# The graphical installer is an AppImage. Its Python settings hide the system pip.
+# The graphical installer is an AppImage. Its Python is first on PATH and has no pip.
 unset PYTHONHOME PYTHONPATH PYTHONNOUSERSITE || true
 unset LD_LIBRARY_PATH GI_TYPELIB_PATH GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE || true
+if [[ -n "${APPDIR:-}" && -n "${PATH:-}" ]]; then
+  bundled_bin="${APPDIR%/}/usr/bin"
+  PATH=":${PATH}:"
+  PATH="${PATH//:$bundled_bin:/:}"
+  PATH="${PATH#:}"
+  PATH="${PATH%:}"
+  export PATH
+fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bash "$ROOT/bin/save-github-credentials.sh" "$ROOT" || true
@@ -37,7 +45,18 @@ missing_php() {
     if ! command -v bwrap >/dev/null 2>&1; then
       missing+=("bubblewrap")
     fi
-    if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then
+    if [[ -x /usr/bin/python3 ]]; then
+      python_bin="/usr/bin/python3"
+    else
+      python_bin="$(command -v python3 || true)"
+    fi
+    pip_ok=1
+    if [[ -n "$python_bin" ]] && "$python_bin" -m pip --version >/dev/null 2>&1; then
+      pip_ok=0
+    elif command -v pip3 >/dev/null 2>&1 && pip3 --version >/dev/null 2>&1; then
+      pip_ok=0
+    fi
+    if [[ "$pip_ok" -ne 0 ]]; then
       missing+=("python3-pip")
     fi
   fi
