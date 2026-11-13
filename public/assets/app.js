@@ -2706,9 +2706,9 @@
               const data = await res.json().catch(function () { return {}; });
               throw new Error(data.error || 'Could not install the model.');
             }
-            await this.readModelPull(res.body);
+            const installed = await this.readModelPull(res.body);
             this.ollamaPullName = '';
-            this.ollamaProgress = name + ' is installed.';
+            this.ollamaProgress = (installed || name) + ' is installed.';
             await this.loadOllamaModels();
           } catch (error) {
             this.ollamaError = error.message;
@@ -2722,6 +2722,7 @@
           const decoder = new TextDecoder();
           let buf = '';
           let finished = false;
+          let installed = '';
           const take = (raw) => {
             if (!raw || raw.charAt(0) === ':') return;
             let event = 'message';
@@ -2734,9 +2735,12 @@
             let data = {};
             try { data = JSON.parse(dataLines.join('\n')); } catch (error) { return; }
             if (event === 'error') throw new Error(data.error || 'Could not install the model.');
-            if (event === 'done') finished = true;
+            if (event === 'done') {
+              finished = true;
+              if (data.name) installed = data.name;
+            }
             if (event === 'progress') {
-              let text = 'Downloading…';
+              let text = data.status || 'Downloading…';
               if (data.total && data.completed != null) {
                 text = 'Downloading ' + Math.min(100, Math.round(data.completed / data.total * 100)) + '%';
               }
@@ -2753,6 +2757,7 @@
           }
           if (buf.trim()) take(buf);
           if (!finished) throw new Error('The download stopped before it finished.');
+          return installed;
         },
         async deleteOllamaModel(model) {
           if (this.ollamaBusy || model.protected) return;

@@ -2302,9 +2302,9 @@ class Api
 
     private function pullModel(): void
     {
-        $name = $this->modelName((string)($this->input()['name'] ?? ''));
-        if ($name === null) {
-            $this->json(['error' => 'Enter a model name such as qwen3.6.'], 422);
+        $target = self::pullTarget((string)($this->input()['name'] ?? ''));
+        if (isset($target['error'])) {
+            $this->json(['error' => $target['error']], 422);
             return;
         }
         $base = $this->ollamaBase();
@@ -2315,8 +2315,33 @@ class Api
         @set_time_limit(0);
         session_write_close();
         $this->beginSse();
+        if (isset($target['file'])) {
+            $this->pullHuggingFaceFile($base, $target['file']);
+            return;
+        }
+        $this->pullNamedModel($base, $target['name']);
+    }
+
+    private function pullNamedModel(string $base, string $name): void
+    {
         $failed = null;
         $buffer = '';
+        $take = function (string $line) use (&$failed): bool {
+            $row = json_decode($line, true);
+            if (!is_array($row)) {
+                return true;
+            }
+            if (!empty($row['error'])) {
+                $failed = (string)$row['error'];
+                return false;
+            }
+            $this->sse('progress', [
+                'status' => (string)($row['status'] ?? 'Working'),
+                'completed' => isset($row['completed']) ? (int)$row['completed'] : null,
+                'total' => isset($row['total']) ? (int)$row['total'] : null,
+            ]);
+            return true;
+        };
         $ch = curl_init($base . '/api/pull');
         if ($ch === false) {
             $this->sse('error', ['error' => 'Could not reach Ollama.']);
@@ -2324,32 +2349,19 @@ class Api
         }
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode(['name' => $name, 'stream' => true]),
+            CURLOPT_POSTFIELDS => json_encode(['model' => $name, 'name' => $name, 'stream' => true]),
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
             CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_TIMEOUT => 0,
             CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_WRITEFUNCTION => function ($ch, string $chunk) use (&$buffer, &$failed): int {
+            CURLOPT_WRITEFUNCTION => function ($ch, string $chunk) use (&$buffer, $take): int {
                 $buffer .= $chunk;
                 while (($pos = strpos($buffer, "\n")) !== false) {
                     $line = trim(substr($buffer, 0, $pos));
                     $buffer = substr($buffer, $pos + 1);
-                    if ($line === '') {
-                        continue;
-                    }
-                    $row = json_decode($line, true);
-                    if (!is_array($row)) {
-                        continue;
-                    }
-                    if (!empty($row['error'])) {
-                        $failed = (string)$row['error'];
+                    if ($line !== '' && !$take($line)) {
                         return 0;
                     }
-                    $this->sse('progress', [
-                        'status' => (string)($row['status'] ?? 'Working'),
-                        'completed' => isset($row['completed']) ? (int)$row['completed'] : null,
-                        'total' => isset($row['total']) ? (int)$row['total'] : null,
-                    ]);
                 }
                 return strlen($chunk);
             },
@@ -2358,6 +2370,9 @@ class Api
         $errno = curl_errno($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         unset($ch);
+        if ($buffer !== '' && $failed === null) {
+            $take(trim($buffer));
+        }
         if ($failed !== null) {
             $this->sse('error', ['error' => $failed]);
             return;
@@ -2367,6 +2382,629 @@ class Api
             return;
         }
         $this->sse('done', ['name' => $name]);
+    }
+
+    // A file at the root of main is hf.co/user/repo:file.gguf. A file in a folder
+    // keeps that folder in front of the name, which Ollama cannot use as a tag,
+    // so that file is fetched from Hugging Face and registered locally.
+    private static function pullTarget(string $raw): array
+    {
+        $raw = trim($raw);
+        $invalid = 'Enter a model name such as qwen3.6, or a Hugging Face link to a GGUF file.';
+        if ($raw === '' || str_contains($raw, "\n") || str_contains($raw, "\r") || strlen($raw) > 500) {
+            return ['error' => $invalid];
+        }
+        if (preg_match('#^https?://#i', $raw)) {
+            return self::pullTargetFromUrl($raw);
+        }
+        if (preg_match('#^([A-Za-z0-9.-]+)/([^/]+)/([^/:]+):(.+)$#', $raw, $match)) {
+            $host = strtolower($match[1]);
+            if (in_array($host, ['hf.co', 'huggingface.co', 'hf-mirror.com'], true)) {
+                $registry = $host === 'hf-mirror.com' ? 'hf-mirror.com' : 'hf.co';
+                $downloadHost = $host === 'hf-mirror.com' ? 'hf-mirror.com' : 'huggingface.co';
+                $tag = $match[4];
+                if (preg_match('#^(main|master)/(.+)$#i', $tag, $revision)) {
+                    return self::fromRepoFile($registry, $downloadHost, $match[2], $match[3], $revision[1], $revision[2]);
+                }
+                if (str_contains($tag, '/')) {
+                    return self::fromRepoFile($registry, $downloadHost, $match[2], $match[3], 'main', $tag);
+                }
+                $name = $registry . '/' . $match[2] . '/' . $match[3] . ':' . $tag;
+                if (!self::ollamaNameOk($name)) {
+                    return ['error' => 'That model name is not one Ollama can install.'];
+                }
+                return ['name' => $name];
+            }
+        }
+        if (!self::ollamaNameOk($raw)) {
+            return ['error' => $invalid];
+        }
+        return ['name' => $raw];
+    }
+
+    private static function pullTargetFromUrl(string $raw): array
+    {
+        $parts = parse_url($raw);
+        if (!is_array($parts) || empty($parts['host']) || empty($parts['path'])) {
+            return ['error' => 'That link is not a Hugging Face model.'];
+        }
+        $host = strtolower((string)$parts['host']);
+        if (str_starts_with($host, 'www.')) {
+            $host = substr($host, 4);
+        }
+        if (!in_array($host, ['huggingface.co', 'hf.co', 'hf-mirror.com'], true)) {
+            return ['error' => 'Paste a Hugging Face link, or a model name such as qwen3.6.'];
+        }
+        $registry = $host === 'hf-mirror.com' ? 'hf-mirror.com' : 'hf.co';
+        $downloadHost = $host === 'hf.co' ? 'huggingface.co' : $host;
+        $path = rawurldecode((string)$parts['path']);
+        $segments = array_values(array_filter(explode('/', trim($path, '/')), static fn(string $part): bool => $part !== ''));
+        if (count($segments) < 2 || !self::hfName($segments[0]) || !self::hfName($segments[1])) {
+            return ['error' => 'That link is not a Hugging Face model.'];
+        }
+        $user = $segments[0];
+        $repo = $segments[1];
+        if (count($segments) === 2) {
+            $name = $registry . '/' . $user . '/' . $repo;
+            if (!self::ollamaNameOk($name)) {
+                return ['error' => 'That model name is not one Ollama can install.'];
+            }
+            return ['name' => $name];
+        }
+        $kind = strtolower($segments[2]);
+        if (!in_array($kind, ['resolve', 'blob', 'raw', 'tree'], true) || count($segments) < 4 || !self::hfRevision($segments[3])) {
+            return ['error' => 'That link is not a Hugging Face model file.'];
+        }
+        if ($kind === 'tree') {
+            $name = $registry . '/' . $user . '/' . $repo;
+            if (!self::ollamaNameOk($name)) {
+                return ['error' => 'That model name is not one Ollama can install.'];
+            }
+            return ['name' => $name];
+        }
+        if (count($segments) < 5) {
+            return ['error' => 'That link does not point at a GGUF file.'];
+        }
+        $file = implode('/', array_slice($segments, 4));
+        if (!str_ends_with(strtolower($file), '.gguf')) {
+            return ['error' => 'That link does not point at a GGUF file.'];
+        }
+        return self::fromRepoFile($registry, $downloadHost, $user, $repo, $segments[3], $file);
+    }
+
+    private static function fromRepoFile(string $registry, string $downloadHost, string $user, string $repo, string $revision, string $file): array
+    {
+        if (!self::hfName($user) || !self::hfName($repo) || !self::hfRevision($revision)) {
+            return ['error' => 'That link is not a Hugging Face model file.'];
+        }
+        $file = str_replace('\\', '/', $file);
+        if (self::encodeHfPath($file) === '') {
+            return ['error' => 'That link is not a Hugging Face model file.'];
+        }
+        if (self::splitGguf($file)) {
+            return ['error' => 'Ollama cannot install one piece of a split GGUF. Choose a single file.'];
+        }
+        $tag = $file;
+        if (!in_array(strtolower($revision), ['main', 'master'], true)) {
+            $tag = $revision . '/' . $file;
+        }
+        if (!str_contains($tag, '/')) {
+            $name = $registry . '/' . $user . '/' . $repo . ':' . $tag;
+            if (self::ollamaNameOk($name)) {
+                return ['name' => $name];
+            }
+        }
+        $short = self::shortModelName($file);
+        if ($short === null) {
+            return ['error' => 'That file name cannot be installed.'];
+        }
+        $encodedRevision = self::encodeHfPath($revision);
+        $encodedFile = self::encodeHfPath($file);
+        if ($encodedRevision === '' || $encodedFile === '') {
+            return ['error' => 'That link is not a Hugging Face model file.'];
+        }
+        return ['file' => [
+            'host' => $downloadHost,
+            'user' => $user,
+            'repo' => $repo,
+            'tag' => $tag,
+            'model' => $short,
+            'resolve' => 'https://' . $downloadHost . '/' . $user . '/' . $repo . '/resolve/' . $encodedRevision . '/' . $encodedFile,
+        ]];
+    }
+
+    private function pullHuggingFaceFile(string $base, array $file): void
+    {
+        $manifest = $this->huggingfaceManifest($file);
+        if (isset($manifest['error']) && !str_contains(strtolower($manifest['error']), 'split') && !str_contains(strtolower($manifest['error']), 'shard')) {
+            $this->pullResolvedGguf($base, $file, $manifest['error']);
+            return;
+        }
+        if (isset($manifest['error'])) {
+            $this->sse('error', ['error' => $manifest['error']]);
+            return;
+        }
+        $layers = $manifest['layers'];
+        $total = 0;
+        foreach ($layers as $layer) {
+            $total += (int)$layer['size'];
+        }
+        $files = [];
+        $template = '';
+        $parameters = null;
+        $done = 0;
+        $temps = [];
+        foreach ($layers as $layer) {
+            $digest = (string)$layer['digest'];
+            $kind = (string)$layer['kind'];
+            $size = (int)$layer['size'];
+            if ($kind === 'template' || $kind === 'params') {
+                $body = $this->downloadString($this->blobUrl($file, $digest), $size, $done, $total);
+                $done += $size;
+                if ($body === null) {
+                    $this->sse('error', ['error' => 'Could not download the model.']);
+                    $this->removeTempFiles($temps);
+                    return;
+                }
+                if ($kind === 'template' && preg_match('//u', $body)) {
+                    $template = $body;
+                }
+                if ($kind === 'params') {
+                    $decoded = json_decode($body, true);
+                    if (is_array($decoded) && !array_is_list($decoded)) {
+                        $parameters = $decoded;
+                    }
+                }
+                continue;
+            }
+            $temp = tempnam(sys_get_temp_dir(), 'danaco-gguf-');
+            if ($temp === false) {
+                $this->sse('error', ['error' => 'Could not prepare the download.']);
+                $this->removeTempFiles($temps);
+                return;
+            }
+            $temps[] = $temp;
+            $saved = $this->downloadFile($this->blobUrl($file, $digest), $temp, $size, $done, $total);
+            $done += $size;
+            if ($saved !== null) {
+                $this->sse('error', ['error' => $saved]);
+                $this->removeTempFiles($temps);
+                return;
+            }
+            $hash = hash_file('sha256', $temp);
+            if ($hash === false || !hash_equals(substr($digest, 7), $hash)) {
+                $this->sse('error', ['error' => 'The download did not match Hugging Face.']);
+                $this->removeTempFiles($temps);
+                return;
+            }
+            $stored = $this->ollamaStoreBlob($base, $digest, $temp);
+            if ($stored !== null) {
+                $this->sse('error', ['error' => $stored]);
+                $this->removeTempFiles($temps);
+                return;
+            }
+            $files[$kind === 'projector' ? 'mmproj.gguf' : basename((string)$file['tag'])] = $digest;
+        }
+        $this->removeTempFiles($temps);
+        if ($files === []) {
+            $this->sse('error', ['error' => 'Hugging Face did not offer a model file.']);
+            return;
+        }
+        $this->ollamaCreate($base, (string)$file['model'], $files, $template, $parameters);
+    }
+
+    private function pullResolvedGguf(string $base, array $file, string $manifestError): void
+    {
+        $temp = tempnam(sys_get_temp_dir(), 'danaco-gguf-');
+        if ($temp === false) {
+            $this->sse('error', ['error' => 'Could not prepare the download.']);
+            return;
+        }
+        $saved = $this->downloadFile((string)$file['resolve'], $temp, 0, 0, 0);
+        if ($saved !== null) {
+            @unlink($temp);
+            $this->sse('error', ['error' => $manifestError !== '' ? $manifestError : $saved]);
+            return;
+        }
+        $hash = hash_file('sha256', $temp);
+        if ($hash === false) {
+            @unlink($temp);
+            $this->sse('error', ['error' => 'Could not check the download.']);
+            return;
+        }
+        $digest = 'sha256:' . $hash;
+        $stored = $this->ollamaStoreBlob($base, $digest, $temp);
+        @unlink($temp);
+        if ($stored !== null) {
+            $this->sse('error', ['error' => $stored]);
+            return;
+        }
+        $this->ollamaCreate($base, (string)$file['model'], [basename((string)$file['resolve']) => $digest], '', null);
+    }
+
+    private function huggingfaceManifest(array $file): array
+    {
+        $tag = self::encodeHfPath((string)$file['tag']);
+        if ($tag === '') {
+            return ['error' => 'That link is not a Hugging Face model file.'];
+        }
+        $url = 'https://' . $file['host'] . '/v2/' . $file['user'] . '/' . $file['repo'] . '/manifests/' . $tag;
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return ['error' => 'Could not reach Hugging Face.'];
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_HTTPHEADER => ['Accept: application/vnd.docker.distribution.manifest.v2+json'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_TIMEOUT => 60,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 3,
+        ]);
+        $raw = curl_exec($ch);
+        $errno = curl_errno($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        unset($ch);
+        if ($raw === false || $errno !== 0) {
+            return ['error' => 'Could not reach Hugging Face.'];
+        }
+        $json = json_decode((string)$raw, true);
+        if (!is_array($json)) {
+            return ['error' => 'Hugging Face did not return the model.'];
+        }
+        if ($code >= 400 || !empty($json['error'])) {
+            $message = isset($json['error']) ? (string)$json['error'] : 'Hugging Face did not return the model.';
+            return ['error' => $message];
+        }
+        $layers = [];
+        foreach (($json['layers'] ?? []) as $layer) {
+            if (!is_array($layer)) {
+                continue;
+            }
+            $type = (string)($layer['mediaType'] ?? '');
+            $digest = (string)($layer['digest'] ?? '');
+            if (!preg_match('/^sha256:[a-f0-9]{64}$/', $digest)) {
+                continue;
+            }
+            $kind = '';
+            if (str_contains($type, 'image.model')) {
+                $kind = 'model';
+            } elseif (str_contains($type, 'projector')) {
+                $kind = 'projector';
+            } elseif (str_contains($type, 'template')) {
+                $kind = 'template';
+            } elseif (str_contains($type, 'params')) {
+                $kind = 'params';
+            }
+            if ($kind === '') {
+                continue;
+            }
+            $layers[] = [
+                'kind' => $kind,
+                'digest' => $digest,
+                'size' => max(0, (int)($layer['size'] ?? 0)),
+            ];
+        }
+        $hasModel = false;
+        foreach ($layers as $layer) {
+            if ($layer['kind'] === 'model') {
+                $hasModel = true;
+                break;
+            }
+        }
+        if (!$hasModel) {
+            return ['error' => 'Hugging Face did not offer a model file.'];
+        }
+        return ['layers' => $layers];
+    }
+
+    private function blobUrl(array $file, string $digest): string
+    {
+        return 'https://' . $file['host'] . '/v2/' . $file['user'] . '/' . $file['repo'] . '/blobs/' . $digest;
+    }
+
+    private function downloadFile(string $url, string $dest, int $size, int $done, int $total): ?string
+    {
+        $out = fopen($dest, 'wb');
+        if ($out === false) {
+            return 'Could not prepare the download.';
+        }
+        $last = 0;
+        $ch = curl_init($url);
+        if ($ch === false) {
+            fclose($out);
+            return 'Could not download the model.';
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_FILE => $out,
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_TIMEOUT => 0,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 5,
+            CURLOPT_NOPROGRESS => false,
+            CURLOPT_PROGRESSFUNCTION => function ($ch, $downloadTotal, $downloaded) use (&$last, $done, $total, $size): int {
+                $downloaded = (int)$downloaded;
+                if ($downloaded < $last + 1048576 && ($size <= 0 || $downloaded < $size)) {
+                    return 0;
+                }
+                $last = $downloaded;
+                $overall = $total > 0 ? $total : max($size, (int)$downloadTotal);
+                if ($overall > 0) {
+                    $this->sse('progress', [
+                        'status' => 'Downloading',
+                        'completed' => $done + $downloaded,
+                        'total' => $overall,
+                    ]);
+                }
+                return 0;
+            },
+        ]);
+        $ok = curl_exec($ch);
+        $errno = curl_errno($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        unset($ch);
+        fclose($out);
+        if ($ok === false || $errno !== 0 || $code >= 400) {
+            return 'Could not download the model.';
+        }
+        return null;
+    }
+
+    private function downloadString(string $url, int $size, int $done, int $total): ?string
+    {
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return null;
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 15,
+            CURLOPT_TIMEOUT => 60,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS => 5,
+        ]);
+        $raw = curl_exec($ch);
+        $errno = curl_errno($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        unset($ch);
+        if ($raw === false || $errno !== 0 || $code >= 400) {
+            return null;
+        }
+        if ($total > 0) {
+            $this->sse('progress', [
+                'status' => 'Downloading',
+                'completed' => $done + $size,
+                'total' => $total,
+            ]);
+        }
+        return (string)$raw;
+    }
+
+    private function ollamaStoreBlob(string $base, string $digest, string $path): ?string
+    {
+        if (!preg_match('/^sha256:[a-f0-9]{64}$/', $digest)) {
+            return 'Could not store the model.';
+        }
+        $head = curl_init($base . '/api/blobs/' . $digest);
+        if ($head !== false) {
+            curl_setopt_array($head, [
+                CURLOPT_NOBODY => true,
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_FOLLOWLOCATION => false,
+            ]);
+            curl_exec($head);
+            $headCode = (int)curl_getinfo($head, CURLINFO_HTTP_CODE);
+            unset($head);
+            if ($headCode === 200) {
+                return null;
+            }
+        }
+        $in = fopen($path, 'rb');
+        if ($in === false) {
+            return 'Could not store the model.';
+        }
+        $size = filesize($path);
+        $ch = curl_init($base . '/api/blobs/' . $digest);
+        if ($ch === false) {
+            fclose($in);
+            return 'Could not reach Ollama.';
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_UPLOAD => true,
+            CURLOPT_INFILE => $in,
+            CURLOPT_INFILESIZE => $size === false ? 0 : $size,
+            CURLOPT_CUSTOMREQUEST => 'POST',
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 0,
+            CURLOPT_FOLLOWLOCATION => false,
+        ]);
+        $ok = curl_exec($ch);
+        $errno = curl_errno($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        unset($ch);
+        fclose($in);
+        if ($ok === false || $errno !== 0 || $code >= 400) {
+            return 'Could not store the model in Ollama.';
+        }
+        return null;
+    }
+
+    private function ollamaCreate(string $base, string $model, array $files, string $template, ?array $parameters): void
+    {
+        $body = [
+            'model' => $model,
+            'name' => $model,
+            'files' => $files,
+            'stream' => true,
+        ];
+        if ($template !== '') {
+            $body['template'] = $template;
+        }
+        if ($parameters !== null) {
+            $body['parameters'] = $parameters;
+        }
+        $failed = null;
+        $buffer = '';
+        $take = function (string $line) use (&$failed): bool {
+            $row = json_decode($line, true);
+            if (!is_array($row)) {
+                return true;
+            }
+            if (!empty($row['error'])) {
+                $failed = (string)$row['error'];
+                return false;
+            }
+            if (!empty($row['status'])) {
+                $this->sse('progress', ['status' => (string)$row['status']]);
+            }
+            return true;
+        };
+        $ch = curl_init($base . '/api/create');
+        if ($ch === false) {
+            $this->sse('error', ['error' => 'Could not reach Ollama.']);
+            return;
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($body),
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_TIMEOUT => 0,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_WRITEFUNCTION => function ($ch, string $chunk) use (&$buffer, $take): int {
+                $buffer .= $chunk;
+                while (($pos = strpos($buffer, "\n")) !== false) {
+                    $line = trim(substr($buffer, 0, $pos));
+                    $buffer = substr($buffer, $pos + 1);
+                    if ($line !== '' && !$take($line)) {
+                        return 0;
+                    }
+                }
+                return strlen($chunk);
+            },
+        ]);
+        $ok = curl_exec($ch);
+        $errno = curl_errno($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        unset($ch);
+        if ($buffer !== '' && $failed === null) {
+            $take(trim($buffer));
+        }
+        if ($failed !== null) {
+            $this->sse('error', ['error' => $failed]);
+            return;
+        }
+        if ($ok === false || $errno !== 0 || $code >= 400) {
+            $this->sse('error', ['error' => 'Could not install the model.']);
+            return;
+        }
+        $this->sse('done', ['name' => $model]);
+    }
+
+    private function removeTempFiles(array $paths): void
+    {
+        foreach ($paths as $path) {
+            if (is_string($path) && $path !== '') {
+                @unlink($path);
+            }
+        }
+    }
+
+    private static function hfName(string $part): bool
+    {
+        return (bool)preg_match('/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,95}$/', $part);
+    }
+
+    private static function hfRevision(string $part): bool
+    {
+        return (bool)preg_match('/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/', $part);
+    }
+
+    private static function encodeHfPath(string $path): string
+    {
+        $out = [];
+        foreach (explode('/', str_replace('\\', '/', $path)) as $part) {
+            if ($part === '' || $part === '.' || $part === '..') {
+                return '';
+            }
+            $out[] = rawurlencode($part);
+        }
+        return implode('/', $out);
+    }
+
+    private static function splitGguf(string $file): bool
+    {
+        return (bool)preg_match('/-\d+-of-\d+\.gguf$/i', basename($file));
+    }
+
+    private static function shortModelName(string $file): ?string
+    {
+        $base = basename(str_replace('\\', '/', $file));
+        if (str_ends_with(strtolower($base), '.gguf')) {
+            $base = substr($base, 0, -5);
+        }
+        $base = preg_replace('/[^A-Za-z0-9_.-]+/', '-', $base) ?? '';
+        $base = trim($base, '.-');
+        if ($base === '' || !preg_match('/^[A-Za-z0-9_]/', $base)) {
+            $base = 'm-' . $base;
+        }
+        if (strlen($base) > 80) {
+            $base = rtrim(substr($base, 0, 80), '.-');
+        }
+        if (!self::ollamaPart($base, 'model')) {
+            return null;
+        }
+        return $base;
+    }
+
+    private static function ollamaNameOk(string $name): bool
+    {
+        if ($name === '' || strlen($name) > 500) {
+            return false;
+        }
+        $rest = $name;
+        $colon = strrpos($name, ':');
+        $slash = strrpos($name, '/');
+        if ($colon !== false && ($slash === false || $colon > $slash)) {
+            $tag = substr($name, $colon + 1);
+            $rest = substr($name, 0, $colon);
+            if (!self::ollamaPart($tag, 'tag')) {
+                return false;
+            }
+        } elseif ($colon !== false) {
+            return false;
+        }
+        if ($rest === '') {
+            return false;
+        }
+        $bits = explode('/', $rest);
+        $count = count($bits);
+        if ($count < 1 || $count > 3) {
+            return false;
+        }
+        $kinds = $count === 1 ? ['model'] : ($count === 2 ? ['namespace', 'model'] : ['host', 'namespace', 'model']);
+        foreach ($bits as $index => $bit) {
+            if (!self::ollamaPart($bit, $kinds[$index])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static function ollamaPart(string $part, string $kind): bool
+    {
+        $max = $kind === 'host' ? 350 : 80;
+        if ($part === '' || strlen($part) > $max || !preg_match('/^[A-Za-z0-9_]/', $part)) {
+            return false;
+        }
+        if ($kind === 'namespace') {
+            return (bool)preg_match('/^[A-Za-z0-9_][A-Za-z0-9_-]*$/', $part);
+        }
+        if ($kind === 'host') {
+            return (bool)preg_match('/^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/', $part);
+        }
+        return (bool)preg_match('/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/', $part);
     }
 
     private function modelLoad(): void
