@@ -2319,14 +2319,23 @@ class Api
         @set_time_limit(0);
         session_write_close();
         $this->beginSse();
+        if (isset($target['name']) && self::hfModelName($target['name'])) {
+            $final = $this->hfFinalUrlForModel($target['name']);
+            if ($final === null) {
+                $this->sse('error', ['error' => 'Could not reach Hugging Face.']);
+                return;
+            }
+            $this->pullNamedModel($base, $target['name'], $final);
+            return;
+        }
         if (isset($target['file'])) {
             $this->pullHuggingFaceFile($base, $target['file']);
             return;
         }
-        $this->pullNamedModel($base, $target['name']);
+        $this->pullNamedModel($base, $target['name'], '');
     }
 
-    private function pullNamedModel(string $base, string $name): void
+    private function pullNamedModel(string $base, string $name, string $directUrl = ''): void
     {
         $failed = null;
         $buffer = '';
@@ -2353,7 +2362,7 @@ class Api
         }
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode(['model' => $name, 'name' => $name, 'stream' => true]),
+            CURLOPT_POSTFIELDS => json_encode(self::pullBody($name, $directUrl)),
             CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
             CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_TIMEOUT => 0,
@@ -2388,9 +2397,98 @@ class Api
         $this->sse('done', ['name' => $name]);
     }
 
-    // A file at the root of main is hf.co/user/repo:file.gguf. A file in a folder
-    // keeps that folder in front of the name, which Ollama cannot use as a tag,
-    // so that file is fetched from Hugging Face and registered locally.
+    private static function pullBody(string $name, string $directUrl): array
+    {
+        $body = ['model' => $name, 'name' => $name, 'stream' => true];
+        if ($directUrl !== '') {
+            // The file is served from a host under hf.co. Ollama refuses that
+            // redirect unless the pull is allowed to leave the first host.
+            $body['insecure'] = true;
+        }
+        return $body;
+    }
+
+    private static function hfModelName(string $name): bool
+    {
+        return (bool)preg_match('#^(?:hf\.co|huggingface\.co|hf-mirror\.com)/#', $name);
+    }
+
+    private function hfFinalUrlForModel(string $name): ?string
+    {
+        if (!preg_match('#^(hf\.co|huggingface\.co|hf-mirror\.com)/([^/]+)/([^/:]+)(?::(.+))?$#', $name, $match)) {
+            return null;
+        }
+        $downloadHost = $match[1] === 'hf-mirror.com' ? 'hf-mirror.com' : 'huggingface.co';
+        $tag = $match[4] ?? 'latest';
+        $file = [
+            'host' => $downloadHost,
+            'user' => $match[2],
+            'repo' => $match[3],
+            'tag' => $tag,
+        ];
+        $manifest = $this->huggingfaceManifest($file);
+        if (!isset($manifest['error'])) {
+            foreach ($manifest['layers'] as $layer) {
+                if ($layer['kind'] !== 'model') {
+                    continue;
+                }
+                return $this->hfFinalUrl($this->blobUrl($file, (string)$layer['digest']));
+            }
+        }
+        if (!str_contains($tag, '/') && str_ends_with(strtolower($tag), '.gguf')) {
+            return $this->hfFinalUrl('https://' . $downloadHost . '/' . $match[2] . '/' . $match[3] . '/resolve/main/' . rawurlencode($tag));
+        }
+        return null;
+    }
+
+    private function hfFinalUrl(string $url): ?string
+    {
+        for ($hop = 0; $hop < 5; $hop++) {
+            if (!self::hfUrlOk($url)) {
+                return null;
+            }
+            $location = '';
+            $ch = curl_init($url);
+            if ($ch === false) {
+                return null;
+            }
+            curl_setopt_array($ch, [
+                CURLOPT_NOBODY => true,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_CONNECTTIMEOUT => 15,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_HEADERFUNCTION => function ($ch, string $header) use (&$location): int {
+                    if (preg_match('/^Location:\s*(\S+)/i', $header, $match)) {
+                        $location = $match[1];
+                    }
+                    return strlen($header);
+                },
+            ]);
+            curl_exec($ch);
+            $errno = curl_errno($ch);
+            $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            unset($ch);
+            if ($errno !== 0) {
+                return null;
+            }
+            if ($code >= 300 && $code < 400) {
+                $next = self::hfRedirect($url, $location);
+                if ($next === null || $next === $url) {
+                    return null;
+                }
+                $url = $next;
+                continue;
+            }
+            if (($code >= 200 && $code < 300) || $code === 403 || $code === 405) {
+                return $url;
+            }
+            return null;
+        }
+        return null;
+    }
+
+    // Hugging Face sends the file on from a host under hf.co. Ollama blocks that
+    // redirect, so the file is fetched here and then registered locally.
     private static function pullTarget(string $raw): array
     {
         $raw = trim($raw);
@@ -2410,14 +2508,7 @@ class Api
                 if (preg_match('#^(main|master)/(.+)$#i', $tag, $revision)) {
                     return self::fromRepoFile($registry, $downloadHost, $match[2], $match[3], $revision[1], $revision[2]);
                 }
-                if (str_contains($tag, '/')) {
-                    return self::fromRepoFile($registry, $downloadHost, $match[2], $match[3], 'main', $tag);
-                }
-                $name = $registry . '/' . $match[2] . '/' . $match[3] . ':' . $tag;
-                if (!self::ollamaNameOk($name)) {
-                    return ['error' => 'That model name is not one Ollama can install.'];
-                }
-                return ['name' => $name];
+                return self::fromRepoFile($registry, $downloadHost, $match[2], $match[3], 'main', $tag);
             }
         }
         if (!self::ollamaNameOk($raw)) {
@@ -2633,22 +2724,44 @@ class Api
             return ['error' => 'That link is not a Hugging Face model file.'];
         }
         $url = 'https://' . $file['host'] . '/v2/' . $file['user'] . '/' . $file['repo'] . '/manifests/' . $tag;
-        $ch = curl_init($url);
-        if ($ch === false) {
-            return ['error' => 'Could not reach Hugging Face.'];
+        $raw = false;
+        $errno = 0;
+        $code = 0;
+        for ($hop = 0; $hop < 5; $hop++) {
+            if (!self::hfUrlOk($url)) {
+                return ['error' => 'Could not reach Hugging Face.'];
+            }
+            $ch = curl_init($url);
+            if ($ch === false) {
+                return ['error' => 'Could not reach Hugging Face.'];
+            }
+            $location = '';
+            curl_setopt_array($ch, [
+                CURLOPT_HTTPHEADER => ['Accept: application/vnd.docker.distribution.manifest.v2+json'],
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT => 15,
+                CURLOPT_TIMEOUT => 60,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_HEADERFUNCTION => function ($ch, string $header) use (&$location): int {
+                    if (preg_match('/^Location:\s*(\S+)/i', $header, $match)) {
+                        $location = $match[1];
+                    }
+                    return strlen($header);
+                },
+            ]);
+            $raw = curl_exec($ch);
+            $errno = curl_errno($ch);
+            $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            unset($ch);
+            if ($code < 300 || $code >= 400) {
+                break;
+            }
+            $next = self::hfRedirect($url, $location);
+            if ($next === null || $next === $url) {
+                return ['error' => 'Could not reach Hugging Face.'];
+            }
+            $url = $next;
         }
-        curl_setopt_array($ch, [
-            CURLOPT_HTTPHEADER => ['Accept: application/vnd.docker.distribution.manifest.v2+json'],
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 15,
-            CURLOPT_TIMEOUT => 60,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 3,
-        ]);
-        $raw = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        unset($ch);
         if ($raw === false || $errno !== 0) {
             return ['error' => 'Could not reach Hugging Face.'];
         }
@@ -2709,79 +2822,119 @@ class Api
 
     private function downloadFile(string $url, string $dest, int $size, int $done, int $total): ?string
     {
-        $out = fopen($dest, 'wb');
-        if ($out === false) {
-            return 'Could not prepare the download.';
-        }
-        $last = 0;
-        $ch = curl_init($url);
-        if ($ch === false) {
-            fclose($out);
-            return 'Could not download the model.';
-        }
-        curl_setopt_array($ch, [
-            CURLOPT_FILE => $out,
-            CURLOPT_CONNECTTIMEOUT => 15,
-            CURLOPT_TIMEOUT => 0,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 5,
-            CURLOPT_NOPROGRESS => false,
-            CURLOPT_PROGRESSFUNCTION => function ($ch, $downloadTotal, $downloaded) use (&$last, $done, $total, $size): int {
-                $downloaded = (int)$downloaded;
-                if ($downloaded < $last + 1048576 && ($size <= 0 || $downloaded < $size)) {
+        for ($hop = 0; $hop < 5; $hop++) {
+            if (!self::hfUrlOk($url)) {
+                return 'Could not download the model.';
+            }
+            $out = fopen($dest, 'wb');
+            if ($out === false) {
+                return 'Could not prepare the download.';
+            }
+            $last = 0;
+            $location = '';
+            $ch = curl_init($url);
+            if ($ch === false) {
+                fclose($out);
+                return 'Could not download the model.';
+            }
+            curl_setopt_array($ch, [
+                CURLOPT_FILE => $out,
+                CURLOPT_CONNECTTIMEOUT => 15,
+                CURLOPT_TIMEOUT => 0,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_NOPROGRESS => false,
+                CURLOPT_HEADERFUNCTION => function ($ch, string $header) use (&$location): int {
+                    if (preg_match('/^Location:\s*(\S+)/i', $header, $match)) {
+                        $location = $match[1];
+                    }
+                    return strlen($header);
+                },
+                CURLOPT_PROGRESSFUNCTION => function ($ch, $downloadTotal, $downloaded) use (&$last, $done, $total, $size): int {
+                    $downloaded = (int)$downloaded;
+                    if ($downloaded < $last + 1048576 && ($size <= 0 || $downloaded < $size)) {
+                        return 0;
+                    }
+                    $last = $downloaded;
+                    $overall = $total > 0 ? $total : max($size, (int)$downloadTotal);
+                    if ($overall > 0) {
+                        $this->sse('progress', [
+                            'status' => 'Downloading',
+                            'completed' => $done + $downloaded,
+                            'total' => $overall,
+                        ]);
+                    }
                     return 0;
+                },
+            ]);
+            $ok = curl_exec($ch);
+            $errno = curl_errno($ch);
+            $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            unset($ch);
+            fclose($out);
+            if ($code >= 300 && $code < 400) {
+                $next = self::hfRedirect($url, $location);
+                if ($next === null || $next === $url) {
+                    return 'Could not download the model.';
                 }
-                $last = $downloaded;
-                $overall = $total > 0 ? $total : max($size, (int)$downloadTotal);
-                if ($overall > 0) {
-                    $this->sse('progress', [
-                        'status' => 'Downloading',
-                        'completed' => $done + $downloaded,
-                        'total' => $overall,
-                    ]);
-                }
-                return 0;
-            },
-        ]);
-        $ok = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        unset($ch);
-        fclose($out);
-        if ($ok === false || $errno !== 0 || $code >= 400) {
-            return 'Could not download the model.';
+                $url = $next;
+                continue;
+            }
+            if ($ok === false || $errno !== 0 || $code >= 400) {
+                return 'Could not download the model.';
+            }
+            return null;
         }
-        return null;
+        return 'Could not download the model.';
     }
 
     private function downloadString(string $url, int $size, int $done, int $total): ?string
     {
-        $ch = curl_init($url);
-        if ($ch === false) {
-            return null;
-        }
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 15,
-            CURLOPT_TIMEOUT => 60,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS => 5,
-        ]);
-        $raw = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        unset($ch);
-        if ($raw === false || $errno !== 0 || $code >= 400) {
-            return null;
-        }
-        if ($total > 0) {
-            $this->sse('progress', [
-                'status' => 'Downloading',
-                'completed' => $done + $size,
-                'total' => $total,
+        for ($hop = 0; $hop < 5; $hop++) {
+            if (!self::hfUrlOk($url)) {
+                return null;
+            }
+            $location = '';
+            $ch = curl_init($url);
+            if ($ch === false) {
+                return null;
+            }
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT => 15,
+                CURLOPT_TIMEOUT => 60,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_HEADERFUNCTION => function ($ch, string $header) use (&$location): int {
+                    if (preg_match('/^Location:\s*(\S+)/i', $header, $match)) {
+                        $location = $match[1];
+                    }
+                    return strlen($header);
+                },
             ]);
+            $raw = curl_exec($ch);
+            $errno = curl_errno($ch);
+            $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            unset($ch);
+            if ($code >= 300 && $code < 400) {
+                $next = self::hfRedirect($url, $location);
+                if ($next === null || $next === $url) {
+                    return null;
+                }
+                $url = $next;
+                continue;
+            }
+            if ($raw === false || $errno !== 0 || $code >= 400) {
+                return null;
+            }
+            if ($total > 0) {
+                $this->sse('progress', [
+                    'status' => 'Downloading',
+                    'completed' => $done + $size,
+                    'total' => $total,
+                ]);
+            }
+            return (string)$raw;
         }
-        return (string)$raw;
+        return null;
     }
 
     private function ollamaStoreBlob(string $base, string $digest, string $path): ?string
@@ -2913,6 +3066,57 @@ class Api
                 @unlink($path);
             }
         }
+    }
+
+    private static function hfHostOk(string $host): bool
+    {
+        $host = strtolower($host);
+        if (str_starts_with($host, 'www.')) {
+            $host = substr($host, 4);
+        }
+        foreach (['hf.co', 'huggingface.co', 'hf-mirror.com'] as $root) {
+            if ($host === $root || str_ends_with($host, '.' . $root)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static function hfUrlOk(string $url): bool
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts)) {
+            return false;
+        }
+        $scheme = strtolower((string)($parts['scheme'] ?? ''));
+        $host = strtolower((string)($parts['host'] ?? ''));
+        return ($scheme === 'https' || $scheme === 'http') && self::hfHostOk($host);
+    }
+
+    private static function hfRedirect(string $from, string $location): ?string
+    {
+        $location = trim($location);
+        if ($location === '') {
+            return null;
+        }
+        if (!preg_match('#^https?://#i', $location)) {
+            $parts = parse_url($from);
+            if (!is_array($parts) || empty($parts['host'])) {
+                return null;
+            }
+            $origin = (string)($parts['scheme'] ?? 'https') . '://' . $parts['host'];
+            if (!empty($parts['port'])) {
+                $origin .= ':' . $parts['port'];
+            }
+            if (str_starts_with($location, '/')) {
+                $location = $origin . $location;
+            } else {
+                $path = (string)($parts['path'] ?? '/');
+                $dir = substr($path, 0, (int)strrpos($path, '/') + 1);
+                $location = $origin . $dir . $location;
+            }
+        }
+        return self::hfUrlOk($location) ? $location : null;
     }
 
     private static function hfName(string $part): bool
