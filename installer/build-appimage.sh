@@ -22,12 +22,16 @@ sed "s/version: 1.0.45/version: $VERSION/" \
   "$ROOT/installer/appimage/appimage-builder.yml" > "$WORK/appimage-builder.yml"
 mkdir -p "$WORK/AppDir/usr/share/danaco-agent-setup"
 cp "$ROOT/installer/appimage/AppRun" "$WORK/AppDir/AppRun"
+mkdir -p "$WORK/AppDir/usr/bin"
+cp "$ROOT/installer/appimage/danaco-agent-setup" \
+  "$WORK/AppDir/usr/bin/danaco-agent-setup"
 cp "$ROOT/installer/appimage/danaco-agent-setup.desktop" \
   "$WORK/AppDir/danaco-agent-setup.desktop"
 cp "$ROOT/installer/danaco-setup.py" \
   "$WORK/AppDir/usr/share/danaco-agent-setup/danaco-setup.py"
 cp "$ROOT/public/assets/logo.png" "$WORK/AppDir/danaco-agent-setup.png"
 chmod +x "$WORK/AppDir/AppRun"
+chmod +x "$WORK/AppDir/usr/bin/danaco-agent-setup"
 
 (cd "$WORK" && appimage-builder --recipe appimage-builder.yml)
 mkdir -p "$ROOT/dist"

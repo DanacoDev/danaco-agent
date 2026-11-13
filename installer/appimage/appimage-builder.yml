@@ -7,8 +7,7 @@ AppDir:
     name: Danaco Agent Setup
     icon: danaco-agent-setup
     version: 1.0.45
-    exec: usr/bin/python3
-    exec_args: $APPDIR/usr/share/danaco-agent-setup/danaco-setup.py
+    exec: usr/bin/danaco-agent-setup
   files:
     include:
       - /usr/bin/python3
