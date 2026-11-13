@@ -17,13 +17,57 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bash "$ROOT/bin/save-github-credentials.sh" "$ROOT" || true
 
-PACKAGES=(php-cli php-sqlite3 sqlite3 php-curl php-mbstring php-xml php-zip bubblewrap python3-pip)
-FEDORA_PACKAGES=(php-cli php-pdo php-sqlite3 sqlite bubblewrap python3-pip)
-ARCH_PACKAGES=(php sqlite bubblewrap python-pip)
+PACKAGES=(php-cli php-sqlite3 sqlite3 php-curl php-mbstring php-xml php-zip bubblewrap python3 python3-pip)
+FEDORA_PACKAGES=(php-cli php-pdo php-sqlite3 sqlite bubblewrap python3 python3-pip)
+ARCH_PACKAGES=(php sqlite bubblewrap python python-pip)
 
 php_has() {
   # grep -q in a pipeline makes php exit early, and pipefail then treats that as failure.
   grep -Eiq "^$1$" <<<"$PHP_MODULES"
+}
+
+distro_pip_installed() {
+  local status
+  if command -v apt-get >/dev/null 2>&1; then
+    status="$(dpkg-query -W -f='${Status}' python3-pip 2>/dev/null || true)"
+    if [[ "$status" == "install ok installed" ]]; then
+      return 0
+    fi
+    return 1
+  fi
+  if command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+    if rpm -q python3-pip >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
+  fi
+  if command -v pacman >/dev/null 2>&1; then
+    if pacman -Q python-pip >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
+  fi
+  return 1
+}
+
+system_pip_runs() {
+  local candidate
+  for candidate in /usr/bin/python3 /usr/bin/pip3; do
+    [[ -x "$candidate" ]] || continue
+    if [[ "$candidate" == */pip3 ]]; then
+      env -u PYTHONHOME -u PYTHONPATH -u PYTHONNOUSERSITE -u LD_LIBRARY_PATH "$candidate" --version >/dev/null 2>&1 && return 0
+    else
+      env -u PYTHONHOME -u PYTHONPATH -u PYTHONNOUSERSITE -u LD_LIBRARY_PATH "$candidate" -m pip --version >/dev/null 2>&1 && return 0
+    fi
+  done
+  return 1
+}
+
+pip_ready() {
+  if distro_pip_installed; then
+    return 0
+  fi
+  system_pip_runs
 }
 
 missing_php() {
@@ -45,18 +89,7 @@ missing_php() {
     if ! command -v bwrap >/dev/null 2>&1; then
       missing+=("bubblewrap")
     fi
-    if [[ -x /usr/bin/python3 ]]; then
-      python_bin="/usr/bin/python3"
-    else
-      python_bin="$(command -v python3 || true)"
-    fi
-    pip_ok=1
-    if [[ -n "$python_bin" ]] && "$python_bin" -m pip --version >/dev/null 2>&1; then
-      pip_ok=0
-    elif command -v pip3 >/dev/null 2>&1 && pip3 --version >/dev/null 2>&1; then
-      pip_ok=0
-    fi
-    if [[ "$pip_ok" -ne 0 ]]; then
+    if ! pip_ready; then
       missing+=("python3-pip")
     fi
   fi

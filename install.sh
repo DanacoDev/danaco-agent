@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The graphical installer is an AppImage. Its Python settings hide the system pip.
+# The graphical installer is an AppImage. Its Python is first on PATH and has no pip.
 unset PYTHONHOME PYTHONPATH PYTHONNOUSERSITE || true
 unset LD_LIBRARY_PATH GI_TYPELIB_PATH GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE || true
+if [[ -n "${APPDIR:-}" && -n "${PATH:-}" ]]; then
+  bundled_bin="${APPDIR%/}/usr/bin"
+  PATH=":${PATH}:"
+  PATH="${PATH//:$bundled_bin:/:}"
+  PATH="${PATH#:}"
+  PATH="${PATH%:}"
+  export PATH
+fi
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
