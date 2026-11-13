@@ -11,7 +11,6 @@ import sys
 import threading
 import time
 
-SUGGESTED_MODEL = "qwen3.6"
 REPO_URL = "https://github.com/DanacoDev/danaco-agent.git"
 URL_RE = re.compile(r"Danaco Agent is running at (https://\S+)")
 
@@ -106,6 +105,56 @@ def ollama_models():
             continue
         names.append(part[0])
     return True, names
+
+
+def model_matches(installed_name, recommended):
+    if not installed_name or not recommended:
+        return False
+    return installed_name in (recommended, f"{recommended}:latest") or recommended == f"{installed_name}:latest"
+
+
+def recommended_model():
+    """Match the hardware choice in install.sh."""
+    vram_mb = 0
+    compute = ""
+    if shutil.which("nvidia-smi"):
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.total,compute_cap", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        for line in ((result.stdout if result is not None else "") or "").splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 2 or not parts[0].isdigit():
+                continue
+            memory = int(parts[0])
+            if memory > vram_mb:
+                vram_mb = memory
+                compute = parts[1]
+    ram_mb = 0
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    ram_mb = int(line.split()[1]) // 1024
+                    break
+    except (OSError, IndexError, ValueError):
+        ram_mb = 0
+    major = 0
+    head = compute.split(".", 1)[0]
+    if head.isdigit():
+        major = int(head)
+    if vram_mb >= 15360:
+        if major >= 10:
+            return "local", "qwen3.6:35b-a3b-nvfp4"
+        return "local", "qwen3.6:35b-a3b-q4_K_M"
+    if ram_mb >= 7168:
+        return "local", "qwen3.5:9b-q4_K_M"
+    return "cpu_failsafe", "qwen2.5:0.5b"
 
 
 class LogFeed:
@@ -411,43 +460,62 @@ def main():
         def refresh_models(self):
             previous_mode, previous_name = self.selected_model()
             installed, names = ollama_models()
+            mode, recommended = recommended_model()
             if installed and names:
                 self.model_intro.set_text("Ollama is installed. Choose a model:")
             elif installed:
-                self.model_intro.set_text(
-                    f"Ollama is installed, but it has no models yet. Suggested local model: {SUGGESTED_MODEL}"
-                )
+                self.model_intro.set_text("Ollama is installed, but it has no models yet.")
             else:
-                self.model_intro.set_text(
-                    f"Ollama is not installed. Suggested local model: {SUGGESTED_MODEL}"
-                )
+                self.model_intro.set_text("Ollama is not installed.")
             child = self.model_box.get_first_child()
             while child is not None:
                 nxt = child.get_next_sibling()
                 self.model_box.remove(child)
                 child = nxt
+            recommended_choice = None
             choices = []
-            if names:
-                for name in names:
-                    choices.append((name, "local", name))
-            else:
-                choices.append((f"Local {SUGGESTED_MODEL} (suggested)", "local", SUGGESTED_MODEL))
+            for name in names:
+                if model_matches(name, recommended):
+                    if recommended_choice is None:
+                        local_name = name if mode == "local" else ""
+                        recommended_choice = (
+                            f"{name} (recommended for your hardware)",
+                            mode,
+                            local_name,
+                        )
+                    continue
+                choices.append((name, "local", name))
+            if recommended_choice is None:
+                local_name = recommended if mode == "local" else ""
+                recommended_choice = (
+                    f"Download the recommended model ({recommended})",
+                    mode,
+                    local_name,
+                )
+            choices.insert(0, recommended_choice)
             choices.append(("Cloud API", "cloud", ""))
-            choices.append(("CPU failsafe", "cpu_failsafe", ""))
+            if mode != "cpu_failsafe":
+                choices.append(("CPU failsafe", "cpu_failsafe", ""))
             self.model_buttons = []
             leader = None
-            for label, mode, local_name in choices:
+            for label, choice_mode, local_name in choices:
                 button = Gtk.CheckButton(label=label)
                 if leader is None:
                     leader = button
                 else:
                     button.set_group(leader)
                 self.model_box.append(button)
-                self.model_buttons.append((button, mode, local_name))
+                self.model_buttons.append((button, choice_mode, local_name))
             restored = False
             if previous_mode:
-                for button, mode, local_name in self.model_buttons:
-                    if mode == previous_mode and local_name == previous_name:
+                for button, choice_mode, local_name in self.model_buttons:
+                    if choice_mode == previous_mode and local_name == previous_name:
+                        button.set_active(True)
+                        restored = True
+                        break
+            if not restored:
+                for button, choice_mode, local_name in self.model_buttons:
+                    if (choice_mode, local_name) == (recommended_choice[1], recommended_choice[2]):
                         button.set_active(True)
                         restored = True
                         break
