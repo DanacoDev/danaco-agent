@@ -2,6 +2,10 @@
 # Install the PHP packages Danaco needs, including bubblewrap and pip for run_python. Exit 10 when packages were installed, 0 when they were already present.
 set -euo pipefail
 
+# The graphical installer is an AppImage. Its Python settings hide the system pip.
+unset PYTHONHOME PYTHONPATH PYTHONNOUSERSITE || true
+unset LD_LIBRARY_PATH GI_TYPELIB_PATH GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE || true
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bash "$ROOT/bin/save-github-credentials.sh" "$ROOT" || true
 

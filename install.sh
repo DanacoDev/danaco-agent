@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The graphical installer is an AppImage. Its Python settings hide the system pip.
+unset PYTHONHOME PYTHONPATH PYTHONNOUSERSITE || true
+unset LD_LIBRARY_PATH GI_TYPELIB_PATH GDK_PIXBUF_MODULEDIR GDK_PIXBUF_MODULE_FILE || true
+
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 OS="$(uname -s)"

@@ -765,7 +765,7 @@ def main():
             dest = job["folder"]
             if not os.path.isfile(os.path.join(dest, "install.sh")):
                 self.queue.put(("line", "Fetching Danaco Agent from GitHub..."))
-                if self.run_proc(clone_command(dest), os.path.dirname(os.path.abspath(dest))) != 0:
+                if self.run_proc(clone_command(dest), os.path.dirname(os.path.abspath(dest)), self.browser_env()) != 0:
                     self.queue.put(("line", "Could not download Danaco Agent."))
                     return 1
             if self.stop:
@@ -774,7 +774,7 @@ def main():
             if not os.path.isfile(script):
                 self.queue.put(("line", "The download did not include install.sh."))
                 return 1
-            env = os.environ.copy()
+            env = self.browser_env()
             env["DANACO_NONINTERACTIVE"] = "1"
             env["DANACO_MODEL_MODE"] = job["mode"]
             env["DANACO_LOCAL_MODEL"] = job["local"]
