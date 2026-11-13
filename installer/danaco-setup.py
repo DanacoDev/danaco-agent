@@ -351,21 +351,12 @@ def main():
             page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             page.append(self.heading("EU AI Act"))
             page.append(self.body("Does the EU AI Act apply to this deployment?"))
-            self.ai_yes = Gtk.CheckButton(label="Yes")
-            yes_note = self.body(
-                "Organisation in the EU/EEA, or the system affects people there "
-                "in a way that brings the Act into scope."
-            )
-            yes_note.set_margin_start(24)
+            self.ai_yes = Gtk.CheckButton(label="Yes, activate compliance tools")
             self.ai_no = Gtk.CheckButton(label="No")
             self.ai_no.set_group(self.ai_yes)
-            self.ai_unsure = Gtk.CheckButton(label="Not sure")
-            self.ai_unsure.set_group(self.ai_yes)
             self.ai_no.set_active(True)
             page.append(self.ai_yes)
-            page.append(yes_note)
             page.append(self.ai_no)
-            page.append(self.ai_unsure)
             return page
 
         def _run_page(self):
@@ -538,8 +529,6 @@ def main():
         def ai_act(self):
             if self.ai_yes.get_active():
                 return "yes"
-            if self.ai_unsure.get_active():
-                return "unsure"
             return "no"
 
         def validate(self, name):
