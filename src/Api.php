@@ -1840,15 +1840,12 @@ class Api
         }
         $fetch = $this->fetchOrigin($root, $origin);
         $fetchError = $fetch['code'] === 0 ? '' : $this->fetchFailure($fetch);
+        // AppImage installs clone installer-appimage and never fetch main.
+        // Updates always come from main, whatever branch this copy is on.
         $branch = 'main';
-        $headRef = Process::run(['git', '-C', $root, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], $root, null, 5);
-        if ($headRef['code'] === 0 && preg_match('#^origin/([A-Za-z0-9._/-]+)$#', trim($headRef['stdout']), $match)) {
-            $branch = $match[1];
-        } else {
-            $main = Process::run(['git', '-C', $root, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'], $root, null, 5);
-            if ($main['code'] !== 0) {
-                $branch = 'master';
-            }
+        $main = Process::run(['git', '-C', $root, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'], $root, null, 5);
+        if ($main['code'] !== 0) {
+            $branch = 'master';
         }
         $localRun = Process::run(['git', '-C', $root, 'rev-parse', 'HEAD'], $root, null, 5);
         $remoteRun = Process::run(['git', '-C', $root, 'rev-parse', 'origin/' . $branch], $root, null, 5);
@@ -1965,7 +1962,17 @@ class Api
             $env['SSH_ASKPASS'] = $askpass;
             $env['DANACO_GITHUB_TOKEN'] = $token;
         }
-        array_push($command, 'fetch', 'origin', '--prune');
+        $main = $command;
+        array_push($main, 'fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main');
+        $fetched = Process::run($main, $root, null, 25, $env);
+        if ($fetched['code'] === 0) {
+            return $fetched;
+        }
+        $detail = strtolower((string)($fetched['stderr'] ?? '') . "\n" . (string)($fetched['stdout'] ?? ''));
+        if (!str_contains($detail, 'remote ref') && !str_contains($detail, 'couldn\'t find remote ref')) {
+            return $fetched;
+        }
+        array_push($command, 'fetch', 'origin', '+refs/heads/master:refs/remotes/origin/master');
         return Process::run($command, $root, null, 25, $env);
     }
 

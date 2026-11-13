@@ -799,13 +799,15 @@ git_fetch() {
           DANACO_GITHUB_TOKEN="$token" \
           GIT_ASKPASS="$askpass" \
           SSH_ASKPASS="$askpass" \
-            git -C "$ROOT" -c "safe.directory=${ROOT}" -c credential.helper= fetch "$remote" --prune
+            git -C "$ROOT" -c "safe.directory=${ROOT}" -c credential.helper= fetch "$remote" "+refs/heads/main:refs/remotes/${remote}/main" \
+              || git -C "$ROOT" -c "safe.directory=${ROOT}" -c credential.helper= fetch "$remote" "+refs/heads/master:refs/remotes/${remote}/master"
           return
         fi
         ;;
     esac
   fi
-  git -C "$ROOT" -c "safe.directory=${ROOT}" fetch "$remote" --prune
+  git -C "$ROOT" -c "safe.directory=${ROOT}" fetch "$remote" "+refs/heads/main:refs/remotes/${remote}/main" \
+    || git -C "$ROOT" -c "safe.directory=${ROOT}" fetch "$remote" "+refs/heads/master:refs/remotes/${remote}/master"
 }
 
 cmd_update() {
@@ -835,21 +837,23 @@ cmd_update() {
     echo "Could not fetch the latest version from GitHub." >&2
     exit 1
   fi
-  if git -C "$ROOT" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" >/dev/null 2>&1; then
-    default="$(git -C "$ROOT" symbolic-ref --short "refs/remotes/$remote/HEAD")"
-    default="${default#${remote}/}"
-  elif git -C "$ROOT" show-ref --verify --quiet "refs/remotes/$remote/main"; then
+  if git -C "$ROOT" show-ref --verify --quiet "refs/remotes/$remote/main"; then
     default="main"
   elif git -C "$ROOT" show-ref --verify --quiet "refs/remotes/$remote/master"; then
     default="master"
   else
-    echo "Could not tell which GitHub branch is the latest." >&2
+    echo "Could not fetch main from GitHub." >&2
     exit 1
   fi
   before="$(git -C "$ROOT" rev-parse HEAD)"
   current="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)"
   if [[ "$current" != "$default" ]]; then
-    if ! git -C "$ROOT" checkout "$default"; then
+    if git -C "$ROOT" show-ref --verify --quiet "refs/heads/$default"; then
+      if ! git -C "$ROOT" checkout "$default"; then
+        echo "Could not switch to ${default}." >&2
+        exit 1
+      fi
+    elif ! git -C "$ROOT" checkout -b "$default" --track "$remote/$default"; then
       echo "Could not switch to ${default}." >&2
       exit 1
     fi

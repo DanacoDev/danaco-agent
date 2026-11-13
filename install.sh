@@ -39,9 +39,9 @@ fi
 clone_repo() {
   local dest="$1"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    gh repo clone DanacoDev/danaco-agent "$dest" -- --branch installer-appimage --single-branch
+    gh repo clone DanacoDev/danaco-agent "$dest" -- --branch main --single-branch
   else
-    git clone --branch installer-appimage --single-branch https://github.com/DanacoDev/danaco-agent.git "$dest"
+    git clone --branch main --single-branch https://github.com/DanacoDev/danaco-agent.git "$dest"
   fi
 }
 
@@ -68,13 +68,14 @@ as_root() {
 replace_existing_files() {
   local stage ref
   if [[ -d "$ROOT/.git" ]]; then
-    git -C "$ROOT" fetch origin
-    if git -C "$ROOT" show-ref --verify --quiet refs/remotes/origin/installer-appimage; then
-      ref="origin/installer-appimage"
-    elif git -C "$ROOT" show-ref --verify --quiet refs/remotes/origin/main; then
+    git -C "$ROOT" fetch origin '+refs/heads/main:refs/remotes/origin/main' \
+      || git -C "$ROOT" fetch origin '+refs/heads/master:refs/remotes/origin/master'
+    if git -C "$ROOT" show-ref --verify --quiet refs/remotes/origin/main; then
       ref="origin/main"
-    else
+    elif git -C "$ROOT" show-ref --verify --quiet refs/remotes/origin/master; then
       ref="origin/master"
+    else
+      ref="origin/installer-appimage"
     fi
     git -C "$ROOT" checkout -B "${ref#origin/}" "$ref"
     git -C "$ROOT" reset --hard "$ref"
