@@ -495,7 +495,7 @@ def main():
             choices.insert(0, recommended_choice)
             choices.append(("Cloud API", "cloud", ""))
             if mode != "cpu_failsafe":
-                choices.append(("CPU failsafe", "cpu_failsafe", ""))
+                choices.append(("Ignore this, continue with only the CPU failsafe", "cpu_failsafe", ""))
             self.model_buttons = []
             leader = None
             for label, choice_mode, local_name in choices:
