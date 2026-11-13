@@ -1,0 +1,62 @@
+#!/bin/sh
+# Open the setup window for the person who installed the package.
+set -u
+if [ "${1:-}" != "configure" ]; then
+  exit 0
+fi
+
+uid=""
+if [ -n "${PKEXEC_UID:-}" ]; then
+  uid=$PKEXEC_UID
+elif [ -n "${SUDO_UID:-}" ]; then
+  uid=$SUDO_UID
+fi
+if [ -z "$uid" ] || [ "$uid" = "0" ]; then
+  found=""
+  for dir in /run/user/*; do
+    [ -d "$dir" ] || continue
+    base=${dir##*/}
+    case "$base" in
+      *[!0-9]*) continue ;;
+    esac
+    if [ ! -S "$dir/bus" ]; then
+      continue
+    fi
+    if [ -n "$found" ]; then
+      found=""
+      break
+    fi
+    found=$base
+  done
+  uid=$found
+fi
+if [ -z "$uid" ] || [ "$uid" = "0" ] || [ ! -S "/run/user/$uid/bus" ]; then
+  exit 0
+fi
+user=$(id -nu "$uid" 2>/dev/null || true)
+if [ -z "$user" ]; then
+  exit 0
+fi
+
+display="${DISPLAY:-}"
+wayland="${WAYLAND_DISPLAY:-}"
+if [ -z "$wayland" ] && [ -S "/run/user/$uid/wayland-0" ]; then
+  wayland=wayland-0
+fi
+if [ -z "$display" ]; then
+  display=:0
+fi
+env_set=""
+if [ -n "$display" ]; then
+  env_set="DISPLAY=$display"
+fi
+if [ -n "$wayland" ]; then
+  env_set="$env_set WAYLAND_DISPLAY=$wayland"
+fi
+# shellcheck disable=SC2086
+runuser -u "$user" -- env \
+  $env_set \
+  XDG_RUNTIME_DIR="/run/user/$uid" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+  setsid /usr/bin/danaco-agent-setup >/dev/null 2>&1 &
+exit 0

@@ -129,4 +129,32 @@ ARCH=x86_64 "$WORK/squashfs-root/AppRun" --runtime-file "$WORK/runtime-x86_64" "
 chmod +x "$OUT"
 cp "$OUT" "$ROOT/installer/danaco-agent-setup-${VERSION}-x86_64.AppImage"
 chmod +x "$ROOT/installer/danaco-agent-setup-${VERSION}-x86_64.AppImage"
-printf '%s\n' "$ROOT/installer/danaco-agent-setup-${VERSION}-x86_64.AppImage"
+
+DEB_ROOT="$WORK/deb"
+mkdir -p "$DEB_ROOT/DEBIAN" \
+  "$DEB_ROOT/usr/bin" \
+  "$DEB_ROOT/usr/share/danaco-agent-setup" \
+  "$DEB_ROOT/usr/share/applications" \
+  "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps"
+cp "$ROOT/installer/deb/danaco-agent-setup" "$DEB_ROOT/usr/bin/danaco-agent-setup"
+cp "$ROOT/installer/deb/danaco-agent-setup.desktop" "$DEB_ROOT/usr/share/applications/danaco-agent-setup.desktop"
+cp "$ROOT/installer/deb/postinst" "$DEB_ROOT/DEBIAN/postinst"
+cp "$ROOT/installer/danaco-setup.py" "$DEB_ROOT/usr/share/danaco-agent-setup/danaco-setup.py"
+cp "$ROOT/public/assets/logo.png" "$DEB_ROOT/usr/share/icons/hicolor/512x512/apps/danaco-agent-setup.png"
+chmod 755 "$DEB_ROOT/usr/bin/danaco-agent-setup" "$DEB_ROOT/DEBIAN/postinst"
+cat > "$DEB_ROOT/DEBIAN/control" << EOF
+Package: danaco-agent-setup
+Version: ${VERSION}
+Section: utils
+Priority: optional
+Architecture: all
+Depends: python3, python3-gi, gir1.2-gtk-4.0, git, curl, ca-certificates, policykit-1
+Maintainer: DanacoDev <danacodev@users.noreply.github.com>
+Description: Install Danaco Agent
+ Downloads Danaco Agent from GitHub and sets it up.
+EOF
+DEB_STAGE="$WORK/danaco-agent-setup_${VERSION}_all.deb"
+dpkg-deb --root-owner-group --build "$DEB_ROOT" "$DEB_STAGE" >/dev/null
+cp "$DEB_STAGE" "$ROOT/dist/danaco-agent-setup_${VERSION}_all.deb"
+cp "$DEB_STAGE" "$ROOT/installer/Danaco Agent Setup.deb"
+printf '%s\n' "$ROOT/installer/Danaco Agent Setup.deb"

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Danaco Agent Setup
+Comment=Install and set up Danaco Agent
+Exec=danaco-agent-setup
+Icon=/usr/share/icons/hicolor/512x512/apps/danaco-agent-setup.png
+Terminal=false
+Categories=System;

@@ -43,4 +43,12 @@ fi
 
 cp "$SOURCE" "$DEST"
 chmod +x "$DEST"
-echo "Created: $DEST"
+
+DEB_SOURCE="$REPO_DIR/dist/danaco-agent-setup_${VERSION}_all.deb"
+DEB_DEST="$SCRIPT_DIR/Danaco Agent Setup.deb"
+if [[ ! -f "$DEB_SOURCE" ]]; then
+  echo "The build completed without producing: $DEB_SOURCE" >&2
+  exit 1
+fi
+cp "$DEB_SOURCE" "$DEB_DEST"
+echo "Created: $DEB_DEST"
