@@ -167,8 +167,10 @@ def recommended_model():
                     break
     except (OSError, IndexError, ValueError):
         ram_mb = 0
+    if vram_mb >= 22528:
+        return "local", "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M"
     if vram_mb >= 15360:
-        return "local", "qwen3.6:35b-a3b-q4_K_M"
+        return "local", "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_S"
     if ram_mb >= 7168:
         return "local", "qwen3.5:9b-q4_K_M"
     return "cpu_failsafe", "qwen2.5:0.5b"

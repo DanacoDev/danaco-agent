@@ -241,8 +241,10 @@ fi
 
 FAILSAFE_MODEL="qwen2.5:0.5b"
 SUGGESTED_MODE="local"
-if [[ "$VRAM_MB" -ge 15360 ]]; then
-  SUGGESTED_MODEL="qwen3.6:35b-a3b-q4_K_M"
+if [[ "$VRAM_MB" -ge 22528 ]]; then
+  SUGGESTED_MODEL="hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M"
+elif [[ "$VRAM_MB" -ge 15360 ]]; then
+  SUGGESTED_MODEL="hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_S"
 elif [[ "$RAM_MB" -ge 7168 ]]; then
   SUGGESTED_MODEL="qwen3.5:9b-q4_K_M"
 else
@@ -672,10 +674,36 @@ model_is_installed() {
   ollama list 2>/dev/null | awk 'NR>1 { print $1 }' | grep -Fxq "$name"
 }
 
+tune_model() {
+  local name="$1" file
+  case "$name" in
+    hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_S|hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M) ;;
+    *) return 0 ;;
+  esac
+  file="$(mktemp)"
+  cat > "$file" <<EOF
+FROM ${name}
+PARAMETER min_p 0
+PARAMETER num_ctx 32768
+PARAMETER temperature 1
+PARAMETER top_k 20
+PARAMETER top_p 0.95
+PARAMETER draft_num_predict 2
+EOF
+  echo "Saving Ollama settings for ${name}: context 32768, temperature 1, top_k 20, top_p 0.95, min_p 0, draft_num_predict 2."
+  if ! ollama create "$name" -f "$file"; then
+    rm -f "$file"
+    echo "Could not save the Ollama settings for ${name}. The browser was not opened." >&2
+    exit 1
+  fi
+  rm -f "$file"
+}
+
 fetch_model() {
   local name="$1"
   if model_is_installed "$name"; then
     echo "${name} is already downloaded."
+    tune_model "$name"
     return 0
   fi
   echo
@@ -689,6 +717,7 @@ fetch_model() {
     echo "${name} is still missing after the download. The browser was not opened." >&2
     exit 1
   fi
+  tune_model "$name"
   echo "Finished downloading ${name}."
 }
 
