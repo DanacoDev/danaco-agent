@@ -74,8 +74,8 @@ def clone_command(dest):
             stderr=subprocess.DEVNULL,
         )
         if probe.returncode == 0:
-            return ["gh", "repo", "clone", "DanacoDev/danaco-agent", dest]
-    return ["git", "clone", REPO_URL, dest]
+            return ["gh", "repo", "clone", "DanacoDev/danaco-agent", dest, "--", "--branch", "installer-appimage", "--single-branch"]
+    return ["git", "clone", "--branch", "installer-appimage", "--single-branch", REPO_URL, dest]
 
 
 def run_terminal_install():
@@ -543,13 +543,21 @@ class LogFeed:
 
     def _status(self):
         chosen = ""
+        fallback = ""
         for row in self.rows:
             text = self._plain(row)
-            if not text or not self._is_live(text):
+            if not text:
+                continue
+            fallback = text
+            if not self._is_live(text):
                 continue
             if not chosen or "%" in text or "/" in text:
                 chosen = text
-        return self._short(chosen) if chosen else ""
+        if chosen:
+            return self._short(chosen)
+        if fallback:
+            return self._short(fallback)
+        return ""
 
     def _short(self, text):
         low = text.lower()
@@ -1073,7 +1081,7 @@ def main():
                     elif kind == "progress":
                         self.progress = item[1]
                         self.note_running(item[1])
-                        if item[1].startswith("Downloading") and not self._ready:
+                        if item[1] and not self._ready:
                             self.run_status.set_text(item[1])
                     elif kind == "finished":
                         finished = item
@@ -1107,7 +1115,9 @@ def main():
             elif self._cancelling or self.stop:
                 self.run_status.set_text("Setup was cancelled.")
             else:
-                self.run_status.set_text("Setup did not finish. The log above has the details.")
+                self.run_status.set_text(
+                    "Installation failed. Send this report to agent@danaco.se for assistance."
+                )
             self.next_btn.set_label("Close")
             self.next_btn.set_visible(True)
             self.next_btn.set_sensitive(True)
@@ -1393,11 +1403,16 @@ def main():
                     return 1
             if self.stop:
                 return 1
+            env = self.browser_env()
+            if os.path.isdir(os.path.join(dest, ".git")):
+                self.queue.put(("line", "Using the installer version."))
+                if self.run_proc(["git", "fetch", "origin", "installer-appimage"], dest, env) == 0:
+                    self.run_proc(["git", "checkout", "-B", "installer-appimage", "FETCH_HEAD"], dest, env)
+                    self.run_proc(["git", "reset", "--hard", "FETCH_HEAD"], dest, env)
             script = os.path.join(dest, "install.sh")
             if not os.path.isfile(script):
                 self.queue.put(("line", "The download did not include install.sh."))
                 return 1
-            env = self.browser_env()
             env["DANACO_NONINTERACTIVE"] = "1"
             env["DANACO_MODEL_MODE"] = job["mode"]
             env["DANACO_LOCAL_MODEL"] = job["local"]
@@ -1406,6 +1421,7 @@ def main():
             env["DANACO_PASSWORD"] = job["password"]
             if job["reuse"]:
                 env["DANACO_REUSE_CHOICE"] = job["reuse"]
+            self.queue.put(("line", "Checking system packages."))
             command = ["bash", script]
             if shutil.which("stdbuf"):
                 # Unbuffered stdout so carriage-return progress is not held until a newline.

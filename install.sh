@@ -39,9 +39,9 @@ fi
 clone_repo() {
   local dest="$1"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    gh repo clone DanacoDev/danaco-agent "$dest"
+    gh repo clone DanacoDev/danaco-agent "$dest" -- --branch installer-appimage --single-branch
   else
-    git clone https://github.com/DanacoDev/danaco-agent.git "$dest"
+    git clone --branch installer-appimage --single-branch https://github.com/DanacoDev/danaco-agent.git "$dest"
   fi
 }
 
@@ -69,7 +69,9 @@ replace_existing_files() {
   local stage ref
   if [[ -d "$ROOT/.git" ]]; then
     git -C "$ROOT" fetch origin
-    if git -C "$ROOT" show-ref --verify --quiet refs/remotes/origin/main; then
+    if git -C "$ROOT" show-ref --verify --quiet refs/remotes/origin/installer-appimage; then
+      ref="origin/installer-appimage"
+    elif git -C "$ROOT" show-ref --verify --quiet refs/remotes/origin/main; then
       ref="origin/main"
     else
       ref="origin/master"
@@ -171,6 +173,7 @@ if [[ "${DANACO_NONINTERACTIVE:-}" == "1" ]]; then
   fi
 fi
 
+echo "Checking system packages."
 deps=0
 bash "$ROOT/bin/ensure-php.sh" || deps=$?
 if [[ "$deps" -ne 0 && "$deps" -ne 10 ]]; then
