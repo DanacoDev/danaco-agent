@@ -12,7 +12,7 @@ import threading
 import time
 
 REPO_URL = "https://github.com/DanacoDev/danaco-agent.git"
-URL_RE = re.compile(r"Danaco Agent is running at (https://\S+)")
+URL_RE = re.compile(r"Agent Danaco is running at (https://\S+)")
 
 
 def next_install_dir(root):
@@ -681,6 +681,9 @@ def main():
                 self.url = url
             self.running = False
             self.timer = 0
+            if code == 0 and self.url and self.on_open():
+                self.win.close()
+                return False
             if code == 0 and self.url:
                 self.run_status.set_text(f"Danaco Agent is running at {self.url}")
                 self.open_btn.set_visible(True)
@@ -693,18 +696,42 @@ def main():
             self.next_btn.set_sensitive(True)
             return False
 
+        def browser_env(self):
+            env = os.environ.copy()
+            for key in (
+                "LD_LIBRARY_PATH",
+                "PYTHONHOME",
+                "PYTHONPATH",
+                "GI_TYPELIB_PATH",
+                "GDK_PIXBUF_MODULEDIR",
+                "GDK_PIXBUF_MODULE_FILE",
+            ):
+                env.pop(key, None)
+            appdir = env.get("APPDIR", "")
+            data_dirs = env.get("XDG_DATA_DIRS", "")
+            if appdir and data_dirs:
+                prefix = os.path.join(appdir, "usr", "share")
+                kept = [part for part in data_dirs.split(":") if part and part != prefix]
+                if kept:
+                    env["XDG_DATA_DIRS"] = ":".join(kept)
+                else:
+                    env.pop("XDG_DATA_DIRS", None)
+            return env
+
         def on_open(self):
             if not self.url:
-                return
+                return False
             if shutil.which("xdg-open") is None:
                 self.set_error(f"Open this address in a browser: {self.url}")
-                return
+                return False
             subprocess.Popen(
                 ["xdg-open", self.url],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=self.browser_env(),
             )
+            return True
 
         def on_close_request(self, _win):
             self.stop = True

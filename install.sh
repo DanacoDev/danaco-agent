@@ -726,8 +726,10 @@ if [[ "$BIND_HOST" == "0.0.0.0" && -f "$ROOT/data/tls/san.list" ]]; then
   done < "$ROOT/data/tls/san.list"
 fi
 echo "Open it later with: danaco"
-if [[ "$OS" == "Darwin" ]]; then
-  open "$URL" || true
-elif command -v xdg-open >/dev/null 2>&1; then
-  xdg-open "$URL" || true
+if [[ "${DANACO_NONINTERACTIVE:-}" != "1" ]]; then
+  if [[ "$OS" == "Darwin" ]]; then
+    open "$URL" || true
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$URL" || true
+  fi
 fi
