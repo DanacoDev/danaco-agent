@@ -13,6 +13,8 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 
 REPO_URL = "https://github.com/DanacoDev/danaco-agent.git"
 UNSLOTH_FILES = {
@@ -239,6 +241,28 @@ def register_linux_autostart(dest, env, log):
         log("The agent starts automatically when you log in.")
     else:
         log("Automatic startup was not registered. Start it later with: danaco")
+
+
+def format_bytes(count):
+    number = float(max(0, count))
+    for unit in ("B", "KB", "MB", "GB"):
+        if number < 1024 or unit == "GB":
+            if unit == "B":
+                return f"{int(number)} B"
+            text = f"{number:.1f}".rstrip("0").rstrip(".")
+            return f"{text} {unit}"
+        number /= 1024.0
+    return f"{number:.1f} GB"
+
+
+def remote_size(url):
+    request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "danaco-setup"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            length = response.headers.get("Content-Length")
+            return int(length) if length else 0
+    except (OSError, urllib.error.URLError, ValueError):
+        return 0
 
 
 def ollama_listed(name, env):
@@ -582,6 +606,8 @@ def main():
             self._new_copy = ""
             self._replaced = False
             self._clean_lock = threading.Lock()
+            self._cancelling = False
+            self._download_dir = ""
 
             self.win = Gtk.ApplicationWindow(application=app, title="Danaco Agent Setup")
             self.win.set_default_size(720, 560)
@@ -614,6 +640,10 @@ def main():
             root.append(buttons)
             self.back_btn = Gtk.Button(label="Back")
             self.back_btn.connect("clicked", lambda *_a: self.on_back())
+            self.cancel_btn = Gtk.Button(label="Cancel")
+            self.cancel_btn.add_css_class("destructive-action")
+            self.cancel_btn.set_visible(False)
+            self.cancel_btn.connect("clicked", lambda *_a: self.on_cancel())
             self.open_btn = Gtk.Button(label="Open")
             self.open_btn.set_visible(False)
             self.open_btn.connect("clicked", lambda *_a: self.on_open())
@@ -621,6 +651,7 @@ def main():
             self.next_btn.add_css_class("suggested-action")
             self.next_btn.connect("clicked", lambda *_a: self.on_next())
             buttons.append(self.back_btn)
+            buttons.append(self.cancel_btn)
             buttons.append(self.open_btn)
             buttons.append(self.next_btn)
             self.show_current()
@@ -758,6 +789,7 @@ def main():
             name = self.route[self.index]
             self.stack.set_visible_child_name(name)
             self.back_btn.set_visible(self.index > 0 and name != "run" and not self.running)
+            self.cancel_btn.set_visible(name == "run" and self.running)
             if name == "run":
                 if not self.running:
                     self.next_btn.set_label("Close")
@@ -992,6 +1024,10 @@ def main():
             self.open_btn.set_visible(False)
             self.back_btn.set_visible(False)
             self.next_btn.set_visible(False)
+            self._cancelling = False
+            self._download_dir = ""
+            self.cancel_btn.set_visible(True)
+            self.cancel_btn.set_sensitive(True)
             self.run_status.set_text("Installing…")
             self.render_log()
             self.timer = GLib.timeout_add(100, self.pump)
@@ -1029,6 +1065,8 @@ def main():
                             self.url = match.group(1)
                     elif kind == "progress":
                         self.progress = item[1]
+                        if item[1].startswith("Downloading"):
+                            self.run_status.set_text(item[1])
                     elif kind == "finished":
                         finished = item
             except queue.Empty:
@@ -1042,6 +1080,7 @@ def main():
                 self.url = url
             self.running = False
             self.timer = 0
+            self.cancel_btn.set_visible(False)
             if code == 0:
                 self.succeeded = True
             if code == 0 and self.url and self.on_open():
@@ -1052,6 +1091,8 @@ def main():
                 self.open_btn.set_visible(True)
             elif code == 0:
                 self.run_status.set_text("Setup finished.")
+            elif self._cancelling or self.stop:
+                self.run_status.set_text("Setup was cancelled.")
             else:
                 self.run_status.set_text("Setup did not finish. The log above has the details.")
             self.next_btn.set_label("Close")
@@ -1120,7 +1161,37 @@ def main():
                     self._cleaned = False
                 return
             if removed:
-                self.queue.put(("line", f"Setup did not finish. Removed {target}"))
+                if self.stop:
+                    self.queue.put(("line", f"Setup was cancelled. Removed {target}"))
+                else:
+                    self.queue.put(("line", f"Setup did not finish. Removed {target}"))
+
+        def stop_proc(self, sig):
+            proc = self.proc
+            if proc is None or proc.poll() is not None:
+                return
+            try:
+                os.killpg(proc.pid, sig)
+            except OSError:
+                pass
+
+        def on_cancel(self):
+            if not self.running or self._cancelling:
+                return
+            self._cancelling = True
+            self.stop = True
+            self.cancel_btn.set_sensitive(False)
+            self.run_status.set_text("Cancelling…")
+            self.stop_proc(15)
+            download_dir = self._download_dir
+            if download_dir:
+                shutil.rmtree(download_dir, ignore_errors=True)
+            GLib.timeout_add(1000, self.finish_cancel)
+
+        def finish_cancel(self):
+            self.stop_proc(9)
+            self.cleanup_failed()
+            return False
 
         def on_close_request(self, _win):
             self.stop = True
@@ -1183,20 +1254,23 @@ def main():
                 return True
             parent = "/var/tmp" if os.path.isdir("/var/tmp") and os.access("/var/tmp", os.W_OK) else None
             workdir = tempfile.mkdtemp(prefix="danaco-model-", dir=parent)
+            self._download_dir = workdir
             gguf = os.path.join(workdir, filename)
             url = f"https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/{filename}"
             modelfile = os.path.join(workdir, "Modelfile")
-            self.queue.put(("line", f"Downloading {filename} directly."))
+            self.queue.put(("line", f"Downloading {url}"))
             try:
-                if self.run_proc(["curl", "-fL", "--retry", "3", "--retry-delay", "2", "-o", gguf, url], workdir, env) != 0:
-                    self.queue.put(("line", f"Could not download {name}. The browser was not opened."))
+                if not self.download_url(url, gguf, env):
+                    if not self.stop:
+                        self.queue.put(("line", f"Could not download {name}. The browser was not opened."))
                     return False
                 try:
                     size = os.path.getsize(gguf)
                 except OSError:
                     size = 0
                 if size < 1000000000:
-                    self.queue.put(("line", f"Could not download {name}. The browser was not opened."))
+                    if not self.stop:
+                        self.queue.put(("line", f"Could not download {name}. The browser was not opened."))
                     return False
                 with open(modelfile, "w", encoding="utf-8") as handle:
                     handle.write(
@@ -1213,8 +1287,61 @@ def main():
                     return False
             finally:
                 shutil.rmtree(workdir, ignore_errors=True)
+                self._download_dir = ""
             self.queue.put(("line", f"Finished downloading {name}."))
             return True
+
+        def download_url(self, url, dest, env):
+            """Save url to dest and report one progress line."""
+            size = {"total": 0}
+
+            def lookup():
+                size["total"] = remote_size(url)
+
+            threading.Thread(target=lookup, daemon=True).start()
+            proc = subprocess.Popen(
+                ["curl", "-fL", "--retry", "3", "--retry-delay", "2", "-s", "-o", dest, url],
+                cwd=os.path.dirname(dest),
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self.proc = proc
+            started = time.monotonic()
+            last_report = 0.0
+            try:
+                while proc.poll() is None:
+                    if self.stop:
+                        self.stop_proc(15)
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            self.stop_proc(9)
+                            proc.wait()
+                        return False
+                    now = time.monotonic()
+                    if now - last_report >= 0.5:
+                        last_report = now
+                        try:
+                            got = os.path.getsize(dest)
+                        except OSError:
+                            got = 0
+                        elapsed = max(now - started, 0.001)
+                        speed = got / elapsed
+                        total = size["total"]
+                        if total > 0:
+                            percent = int(got * 100 / total)
+                            message = f"Downloading {percent}%, {format_bytes(got)} / {format_bytes(total)}, {format_bytes(speed)}/s"
+                        else:
+                            message = f"Downloading {format_bytes(got)}, {format_bytes(speed)}/s"
+                        self.queue.put(("progress", message))
+                    time.sleep(0.2)
+            finally:
+                if self.proc is proc:
+                    self.proc = None
+            return proc.returncode == 0
 
         def install(self, job):
             self._worker_url = ""

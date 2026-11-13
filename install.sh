@@ -761,21 +761,88 @@ EOF
   rm -f "$file"
 }
 
+format_bytes() {
+  local n="$1"
+  if [[ "$n" -ge 1073741824 ]]; then
+    awk -v n="$n" 'BEGIN { printf "%.1f GB", n/1073741824 }'
+  elif [[ "$n" -ge 1048576 ]]; then
+    awk -v n="$n" 'BEGIN { printf "%.0f MB", n/1048576 }'
+  elif [[ "$n" -ge 1024 ]]; then
+    awk -v n="$n" 'BEGIN { printf "%.0f KB", n/1024 }'
+  else
+    printf '%s B' "$n"
+  fi
+}
+
+download_file() {
+  local url="$1" dest="$2" total bytes started now elapsed speed pct message pid head_pid total_file status
+  echo "Downloading ${url}"
+  total_file="$(mktemp "${TMPDIR:-/tmp}/danaco-size.XXXXXX")"
+  echo 0 > "$total_file"
+  (
+    n="$(curl -fsIL --max-time 20 --retry 2 --retry-delay 1 "$url" | awk 'BEGIN { n=0 } tolower($1)=="content-length:" { gsub(/\r/, "", $2); n=$2 } END { print n+0 }' || true)"
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    echo "$n" > "$total_file"
+  ) &
+  head_pid=$!
+  curl -fL --retry 3 --retry-delay 2 -s -o "$dest" "$url" &
+  pid=$!
+  started=$(date +%s)
+  while kill -0 "$pid" 2>/dev/null; do
+    bytes=0
+    total=0
+    if [[ -f "$dest" ]]; then
+      bytes=$(wc -c < "$dest" | tr -d ' ')
+    fi
+    if [[ -f "$total_file" ]]; then
+      total=$(cat "$total_file" 2>/dev/null || echo 0)
+    fi
+    [[ "$total" =~ ^[0-9]+$ ]] || total=0
+    now=$(date +%s)
+    elapsed=$((now - started))
+    if [[ "$elapsed" -lt 1 ]]; then
+      elapsed=1
+    fi
+    speed=$((bytes / elapsed))
+    if [[ "$total" -gt 0 ]]; then
+      pct=$((bytes * 100 / total))
+      message="Downloading ${pct}%, $(format_bytes "$bytes") / $(format_bytes "$total"), $(format_bytes "$speed")/s"
+    else
+      message="Downloading $(format_bytes "$bytes"), $(format_bytes "$speed")/s"
+    fi
+    printf '\r%s' "$message"
+    sleep 1
+  done
+  printf '\n'
+  set +e
+  wait "$pid"
+  status=$?
+  kill "$head_pid" 2>/dev/null || true
+  wait "$head_pid" 2>/dev/null || true
+  set -e
+  rm -f "$total_file"
+  return "$status"
+}
+
 import_unsloth_gguf() {
   local name="$1" file url dest modelfile model_tmp
   case "$name" in
-    hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_S) file="Qwen3.6-35B-A3B-UD-Q3_K_S.gguf" ;;
-    hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M) file="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf" ;;
+    hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_S)
+      file="Qwen3.6-35B-A3B-UD-Q3_K_S.gguf"
+      url="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q3_K_S.gguf"
+      ;;
+    hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M)
+      file="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+      url="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+      ;;
     *) return 1 ;;
   esac
-  url="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/${file}"
   model_tmp="${TMPDIR:-/tmp}"
   if [[ "$OS" == "Linux" && -d /var/tmp && -w /var/tmp ]]; then
     model_tmp="/var/tmp"
   fi
   dest="$(mktemp -d "${model_tmp}/danaco-model.XXXXXX")"
-  echo "Downloading ${file} directly."
-  if ! curl -fL --retry 3 --retry-delay 2 -o "${dest}/${file}" "$url"; then
+  if ! download_file "$url" "${dest}/${file}"; then
     rm -rf "$dest"
     return 1
   fi
