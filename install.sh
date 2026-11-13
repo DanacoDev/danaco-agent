@@ -75,7 +75,8 @@ replace_existing_files() {
     elif git -C "$ROOT" show-ref --verify --quiet refs/remotes/origin/master; then
       ref="origin/master"
     else
-      ref="origin/installer-appimage"
+      echo "Could not fetch main from GitHub." >&2
+      return 1
     fi
     git -C "$ROOT" checkout -B "${ref#origin/}" "$ref"
     git -C "$ROOT" reset --hard "$ref"

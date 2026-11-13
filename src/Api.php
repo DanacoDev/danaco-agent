@@ -1840,8 +1840,7 @@ class Api
         }
         $fetch = $this->fetchOrigin($root, $origin);
         $fetchError = $fetch['code'] === 0 ? '' : $this->fetchFailure($fetch);
-        // AppImage installs clone installer-appimage and never fetch main.
-        // Updates always come from main, whatever branch this copy is on.
+        // Updates always come from main.
         $branch = 'main';
         $main = Process::run(['git', '-C', $root, 'show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'], $root, null, 5);
         if ($main['code'] !== 0) {
@@ -1869,6 +1868,9 @@ class Api
         if ($remoteCount === '') {
             $remoteCount = substr($remote, 0, 7);
         }
+        if (!self::newerVersion($remoteCount, $localCount)) {
+            return $this->noUpdate($none, $fetchError);
+        }
         $blocked = '';
         if (ctype_digit($ahead) && (int)$ahead > 0) {
             $blocked = 'Local history has diverged from GitHub. Nothing will be overwritten.';
@@ -1887,6 +1889,14 @@ class Api
             'repo' => $web,
             'blocked' => $blocked,
         ];
+    }
+
+    private static function newerVersion(string $remote, string $local): bool
+    {
+        if (!preg_match('/^\d+(?:\.\d+){0,2}$/', $remote) || !preg_match('/^\d+(?:\.\d+){0,2}$/', $local)) {
+            return $remote !== $local;
+        }
+        return version_compare($remote, $local, '>');
     }
 
     private function localVersion(string $root): string

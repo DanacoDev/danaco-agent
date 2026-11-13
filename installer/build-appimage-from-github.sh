@@ -4,7 +4,7 @@ set -euo pipefail
 REPOSITORY="${DANACO_REPOSITORY:-DanacoDev/danaco-agent}"
 REPOSITORY="${REPOSITORY%/}"
 REPOSITORY="${REPOSITORY%.git}"
-BRANCH="${DANACO_BRANCH:-installer-appimage}"
+BRANCH="${DANACO_BRANCH:-main}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/danaco-appimage-build.XXXXXX")"
 REPO_DIR="$WORK_DIR/repository"
