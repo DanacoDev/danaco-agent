@@ -394,8 +394,8 @@ class AgentRuntime
         $fallbackTries = 0;
         $finishChecks = 0;
         $skipCompact = false;
-        $writeStreakPath = '';
-        $writeStreak = 0;
+        $savedWritePath = '';
+        $savedWriteBody = null;
         for ($turn = 0; $turn < $maxTurns; $turn++) {
             if ($shouldStop && $shouldStop()) {
                 throw new ChatStopped('Stopped.');
@@ -691,7 +691,8 @@ class AgentRuntime
                 $tool['name'] = $toolName;
                 $toolArgs = is_array($tool['args'] ?? null) ? $tool['args'] : [];
                 $writePath = $this->repeatWritePath($toolName, $toolArgs);
-                if ($writePath !== '' && $writePath === $writeStreakPath && $writeStreak >= 2) {
+                $writeBody = $this->repeatWriteBody($toolName, $toolArgs);
+                if ($writeBody !== null && $writePath === $savedWritePath && $writeBody === $savedWriteBody) {
                     $this->db->loop($agent, 'stop', 'write-streak · ' . $writePath, $projectId);
                     $this->db->setAgentStatus($agent, 'completed');
                     $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
@@ -723,22 +724,10 @@ class AgentRuntime
                     $result = agent_error($agent, $e->getMessage());
                     $this->db->logAgent($agent, $projectId, 'error', $result);
                 }
-                if ($this->recordsWrite($toolName, $toolArgs)) {
-                    if ($writePath !== '' && $this->writeSucceeded($result)) {
-                        if ($writePath === $writeStreakPath) {
-                            $writeStreak++;
-                        } else {
-                            $writeStreakPath = $writePath;
-                            $writeStreak = 1;
-                        }
-                        $savedThisTurn = $writePath;
-                        if ($writeStreak >= 2) {
-                            $result .= "\nThat file is already saved. Do not write it again. Reply with the path and stop.";
-                        }
-                    }
-                } else {
-                    $writeStreakPath = '';
-                    $writeStreak = 0;
+                if ($writeBody !== null && $writePath !== '' && $this->writeSucceeded($result)) {
+                    $savedWritePath = $writePath;
+                    $savedWriteBody = $writeBody;
+                    $savedThisTurn = $writePath;
                 }
                 $result = clip_text($result);
                 $this->db->loop($agent, 'tool', $this->toolResultTrace($toolName, $result), $projectId);
@@ -851,6 +840,14 @@ class AgentRuntime
             $path = 'wiki/' . basename($path);
         }
         return $path;
+    }
+
+    private function repeatWriteBody(string $tool, array $args): ?string
+    {
+        if ($this->repeatWritePath($tool, $args) === '') {
+            return null;
+        }
+        return (string)($args['content'] ?? '');
     }
 
     private function writeSucceeded(string $result): bool

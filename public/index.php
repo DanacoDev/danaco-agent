@@ -863,12 +863,11 @@ header('X-Danaco: 1');
                 <button v-if="!model.protected" class="btn" type="button" :disabled="ollamaBusy" @click="deleteOllamaModel(model)">Delete</button>
               </article>
               <form class="model-install" @submit.prevent="pullOllamaModel">
-                <input class="inline-input" v-model="ollamaPullName" placeholder="qwen3.6 or a Hugging Face link" :disabled="ollamaBusy" aria-label="Model or Hugging Face link to install">
+                <input class="inline-input" v-model="ollamaPullName" placeholder="Model name like qwen3.5:9b-q4_K_M or URL to a .gguf file" :disabled="ollamaBusy" aria-label="Model or Hugging Face link to install">
                 <button class="btn btn-gold" type="submit" :disabled="ollamaBusy || !ollamaPullName.trim()">Install</button>
               </form>
               <p class="form-error" v-if="ollamaInstallError">{{ ollamaInstallError }}</p>
-              <p class="hint">A model name, or a link to a .gguf file. A file inside a folder needs that folder in front of the file name.</p>
-              <p class="hint" v-if="ollamaProgress">{{ ollamaProgress }}</p>
+              <p :class="ollamaBusy ? 'status-thinking' : 'hint'" v-if="ollamaProgress">{{ ollamaProgress }}</p>
             </div>
             <div class="setup-box">
               <h3>Email</h3>

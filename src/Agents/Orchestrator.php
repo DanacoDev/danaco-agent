@@ -35,8 +35,7 @@ class Orchestrator
         if (!empty($packed['updated'])) {
             $this->db->loop('orchestrator', 'context', count($messages) . ' msgs · summary updated', $projectId > 0 ? $projectId : null);
         }
-        $last = $messages[count($messages) - 1] ?? null;
-        if (is_array($last) && $this->toolWasCutOff((string)($last['content'] ?? ''))) {
+        if ($this->endsWithCutOff($messages)) {
             $this->db->loop('orchestrator', 'steer', 'cutoff · carried into this run', $projectId > 0 ? $projectId : null);
             $messages[] = ['role' => 'user', 'content' => 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.'];
         }
@@ -111,11 +110,20 @@ class Orchestrator
             if (!in_array($row['role'], ['user', 'assistant'], true)) {
                 continue;
             }
+            $id = (int)($row['id'] ?? 0);
             $history[] = [
-                'id' => (int)($row['id'] ?? 0),
+                'id' => $id,
                 'role' => $row['role'] === 'assistant' ? 'assistant' : 'user',
                 'content' => $this->stamped($row),
             ];
+            $status = $this->subagentStatus($row);
+            if ($status !== '') {
+                $history[] = [
+                    'id' => $id,
+                    'role' => 'user',
+                    'content' => $status,
+                ];
+            }
         }
         $history = ContextWindow::stripLookups($history);
         $total = $this->contextTotal();
@@ -123,8 +131,8 @@ class Orchestrator
         $pendingKey = 'context_compress_pending_' . max(0, $projectId);
         $pending = $this->db->getSetting($pendingKey, '0') === '1';
         $manual = $activate || ($writeSummary && $pending);
-        $last = $history[count($history) - 1] ?? null;
-        if (is_array($last) && $this->toolWasCutOff((string)($last['content'] ?? ''))) {
+        $cutOff = $this->endsWithCutOff($history);
+        if ($cutOff) {
             $manual = false;
         }
         $folder = is_array($project) ? (string)$project['folder_name'] : null;
@@ -141,7 +149,7 @@ class Orchestrator
             $measureSystem .= "\n\nEarlier messages were summarized below. Treat that summary as the record of them. Do not invent details that are not in the summary or the later messages. The same summary is saved in the wiki.\n\n" . $summary;
         }
         $split = ContextWindow::split($measureSystem, $live, $total, $manual);
-        if (is_array($last) && $this->toolWasCutOff((string)($last['content'] ?? ''))) {
+        if ($cutOff) {
             $keep = !empty($split['compressed']) ? $split['kept'] : $live;
             $messages = [['role' => 'system', 'content' => $system]];
             foreach ($keep as $message) {
@@ -159,8 +167,18 @@ class Orchestrator
             ];
         }
         if ($split['compressed'] && $writeSummary) {
+            $dropped = $split['dropped'];
+            $kept = $split['kept'];
+            if ($dropped !== [] && $kept !== []) {
+                $tailId = (int)($dropped[count($dropped) - 1]['id'] ?? 0);
+                $head = $kept[0];
+                $headText = ltrim((string)($head['content'] ?? ''));
+                if ($tailId > 0 && $tailId === (int)($head['id'] ?? 0) && str_starts_with($headText, 'TOOL RESULT delegate:')) {
+                    $dropped[] = array_shift($kept);
+                }
+            }
             $fresh = [];
-            foreach ($split['dropped'] as $message) {
+            foreach ($dropped as $message) {
                 if ((int)($message['id'] ?? 0) > $until) {
                     $fresh[] = $message;
                 }
@@ -169,7 +187,7 @@ class Orchestrator
                 if ($emit) {
                     $emit(['type' => 'context', 'used' => $split['used'], 'total' => $split['total']]);
                 }
-                $packed = $this->finishCompression($projectId, $folder, $system, $fresh, $split['kept'], $summary, $total, $shouldStop, $emit);
+                $packed = $this->finishCompression($projectId, $folder, $system, $fresh, $kept, $summary, $total, $shouldStop, $emit);
                 if ($packed !== null) {
                     $this->db->setSetting($pendingKey, '0');
                     return $packed;
@@ -291,6 +309,21 @@ class Orchestrator
             $mode = 'cpu_failsafe';
         }
         return app_services()['hardware']->effectiveContext($mode);
+    }
+
+    private function endsWithCutOff(array $messages): bool
+    {
+        for ($i = count($messages) - 1; $i >= 0; $i--) {
+            if (!is_array($messages[$i])) {
+                continue;
+            }
+            $content = ltrim((string)($messages[$i]['content'] ?? ''));
+            if (str_starts_with($content, 'TOOL RESULT delegate:')) {
+                continue;
+            }
+            return $this->toolWasCutOff($content);
+        }
+        return false;
     }
 
     private function toolWasCutOff(string $content): bool
@@ -691,6 +724,60 @@ TXT;
             return $content;
         }
         return '[' . app_local_stamp((string)($row['created_at'] ?? '')) . "]\n" . $content;
+    }
+
+    private function subagentStatus(array $row): string
+    {
+        if (($row['role'] ?? '') !== 'assistant' || !is_array($row['detail'] ?? null)) {
+            return '';
+        }
+        $blocks = [];
+        foreach ($row['detail']['tools'] ?? [] as $tool) {
+            if (!is_array($tool) || ($tool['name'] ?? '') !== 'delegate') {
+                continue;
+            }
+            $result = trim((string)($tool['result'] ?? ''));
+            if ($result === '') {
+                continue;
+            }
+            $args = is_array($tool['args'] ?? null) ? $tool['args'] : [];
+            $agent = trim((string)($args['agent'] ?? ''));
+            if ($agent === '') {
+                $agent = 'subagent';
+            }
+            $instruction = $this->oneLine((string)($args['instruction'] ?? ''));
+            $line = $agent;
+            if ($instruction !== '') {
+                $line .= ': ' . $instruction;
+            }
+            $blocks[] = $line . "\n" . $this->shortResult($result);
+        }
+        if ($blocks === []) {
+            return '';
+        }
+        return "TOOL RESULT delegate:\n" . implode("\n\n", $blocks);
+    }
+
+    private function oneLine(string $text, int $max = 200): string
+    {
+        $text = trim(preg_replace('/\s+/', ' ', $text) ?? '');
+        if ($text === '' || strlen($text) <= $max) {
+            return $text;
+        }
+        return rtrim(substr($text, 0, $max - 1)) . '…';
+    }
+
+    private function shortResult(string $text): string
+    {
+        $text = trim($text);
+        if (strlen($text) <= 900) {
+            return $text;
+        }
+        $mark = "\n…\n";
+        $keep = 900 - strlen($mark);
+        $head = intdiv($keep, 2);
+        $tail = $keep - $head;
+        return substr($text, 0, $head) . $mark . substr($text, -$tail);
     }
 
     private function confirmInstall(string $command, callable $emit, ?callable $shouldStop, ?int $projectId = null): bool
