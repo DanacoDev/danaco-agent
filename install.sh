@@ -375,10 +375,8 @@ fi
 
 FAILSAFE_MODEL="qwen2.5:0.5b"
 SUGGESTED_MODE="local"
-if [[ "$VRAM_MB" -ge 11776 ]]; then
+if [[ "$VRAM_MB" -gt 0 ]]; then
   SUGGESTED_MODEL="Maternion/sage-a1.5:35b-q4_K_M"
-elif [[ "$VRAM_MB" -gt 0 ]]; then
-  SUGGESTED_MODEL="hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ3_S"
 elif [[ "$RAM_MB" -ge 7168 ]]; then
   SUGGESTED_MODEL="qwen3.5:9b-q4_K_M"
 else

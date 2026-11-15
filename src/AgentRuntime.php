@@ -651,7 +651,7 @@ class AgentRuntime
                 } elseif ($proseTools) {
                     $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Do not open a markdown code fence. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
                     if ($wrongTool) {
-                        $prompt = 'That was not a tool call. A marker such as <|tool_code_begin|> or a line that only says Tool call: does not run a tool. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
+                        $prompt = 'That was not a tool call. Do not write <|tool_code_begin|>, <invoke>, or a line that only says Tool call:. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
                     }
                     if (preg_match('/\bdelegat/i', $turnText)) {
                         $prompt = 'That delegation was not run. Do not describe it. Emit the <<tool>> JSON block for kanban so the card is in_progress, then the <<tool>> JSON block for delegate. Pass task_id when the card already exists.';
