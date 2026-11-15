@@ -595,19 +595,25 @@ class AgentRuntime
                     $this->db->loop($agent, 'steer', 'prose delegate · ' . (string)($inferred['args']['agent'] ?? ''), $projectId);
                 }
             }
-            $proseTools = !$tail['tools'] && !$cutOff && ($wrongTool || (!$this->llm->incomplete && $this->announcedToolsWithoutCall($turnText)));
+            $openStep = !$tail['tools'] && !$cutOff && !$wrongTool && !$this->llm->incomplete && $this->replyLeavesWorkOpen($turnText);
+            $proseTools = !$tail['tools'] && !$cutOff && ($wrongTool || $openStep || (!$this->llm->incomplete && $this->announcedToolsWithoutCall($turnText)));
             $emptyFences = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->emptyPayloadFences($turnText);
             if (!$tail['tools'] && ($cutOff || $this->llm->incomplete || $proseTools || $emptyFences)) {
                 $ranOut = $this->llm->ranOut;
                 if ($retryOpen >= 5 && !$ranOut) {
-                    $why = $emptyFences ? 'empty fences' : ($proseTools ? 'prose tool' : 'cutoff');
-                    $this->db->loop($agent, 'stop', $why . ' · retry limit', $projectId);
-                    if ($emptyFences) {
-                        throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
+                    if ($openStep && !$emptyFences && !$cutOff) {
+                        $this->db->loop($agent, 'steer', 'unfinished step · still going', $projectId);
+                        $retryOpen = 4;
+                    } else {
+                        $why = $emptyFences ? 'empty fences' : ($proseTools ? 'prose tool' : 'cutoff');
+                        $this->db->loop($agent, 'stop', $why . ' · retry limit', $projectId);
+                        if ($emptyFences) {
+                            throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
+                        }
+                        throw new RuntimeException($proseTools
+                            ? 'The model kept naming tools without calling them.'
+                            : 'The tool call was cut off before it finished.');
                     }
-                    throw new RuntimeException($proseTools
-                        ? 'The model kept naming tools without calling them.'
-                        : 'The tool call was cut off before it finished.');
                 }
                 if (!$ranOut) {
                     $retryOpen++;
@@ -619,6 +625,8 @@ class AgentRuntime
                     $why = 'empty fences';
                 } elseif ($wrongTool) {
                     $why = 'wrong tool';
+                } elseif ($openStep && !$this->announcedToolsWithoutCall($turnText)) {
+                    $why = 'unfinished step';
                 } elseif ($proseTools) {
                     $why = 'prose tool';
                 } elseif ($ranOut) {
@@ -650,6 +658,9 @@ class AgentRuntime
                     $prompt = 'That reply was an empty code fence, so nothing was called or saved. ```markdown is not a tool call. Do not output ``` at all. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill is write_skill with name, description, and source. The same name updates a custom skill. source is the SKILL.md instructions. A project file is filesystem with action write. A wiki file is wiki_memory with action write. Send the full content.';
                 } elseif ($proseTools) {
                     $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Do not open a markdown code fence. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
+                    if ($openStep && !$this->announcedToolsWithoutCall($turnText)) {
+                        $prompt = 'You described the next step instead of doing it. Do not only say you will check, add, or save. Emit the tool call now:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
+                    }
                     if ($wrongTool) {
                         $prompt = 'That was not a tool call. Do not write <|tool_code_begin|>, <invoke>, or a line that only says Tool call:. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
                     }
@@ -683,29 +694,20 @@ class AgentRuntime
             }
             $retryOpen = 0;
             if (!$tail['tools']) {
-                $open = $this->replyLeavesWorkOpen($turnText);
-                $keepGoing = $open;
-                if (!$keepGoing && $agent === 'orchestrator') {
-                    $keepGoing = $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop);
-                }
-                if ($keepGoing) {
-                    if ($finishChecks < 2) {
-                        $finishChecks++;
-                        $this->db->loop($agent, 'steer', ($open ? 'unfinished step' : 'finish-check continue') . ' · ' . $finishChecks . '/2', $projectId);
-                        $skipCompact = true;
-                        $replay = trim($turnText);
-                        if ($replay === '') {
-                            $replay = trim($visible);
-                        }
-                        if ($replay === '') {
-                            $replay = 'The previous reply was empty.';
-                        }
-                        $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($replay)];
-                        $messages[] = ['role' => 'user', 'content' => $this->finishSteer($scheduled)];
-                        continue;
+                if ($agent === 'orchestrator' && $finishChecks < 2 && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop)) {
+                    $finishChecks++;
+                    $this->db->loop($agent, 'steer', 'finish-check continue · ' . $finishChecks . '/2', $projectId);
+                    $skipCompact = true;
+                    $replay = trim($turnText);
+                    if ($replay === '') {
+                        $replay = trim($visible);
                     }
-                    $this->db->loop($agent, 'stop', 'unfinished', $projectId);
-                    throw new RuntimeException('The agent stopped before the work was done.');
+                    if ($replay === '') {
+                        $replay = 'The previous reply was empty.';
+                    }
+                    $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($replay)];
+                    $messages[] = ['role' => 'user', 'content' => $this->finishSteer($scheduled)];
+                    continue;
                 }
                 $this->db->loop($agent, 'stop', 'completed', $projectId);
                 $this->db->setAgentStatus($agent, 'completed');

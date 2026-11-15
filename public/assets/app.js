@@ -1426,8 +1426,9 @@
             if (!this.streamEnded) {
               throw new Error('The connection dropped before the reply finished.');
             }
+            const heldError = this.streamError;
             await this.reloadMessages();
-            this.streamError = '';
+            if (!heldError) this.streamError = '';
             await this.refreshStatus();
           } catch (error) {
             const lost = /load failed|failed to fetch|networkerror|connection dropped/i.test(String(error && error.message || ''));
