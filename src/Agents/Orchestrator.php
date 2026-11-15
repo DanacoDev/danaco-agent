@@ -328,7 +328,7 @@ class Orchestrator
 
     private function toolWasCutOff(string $content): bool
     {
-        $markers = ['<<tool>>', '<tool>>', '<<tool>', '<tool>', '[[tool]]', '[tool]]', '[[tool]', '[tool]'];
+        $markers = ['<<tool>>', '<tool>>', '<<tool>', '<tool>', '[[tool]]', '[tool]]', '[[tool]', '[tool]', '<|tool|>'];
         $pos = false;
         foreach ($markers as $marker) {
             $at = strrpos($content, $marker);
@@ -340,7 +340,7 @@ class Orchestrator
             return false;
         }
         $rest = substr($content, $pos);
-        foreach (['<<end>>', '<end>>', '<<end>', '<end>', '[[end]]', '[end]]', '[[end]', '[end]', '[[/tool]]', '[/tool]]', '[[/tool]', '[/tool]', '<</tool>>', '</tool>>', '<</tool>', '</tool>'] as $end) {
+        foreach (['<<end>>', '<end>>', '<<end>', '<end>', '[[end]]', '[end]]', '[[end]', '[end]', '[[/tool]]', '[/tool]]', '[[/tool]', '[/tool]', '<</tool>>', '</tool>>', '<</tool>', '</tool>', '<|end|>'] as $end) {
             if (str_contains($rest, $end)) {
                 return false;
             }

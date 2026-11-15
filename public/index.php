@@ -231,7 +231,7 @@ header('X-Danaco: 1');
                   <span class="spinner" aria-hidden="true"></span>
                   <span>Compressing context</span>
                 </div>
-                <article v-if="sending || awaitingModel || live || liveDetail.thinking.length || liveDetail.tools.length" class="bubble assistant">
+                <article v-if="showLiveBubble" class="bubble assistant">
                   <div class="who">{{ agentLabel(liveAgent, showCpu) }}</div>
                   <activity-trace :thinking="liveDetail.thinking" :tools="liveDetail.tools" :open="traceOpen" :cpu="showCpu" prefix="live-" @toggle="toggleTrace"></activity-trace>
                   <div v-if="live" class="md" v-html="md(live)"></div>
@@ -241,6 +241,10 @@ header('X-Danaco: 1');
                     <span>{{ thinkingLabel }}</span>
                   </div>
                 </article>
+                <div v-if="sending && replyPinned" class="thinking-row">
+                  <span class="spinner" aria-hidden="true"></span>
+                  <span>{{ thinkingLabel }}</span>
+                </div>
               </div>
               <div v-if="delegation" class="banner">{{ agentLabel(delegation.agent) }} is working on project: {{ delegation.project }}</div>
               <div v-if="actionPrompt" class="banner install-banner">

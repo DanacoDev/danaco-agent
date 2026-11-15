@@ -164,6 +164,7 @@
           live: '',
           liveAgent: 'orchestrator',
           liveDetail: { thinking: [], tools: [] },
+          replyId: null,
           traceOpen: {},
           delegation: null,
           actionPrompt: null,
@@ -416,6 +417,14 @@
         },
         thinkingSpinner() {
           return (this.sending || this.awaitingModel) && !this.answerStarted && !this.streamError;
+        },
+        replyPinned() {
+          return !!(this.replyId && this.messages.some((msg) => msg.id === this.replyId));
+        },
+        showLiveBubble() {
+          if (this.replyPinned || (this.streamEnded && !this.streamError)) return false;
+          const detail = this.liveDetail || {};
+          return !!(this.sending || this.awaitingModel || this.live || (detail.thinking && detail.thinking.length) || (detail.tools && detail.tools.length));
         },
         thinkingLabel() {
           if (this.waitPhase === 'compressing' || this.compressing || this.compressArmed) return 'Compressing context';
@@ -699,6 +708,7 @@
           this.compressError = '';
           this.live = '';
           this.liveDetail = { thinking: [], tools: [] };
+          this.replyId = null;
           this.delegation = null;
           this.streamError = '';
           clearTimeout(this._chatSearchTimer);
@@ -1152,9 +1162,50 @@
             this.paintChatHit(true);
           });
         },
+        localReply(msg) {
+          if (!msg || msg.role !== 'assistant' || msg.failed || Number(msg.id) > 0) return false;
+          const id = String(msg.id);
+          if (id.indexOf('streaming-') !== 0 && id.indexOf('live-') !== 0) return false;
+          const detail = msg.detail || {};
+          return !!(msg.content || (detail.thinking || []).length || (detail.tools || []).length);
+        },
+        openDraft(rows) {
+          for (let i = rows.length - 1; i >= 0; i--) {
+            const msg = rows[i];
+            if (msg.role === 'user') return null;
+            if (msg.role === 'assistant' && Number(msg.id) > 0) return msg;
+          }
+          return null;
+        },
         async reloadMessages() {
+          const kept = this.messages.filter((msg) => this.localReply(msg));
           const data = await this.api('/api/messages?project_id=' + (this.projectId || 0));
-          this.messages = Array.isArray(data.messages) ? data.messages : [];
+          const incoming = Array.isArray(data.messages) ? data.messages : [];
+          let lastUser = 0;
+          incoming.forEach((msg) => {
+            if (msg.role === 'user' && Number(msg.id) > lastUser) lastUser = Number(msg.id);
+          });
+          const saved = incoming.some((msg) => msg.role === 'assistant' && Number(msg.id) > lastUser);
+          const finished = this.streamEnded && !this.streamError && saved;
+          this.messages = incoming;
+          if (finished) {
+            this.replyId = null;
+          } else {
+            const draft = this.openDraft(incoming);
+            const local = kept[kept.length - 1] || null;
+            if (draft && (this.sending || local)) {
+              if (local) {
+                draft.content = local.content || draft.content;
+                if (local.detail) draft.detail = local.detail;
+                draft.agent_name = local.agent_name || draft.agent_name;
+              }
+              this.replyId = draft.id;
+              if (this.sending) this.holdReply();
+            } else if (local) {
+              kept.forEach((msg) => this.messages.push(msg));
+              if (this.sending) this.replyId = local.id;
+            }
+          }
           if (this.messages.some((msg) => this.scheduledRaw(msg))) await this.reloadTasks();
           if (data.context) this.context = { used: Number(data.context.used) || 0, total: Number(data.context.total) || 0 };
           let parked = '';
@@ -1335,6 +1386,7 @@
           this.streamEnded = false;
           this.live = '';
           this.liveDetail = { thinking: [], tools: [] };
+          this.replyId = null;
           this.liveAgent = 'orchestrator';
           this.streamError = '';
           this.slowReply = false;
@@ -1425,6 +1477,7 @@
             this.answerStarted = false;
             this.live = '';
             this.liveDetail = { thinking: [], tools: [] };
+            this.replyId = null;
             this.toolPending = false;
             this.chatAbort = null;
             this.delegation = null;
@@ -1671,17 +1724,38 @@
           }
           if (buf.trim()) this.applySse(buf);
         },
-        flushLive() {
+        holdReply() {
+          const live = this.live || '';
           const thinking = this.liveDetail.thinking || [];
           const tools = this.liveDetail.tools || [];
-          if (!this.live && !thinking.length && !tools.length) return;
-          this.messages.push({
-            id: 'live-' + Date.now() + Math.random(),
-            role: 'assistant',
-            agent_name: this.liveAgent,
-            content: this.live,
-            detail: { thinking: thinking, tools: tools }
-          });
+          if (!live && !thinking.length && !tools.length) return;
+          const detail = {
+            thinking: thinking.map((block) => ({ agent: block.agent, text: block.text })),
+            tools: tools.map((tool) => ({ agent: tool.agent, name: tool.name, args: tool.args, result: tool.result }))
+          };
+          let row = this.replyId ? this.messages.find((msg) => msg.id === this.replyId) : null;
+          if (!row) {
+            row = {
+              id: 'streaming-' + this.chatRun,
+              role: 'assistant',
+              agent_name: this.liveAgent || 'orchestrator',
+              content: live,
+              detail: detail
+            };
+            this.messages.push(row);
+            this.replyId = row.id;
+            return;
+          }
+          row.agent_name = this.liveAgent || row.agent_name;
+          row.content = live;
+          row.detail = detail;
+          this.replyId = row.id;
+        },
+        flushLive() {
+          this.holdReply();
+          const row = this.replyId ? this.messages.find((msg) => msg.id === this.replyId) : null;
+          if (row && !(Number(row.id) > 0)) row.id = 'live-' + Date.now() + Math.random();
+          this.replyId = null;
           this.live = '';
           this.liveDetail = { thinking: [], tools: [] };
         },
@@ -1708,16 +1782,19 @@
             this.liveAgent = data.agent || this.liveAgent;
             this.live = stripChatTags(this.live + (data.text || ''));
             if (data.text) this.answerStarted = true;
+            this.holdReply();
             this.scrollChat();
           } else if (event === 'thinking') {
             this.slowReply = false;
             this.waitPhase = '';
             this.answerStarted = false;
             this.noteThinking(data);
+            this.holdReply();
             this.scrollChat();
           } else if (event === 'context') {
             this.context = { used: Number(data.used) || 0, total: Number(data.total) || 0 };
           } else if (event === 'notice') {
+            this.holdReply();
             const text = data.text || '';
             const last = this.messages[this.messages.length - 1];
             if (text && (!last || last.role !== 'notice' || last.content !== text)) {
@@ -1742,9 +1819,11 @@
           } else if (event === 'tool_call') {
             this.waitPhase = '';
             this.noteTool(data);
+            this.holdReply();
             this.scrollChat();
           } else if (event === 'tool_result') {
             this.noteToolResult(data);
+            this.holdReply();
             this.scrollChat();
           } else if (event === 'activity') {
             this.waitPhase = '';

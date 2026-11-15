@@ -603,6 +603,15 @@ SQL);
         return $this->castMessage($row->fetch());
     }
 
+    public function updateMessage(int $id, string $content, bool $failed = false, ?string $detail = null): array
+    {
+        $stmt = $this->pdo->prepare('UPDATE messages SET content = ?, failed = ?, detail = ? WHERE id = ?');
+        $stmt->execute([$content, $failed ? 1 : 0, $detail, $id]);
+        $row = $this->pdo->prepare('SELECT * FROM messages WHERE id = ?');
+        $row->execute([$id]);
+        return $this->castMessage($row->fetch());
+    }
+
     public function deleteFailedMessage(int $projectId, int $id): void
     {
         if ($id <= 0) {

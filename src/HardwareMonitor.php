@@ -83,11 +83,12 @@ class HardwareMonitor
         if ($mode === 'cpu_failsafe') {
             return 8192;
         }
+        // The agent packs this window. A smaller length in the GGUF is not the one we send.
         $reported = $this->modelContextLength();
-        if ($reported >= 512) {
-            return min(32768, $reported);
+        if ($reported > 32768) {
+            return 32768;
         }
-        return $this->ramContext();
+        return max(32768, $this->ramContext());
     }
 
     public function effectiveContext(string $mode): int
