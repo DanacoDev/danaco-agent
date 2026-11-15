@@ -878,13 +878,13 @@ tune_model() {
   cat > "$file" <<EOF
 FROM ${name}
 PARAMETER min_p 0
-PARAMETER num_ctx 32768
+PARAMETER num_ctx 65536
 PARAMETER temperature 1
 PARAMETER top_k 20
 PARAMETER top_p 0.95
 PARAMETER draft_num_predict 2
 EOF
-  echo "Saving Ollama settings for ${name}: context 32768, temperature 1, top_k 20, top_p 0.95, min_p 0, draft_num_predict 2."
+  echo "Saving Ollama settings for ${name}: context 65536, temperature 1, top_k 20, top_p 0.95, min_p 0, draft_num_predict 2."
   if ! ollama create "$name" -f "$file"; then
     rm -f "$file"
     echo "Could not save the Ollama settings for ${name}. The model is still installed." >&2
@@ -986,7 +986,7 @@ import_unsloth_gguf() {
   cat > "$modelfile" <<EOF
 FROM ${dest}/${file}
 PARAMETER min_p 0
-PARAMETER num_ctx 32768
+PARAMETER num_ctx 65536
 PARAMETER temperature 1
 PARAMETER top_k 20
 PARAMETER top_p 0.95

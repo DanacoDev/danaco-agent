@@ -308,7 +308,7 @@ class Orchestrator
         if (app_services()['llm']->usingFailsafe) {
             $mode = 'cpu_failsafe';
         }
-        return app_services()['hardware']->effectiveContext($mode);
+        return app_services()['hardware']->agentContext($mode);
     }
 
     private function endsWithCutOff(array $messages): bool
