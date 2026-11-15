@@ -395,6 +395,7 @@ class AgentRuntime
         $repeatTries = 0;
         $fallbackTries = 0;
         $finishChecks = 0;
+        $failedCalls = [];
         $skipCompact = false;
         $savedWritePath = '';
         $savedWriteBody = null;
@@ -731,6 +732,15 @@ class AgentRuntime
                 $toolArgs = is_array($tool['args'] ?? null) ? $tool['args'] : [];
                 $writePath = $this->repeatWritePath($toolName, $toolArgs);
                 $writeBody = $this->repeatWriteBody($toolName, $toolArgs);
+                $callKey = $this->callKey($toolName, $toolArgs);
+                if (($failedCalls[$callKey] ?? 0) >= 2) {
+                    $skipped = 'That same call already failed twice. Change the arguments or use a different tool. Do not repeat this call.';
+                    $this->db->loop($agent, 'steer', 'same call · ' . $toolName, $projectId);
+                    $emit(['type' => 'tool_call', 'agent' => $agent, 'name' => $tool['name'], 'args' => $tool['args']]);
+                    $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => $tool['name'], 'text' => $skipped]);
+                    $messages[] = ['role' => 'user', 'content' => "TOOL RESULT {$tool['name']}:\n{$skipped}"];
+                    continue;
+                }
                 if ($writeBody !== null && $writePath === $savedWritePath && $writeBody === $savedWriteBody) {
                     $this->db->loop($agent, 'stop', 'write-streak · ' . $writePath, $projectId);
                     $this->db->setAgentStatus($agent, 'completed');
@@ -767,6 +777,9 @@ class AgentRuntime
                     $savedWritePath = $writePath;
                     $savedWriteBody = $writeBody;
                     $savedThisTurn = $writePath;
+                }
+                if ($this->callFailed($toolName, $result)) {
+                    $failedCalls[$callKey] = ($failedCalls[$callKey] ?? 0) + 1;
                 }
                 $result = clip_text($result);
                 $this->db->loop($agent, 'tool', $this->toolResultTrace($toolName, $result), $projectId);
@@ -844,6 +857,31 @@ class AgentRuntime
             }
         }
         return $name;
+    }
+
+    private function callKey(string $tool, array $args): string
+    {
+        $this->sortKeys($args);
+        $json = json_encode($args, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        return $tool . "\n" . (is_string($json) ? $json : '');
+    }
+
+    private function sortKeys(array &$value): void
+    {
+        ksort($value);
+        foreach ($value as &$item) {
+            if (is_array($item)) {
+                $this->sortKeys($item);
+            }
+        }
+    }
+
+    private function callFailed(string $tool, string $result): bool
+    {
+        if (str_starts_with($result, 'Error:')) {
+            return true;
+        }
+        return $tool === 'web_search' && str_starts_with($result, 'No web results');
     }
 
     private function repeatWritePath(string $tool, array $args): string
