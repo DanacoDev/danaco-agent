@@ -717,7 +717,7 @@ TXT;
     {
         $content = (string)($row['content'] ?? '');
         if (($row['role'] ?? '') === 'assistant') {
-            $content = strip_chat_tags($content);
+            $content = strip_tool_markers(strip_chat_tags($content));
         }
         $content = clip_text($content, 8000);
         if (($row['role'] ?? '') !== 'user' || str_starts_with($content, 'Scheduled task:')) {

@@ -341,7 +341,7 @@ class Api
                     continue;
                 }
                 if ($role === 'assistant') {
-                    $row['content'] = trim(strip_chat_tags((string)($row['content'] ?? '')));
+                    $row['content'] = trim(strip_tool_markers(strip_chat_tags((string)($row['content'] ?? ''))));
                 }
                 $row['detail'] = isset($recent[$id]) ? $this->trimThinking($row['detail'] ?? null) : $this->leanDetail($row['detail'] ?? null);
                 $out[] = $row;
@@ -680,7 +680,7 @@ class Api
                 $line .= $retry === 1 ? ' · give up' : ' · heartbeat may retry';
                 $this->db->loop('orchestrator', 'process', $line);
                 $error = error_text($reason);
-                $text = trim($turn->streamed);
+                $text = trim(strip_tool_markers($turn->streamed));
                 $text = $text !== '' ? $text . "\n\n" . $error : $error;
                 $save($text, true);
                 $this->db->markChatAnswerSaved($jobId);
