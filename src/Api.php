@@ -571,8 +571,21 @@ class Api
         }
         $this->beginSse();
         $turn = new ChatTurn();
-        $emit = function (array $event): void {
-            $this->sse((string)($event['type'] ?? 'message'), $event);
+        $draftId = 0;
+        $lastDraft = 0.0;
+        $emit = function (array $event) use (&$draftId, &$lastDraft, $turn, $projectId): void {
+            $type = (string)($event['type'] ?? 'message');
+            $this->rememberDraft($turn, $projectId, $type, (string)($event['agent'] ?? ''), $draftId, $lastDraft);
+            $this->sse($type, $event);
+        };
+        $save = function (string $text, bool $failed = false) use (&$draftId, $projectId, $turn): array {
+            $detail = ChatTurn::encodeDetail($turn->detail);
+            if ($draftId > 0) {
+                return $this->db->updateMessage($draftId, $text, $failed, $detail);
+            }
+            $saved = $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', $failed, $detail);
+            $draftId = (int)($saved['id'] ?? 0);
+            return $saved;
         };
         $lastPing = 0.0;
         $lastStopCheck = 0.0;
@@ -611,7 +624,7 @@ class Api
                 if (trim($answer) === '' && $detail === null) {
                     throw new RuntimeException('The model returned an empty answer.');
                 }
-                $saved = $this->db->addMessage($projectId, 'assistant', $answer, 'orchestrator', false, $detail);
+                $saved = $save($answer);
                 $this->db->markChatAnswerSaved($jobId);
                 $this->db->takeChatFollowup($projectId, $jobId);
                 $this->db->loop('orchestrator', 'process', 'Answer saved · job ' . $jobId . ' finished');
@@ -627,7 +640,7 @@ class Api
                 if ($followup && !$runStop) {
                     $this->db->loop('orchestrator', 'process', 'Follow-up · answer kept · job ' . $jobId . ' finished');
                     if ($text !== '') {
-                        $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, ChatTurn::encodeDetail($turn->detail));
+                        $save($text);
                     }
                     $this->db->setAgentStatus('orchestrator', 'idle');
                     $this->sse('stopped', ['text' => 'Stopped.']);
@@ -635,21 +648,21 @@ class Api
                     $this->db->acknowledgeRunStop($projectId, $jobId);
                     $this->db->loop('orchestrator', 'process', 'Stopped by user · job ' . $jobId . ' finished');
                     if ($text !== '') {
-                        $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, ChatTurn::encodeDetail($turn->detail));
+                        $save($text);
                     }
                     $this->db->setAgentStatus('orchestrator', 'idle');
                     $this->sse('stopped', ['text' => 'All processes stopped by user. Waiting for further instructions.']);
                 } elseif ($asked) {
                     $this->db->loop('orchestrator', 'process', 'Intentional stop · job ' . $jobId . ' finished');
                     $text = $text === '' ? 'Stopped.' : $text . "\n\nStopped.";
-                    $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, ChatTurn::encodeDetail($turn->detail));
+                    $save($text);
                     $this->db->setAgentStatus('orchestrator', 'idle');
                     $this->sse('stopped', ['text' => 'Stopped.']);
                 } else {
                     $this->db->loop('orchestrator', 'process', 'Stop while the model was still thinking · job ' . $jobId . ' finished');
                     $why = error_text('The reply stopped while the model was still thinking.');
                     $text = $text !== '' ? $text . "\n\n" . $why : $why;
-                    $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
+                    $save($text, true);
                     $this->db->setAgentStatus('orchestrator', 'idle');
                     $this->sse('error', ['text' => $why]);
                 }
@@ -669,7 +682,7 @@ class Api
                 $error = error_text($reason);
                 $text = trim($turn->streamed);
                 $text = $text !== '' ? $text . "\n\n" . $error : $error;
-                $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
+                $save($text, true);
                 $this->db->markChatAnswerSaved($jobId);
                 $this->db->takeChatFollowup($projectId, $jobId);
                 $this->sse('status', ['agent' => 'orchestrator', 'status' => 'error']);
@@ -678,6 +691,34 @@ class Api
         } finally {
             app_services()['llm']->releaseIfIdle();
             $this->db->loopPop();
+        }
+    }
+
+    private function rememberDraft(ChatTurn $turn, int $projectId, string $type, string $agent, int &$draftId, float &$lastDraft): void
+    {
+        $mine = $agent === '' || $agent === 'orchestrator';
+        $write = $type === 'notice' || ($mine && ($type === 'tool_call' || $type === 'tool_result' || $type === 'token'));
+        if (!$write) {
+            return;
+        }
+        if ($type === 'token' && (microtime(true) - $lastDraft) < 2) {
+            return;
+        }
+        $text = trim($turn->streamed);
+        $detail = ChatTurn::encodeDetail($turn->detail);
+        if ($text === '' && $detail === null) {
+            return;
+        }
+        $lastDraft = microtime(true);
+        try {
+            if ($draftId > 0) {
+                $this->db->updateMessage($draftId, $text, false, $detail);
+            } else {
+                $saved = $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, $detail);
+                $draftId = (int)($saved['id'] ?? 0);
+            }
+        } catch (Throwable $e) {
+            $this->db->loop('orchestrator', 'process', 'Draft not saved · ' . $e->getMessage());
         }
     }
 
@@ -3398,9 +3439,10 @@ class Api
         $options = ['num_predict' => 1];
         if ((string)$this->db->getSetting('model_mode', '') === 'local') {
             $wanted = app_services()['hardware']->effectiveContext('local');
+            $options['num_ctx'] = $wanted;
             $gpu = app_services()['llm']->gpuOptions($model, $wanted);
-            if ($gpu !== []) {
-                $options = array_merge($options, $gpu);
+            if (isset($gpu['num_gpu'])) {
+                $options['num_gpu'] = $gpu['num_gpu'];
             }
         }
         $payload = json_encode([

@@ -200,7 +200,7 @@ class LLMClient
             return null;
         }
         $maxCtx = (int)(floor(($budgetMb / 154) * 1024 / 1024) * 1024);
-        if ($maxCtx < 2048) {
+        if ($maxCtx < $wanted) {
             $this->ctxCache[$cacheKey] = 'context';
             $this->gpuSkip = 'context';
             return null;
@@ -216,9 +216,8 @@ class LLMClient
             }
             $this->db->setSetting('gpu_split_model', '');
         }
-        $ctx = min($wanted, $maxCtx);
-        $this->ctxCache[$cacheKey] = $ctx;
-        return $ctx;
+        $this->ctxCache[$cacheKey] = $wanted;
+        return $wanted;
     }
 
     public function keepSplit(string $model): void
