@@ -13,6 +13,7 @@ class ToolStreamParser
     private array $tools = [];
     private bool $alienOpen = false;
     private bool $rejected = false;
+    private string $invokeName = '';
 
     public function __construct(private array $toolNames = [])
     {
@@ -33,19 +34,21 @@ class ToolStreamParser
     {
         $emitted = $this->drain(false);
         if ($this->inTool) {
-            $call = $this->extractCall($this->toolBuf . $this->pending);
+            $call = $this->invokeName === '' ? $this->extractCall($this->toolBuf . $this->pending) : null;
             if ($call !== null) {
                 $this->tools[] = $call;
                 $this->inTool = false;
                 $this->holdingTool = false;
                 $this->alienOpen = false;
+                $this->invokeName = '';
                 $this->toolBuf = '';
                 $this->pending = '';
-            } elseif ($this->alienOpen) {
+            } elseif ($this->alienOpen || $this->invokeName !== '') {
                 $this->rejected = true;
                 $this->inTool = false;
                 $this->holdingTool = false;
                 $this->alienOpen = false;
+                $this->invokeName = '';
                 $this->toolBuf = '';
                 $this->pending = '';
             }
@@ -62,6 +65,7 @@ class ToolStreamParser
         $this->toolBuf = '';
         $this->inTool = false;
         $this->alienOpen = false;
+        $this->invokeName = '';
         $this->tools = [];
         $this->rejected = false;
         return ['text' => $text, 'tools' => $tools, 'open' => $open, 'rejected' => $rejected];
@@ -145,7 +149,8 @@ class ToolStreamParser
                 $this->inTool = true;
                 $this->holdingTool = false;
                 $this->toolBuf = '';
-                $this->alienOpen = !in_array($open['marker'], self::OPENERS, true);
+                $this->invokeName = $this->invokeNameFrom($open['marker']);
+                $this->alienOpen = $this->invokeName !== '' || !in_array($open['marker'], self::OPENERS, true);
                 continue;
             }
             $this->toolBuf .= $this->pending;
@@ -156,14 +161,19 @@ class ToolStreamParser
             }
             $json = substr($this->toolBuf, 0, $close['at']);
             $rest = substr($this->toolBuf, $close['at'] + strlen($close['marker']));
-            $call = $this->extractCall($json);
+            if ($this->invokeName !== '') {
+                $call = $this->invokeCall($this->invokeName, $json);
+            } else {
+                $call = $this->extractCall($json);
+            }
             if ($call !== null) {
                 $this->tools[] = $call;
-            } elseif ($this->alienOpen) {
+            } elseif ($this->alienOpen || $this->invokeName !== '') {
                 $this->rejected = true;
             }
             $this->inTool = false;
             $this->alienOpen = false;
+            $this->invokeName = '';
             $this->toolBuf = '';
             $this->pending = $rest;
         }
@@ -537,6 +547,32 @@ class ToolStreamParser
             $args = $decoded;
         }
         return ['name' => $known, 'args' => $args];
+    }
+
+    private function invokeNameFrom(string $marker): string
+    {
+        if (preg_match('/^<invoke\b[^>]*\bname\s*=\s*(["\'])([^"\']+)\1/i', $marker, $match) !== 1) {
+            return '';
+        }
+        return trim($match[2]);
+    }
+
+    private function invokeCall(string $name, string $body): ?array
+    {
+        $name = trim($name);
+        if ($name === '' || preg_match('/^[A-Za-z][A-Za-z0-9_-]{0,64}$/', $name) !== 1) {
+            return null;
+        }
+        $args = [];
+        if (preg_match_all('/<parameter\b[^>]*\bname\s*=\s*(["\'])([^"\']+)\1[^>]*>([\s\S]*?)<\/parameter>/i', $body, $matches, PREG_SET_ORDER) > 0) {
+            foreach ($matches as $match) {
+                $key = trim((string)$match[2]);
+                if ($key !== '') {
+                    $args[$key] = trim((string)$match[3]);
+                }
+            }
+        }
+        return ['name' => $name, 'args' => $args];
     }
 
     private function callFromDecoded(array $decoded): ?array
