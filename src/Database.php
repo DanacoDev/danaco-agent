@@ -229,7 +229,7 @@ SQL);
             'cloud_base_url' => $config['cloud_base_url'],
             'cloud_model' => $config['cloud_model'],
             'cloud_api_key' => '',
-            'cloud_api_use' => 'main',
+            'cloud_api_use' => '',
             'max_turns' => (string)$config['max_turns'],
             'cloud_max_turns' => (string)$config['cloud_max_turns'],
             'chat_font_size' => '16',
@@ -267,6 +267,14 @@ SQL);
                 $this->setSetting($key, '1');
             }
             $this->setSetting('tools_default_on', '1');
+        }
+        if ($this->getSetting('cloud_api_use_fixed') !== '1') {
+            $use = (string)$this->getSetting('cloud_api_use', '');
+            $mode = (string)$this->getSetting('model_mode', '');
+            if ($use === 'main' && $mode !== 'cloud') {
+                $this->setSetting('cloud_api_use', '');
+            }
+            $this->setSetting('cloud_api_use_fixed', '1');
         }
         $wiki = $config['data_dir'] . '/wiki/projects_index.md';
         $heading = "# Main wiki\n\nProjects are listed here. Check this index before creating a new project.\n";
@@ -316,7 +324,7 @@ SQL);
 
     public function consultantState(): array
     {
-        $use = (string)$this->getSetting('cloud_api_use', 'main');
+        $use = (string)$this->getSetting('cloud_api_use', '');
         $key = trim((string)$this->getSetting('cloud_api_key', ''));
         $mode = (string)$this->getSetting('model_mode', 'cpu_failsafe');
         if ($key === '') {

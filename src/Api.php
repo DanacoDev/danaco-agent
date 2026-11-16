@@ -2113,7 +2113,7 @@ class Api
         if ($requestedMode === 'cloud' && ($requestedUse === null || $requestedUse === 'main')) {
             $this->db->setSetting('cloud_api_use', 'main');
         } elseif (in_array($requestedUse, ['', 'consultant'], true)
-            || ($requestedUse === null && in_array((string)$this->db->getSetting('cloud_api_use', 'main'), ['', 'consultant'], true))) {
+            || ($requestedUse === null && in_array((string)$this->db->getSetting('cloud_api_use', ''), ['', 'consultant'], true))) {
             if ((string)$this->db->getSetting('model_mode', '') === 'cloud') {
                 $this->db->setSetting('model_mode', 'local');
             }
@@ -4017,7 +4017,7 @@ class Api
         $settings = $this->db->allSettings();
         $cloud = (string)($settings['cloud_api_key'] ?? '');
         $extra = (string)($settings['extra_api_key_value'] ?? '');
-        unset($settings['password_hash'], $settings['tick_lock'], $settings['agent_status'], $settings['tools_default_on'], $settings['tools_noted'], $settings['max_turns_raised'], $settings['full_system_sudoers']);
+        unset($settings['password_hash'], $settings['tick_lock'], $settings['agent_status'], $settings['tools_default_on'], $settings['tools_noted'], $settings['max_turns_raised'], $settings['cloud_api_use_fixed'], $settings['full_system_sudoers']);
         $settings['full_system_control'] = ($settings['full_system_control'] ?? '0') === '1' ? '1' : '0';
         $settings['search_provider'] = ($settings['search_provider'] ?? '') === 'bing' ? 'bing' : 'duckduckgo';
         foreach (array_keys($settings) as $key) {
