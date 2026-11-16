@@ -76,6 +76,286 @@ class OutputLineFilter
     }
 }
 
+class ToolEchoFilter
+{
+    private string $pending = '';
+
+    public function __construct(private array $toolNames)
+    {
+    }
+
+    public function push(string $token): string
+    {
+        if ($token === '') {
+            return '';
+        }
+        $this->pending .= $token;
+        return $this->drain(false);
+    }
+
+    public function finish(): string
+    {
+        $text = $this->drain(true);
+        $this->pending = '';
+        return $text;
+    }
+
+    public function strip(string $text): string
+    {
+        return $this->push($text) . $this->finish();
+    }
+
+    private function drain(bool $end): string
+    {
+        $out = '';
+        while ($this->pending !== '') {
+            $at = $this->findEchoStart($this->pending);
+            if ($at === null) {
+                $hold = $end ? 0 : $this->suffixHold($this->pending);
+                $cut = strlen($this->pending) - $hold;
+                if ($cut > 0) {
+                    $out .= substr($this->pending, 0, $cut);
+                    $this->pending = substr($this->pending, $cut);
+                }
+                break;
+            }
+            if ($at > 0) {
+                $out .= substr($this->pending, 0, $at);
+                $this->pending = substr($this->pending, $at);
+            }
+            $len = $this->echoLength($this->pending, $end);
+            if ($len === null) {
+                break;
+            }
+            if ($len <= 0) {
+                $out .= substr($this->pending, 0, 1);
+                $this->pending = substr($this->pending, 1);
+                continue;
+            }
+            $this->pending = substr($this->pending, $len);
+        }
+        return $out;
+    }
+
+    private function findEchoStart(string $text): ?int
+    {
+        $best = null;
+        if (preg_match_all('/called a tool/i', $text, $hits, PREG_OFFSET_CAPTURE)) {
+            foreach ($hits[0] as $hit) {
+                $at = $hit[1];
+                if ($at > 0 && preg_match('/[A-Za-z]/', $text[$at - 1])) {
+                    continue;
+                }
+                if ($best === null || $at < $best) {
+                    $best = $at;
+                }
+            }
+        }
+        $length = strlen($text);
+        foreach ($this->toolNames as $name) {
+            $from = 0;
+            while ($from < $length) {
+                $at = stripos($text, $name, $from);
+                if ($at === false) {
+                    break;
+                }
+                $from = $at + 1;
+                if ($at > 0 && preg_match('/[A-Za-z0-9_]/', $text[$at - 1])) {
+                    continue;
+                }
+                $after = $at + strlen($name);
+                if ($after < $length && preg_match('/[A-Za-z0-9_]/', $text[$after])) {
+                    continue;
+                }
+                if ($best === null || $at < $best) {
+                    $best = $at;
+                }
+            }
+        }
+        return $best;
+    }
+
+    private function echoLength(string $text, bool $end): ?int
+    {
+        if (preg_match('/\Acalled a tool\.?/i', $text, $match)) {
+            return strlen($match[0]);
+        }
+        if ($this->isPrefix($text, 'called a tool')) {
+            return $end ? 0 : null;
+        }
+        $name = $this->nameAt($text, 0);
+        if ($name === null) {
+            if (!$end && $this->isToolPrefix($text)) {
+                return null;
+            }
+            return 0;
+        }
+        $after = strlen($name);
+        if (isset($text[$after]) && ($text[$after] === ' ' || $text[$after] === "\t")) {
+            $probe = $after + 1;
+            while (isset($text[$probe]) && ($text[$probe] === ' ' || $text[$probe] === "\t")) {
+                $probe++;
+            }
+            $second = $this->nameAt($text, $probe);
+            if ($second !== null && strcasecmp($second, $name) === 0) {
+                $parenAt = $probe + strlen($second);
+                if (!isset($text[$parenAt])) {
+                    return $end ? 0 : null;
+                }
+                if ($text[$parenAt] === '(') {
+                    $close = $this->parenEnd($text, $parenAt);
+                    return $close === null ? ($end ? strlen($text) : null) : $close;
+                }
+            } elseif ($second === null && !$end && $this->isToolPrefix(ltrim(substr($text, $after)))) {
+                return null;
+            }
+        }
+        $cursor = $after;
+        while (isset($text[$cursor]) && ($text[$cursor] === ' ' || $text[$cursor] === "\t")) {
+            $cursor++;
+        }
+        if (!isset($text[$cursor])) {
+            return $end ? 0 : null;
+        }
+        if ($text[$cursor] === '{') {
+            $close = $this->jsonEnd($text, $cursor);
+            return $close === null ? ($end ? strlen($text) : null) : $close;
+        }
+        if ($text[$cursor] === '(') {
+            $close = $this->parenEnd($text, $cursor);
+            return $close === null ? ($end ? strlen($text) : null) : $close;
+        }
+        return 0;
+    }
+
+    private function suffixHold(string $text): int
+    {
+        $length = strlen($text);
+        $max = min($length, 80);
+        for ($hold = $max; $hold > 0; $hold--) {
+            if ($hold < $length && preg_match('/[A-Za-z0-9_]/', $text[$length - $hold - 1])) {
+                continue;
+            }
+            if ($this->couldGrow(substr($text, $length - $hold))) {
+                return $hold;
+            }
+        }
+        return 0;
+    }
+
+    private function couldGrow(string $text): bool
+    {
+        if ($text === '') {
+            return false;
+        }
+        if ($this->isPrefix($text, 'called a tool')) {
+            return true;
+        }
+        if ($this->nameAt($text, 0) !== null) {
+            return $this->echoLength($text, false) === null;
+        }
+        return $this->isToolPrefix($text);
+    }
+
+    private function nameAt(string $text, int $at): ?string
+    {
+        if ($at < 0 || $at >= strlen($text)) {
+            return null;
+        }
+        if ($at > 0 && preg_match('/[A-Za-z0-9_]/', $text[$at - 1])) {
+            return null;
+        }
+        $rest = substr($text, $at);
+        $best = null;
+        foreach ($this->toolNames as $name) {
+            $n = strlen($name);
+            if (strlen($rest) < $n || strncasecmp($rest, $name, $n) !== 0) {
+                continue;
+            }
+            $after = $rest[$n] ?? '';
+            if ($after !== '' && preg_match('/[A-Za-z0-9_]/', $after)) {
+                continue;
+            }
+            if ($best === null || $n > strlen($best)) {
+                $best = $name;
+            }
+        }
+        return $best;
+    }
+
+    private function isToolPrefix(string $text): bool
+    {
+        if ($text === '' || preg_match('/\A[A-Za-z0-9_]+$/', $text) !== 1) {
+            return false;
+        }
+        foreach ($this->toolNames as $name) {
+            if (strlen($text) < strlen($name) && strncasecmp($name, $text, strlen($text)) === 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function isPrefix(string $text, string $phrase): bool
+    {
+        $n = strlen($text);
+        if ($n === 0 || $n > strlen($phrase)) {
+            return false;
+        }
+        return strncasecmp($text, $phrase, $n) === 0;
+    }
+
+    private function jsonEnd(string $text, int $at): ?int
+    {
+        return $this->groupEnd($text, $at, '{', '}');
+    }
+
+    private function parenEnd(string $text, int $at): ?int
+    {
+        return $this->groupEnd($text, $at, '(', ')');
+    }
+
+    private function groupEnd(string $text, int $at, string $open, string $close): ?int
+    {
+        $length = strlen($text);
+        $depth = 0;
+        $quote = '';
+        $escape = false;
+        for ($i = $at; $i < $length; $i++) {
+            $ch = $text[$i];
+            if ($quote !== '') {
+                if ($escape) {
+                    $escape = false;
+                    continue;
+                }
+                if ($ch === '\\') {
+                    $escape = true;
+                    continue;
+                }
+                if ($ch === $quote) {
+                    $quote = '';
+                }
+                continue;
+            }
+            if ($ch === '"' || $ch === "'") {
+                $quote = $ch;
+                continue;
+            }
+            if ($ch === $open) {
+                $depth++;
+                continue;
+            }
+            if ($ch === $close) {
+                $depth--;
+                if ($depth === 0) {
+                    return $i + 1;
+                }
+            }
+        }
+        return null;
+    }
+}
+
 class RepeatLineGuard
 {
     private const LIMIT = 5;
@@ -425,16 +705,29 @@ class AgentRuntime
             $parser = new ToolStreamParser($this->toolNames());
             $markers = new OutputLineFilter();
             $noise = new ReplyNoiseFilter($this->toolNames());
+            $echo = new ToolEchoFilter($this->toolNames());
             $turnText = '';
             $guard = new RepeatLineGuard();
             $thinkingGuard = new RepeatLineGuard();
-            $show = function (string $text) use ($guard, $emit, $agent, &$visible, &$turnText): void {
-                $text = $guard->push($text);
+            $flushEcho = function () use ($echo, $emit, $agent, &$visible): void {
+                $text = $echo->finish();
                 if ($text === '') {
                     return;
                 }
                 $visible .= $text;
+                $emit(['type' => 'token', 'agent' => $agent, 'text' => $text]);
+            };
+            $show = function (string $text) use ($guard, $echo, $emit, $agent, &$visible, &$turnText): void {
+                $text = $guard->push($text);
+                if ($text === '') {
+                    return;
+                }
                 $turnText .= $text;
+                $text = $echo->push($text);
+                if ($text === '') {
+                    return;
+                }
+                $visible .= $text;
                 $emit(['type' => 'token', 'agent' => $agent, 'text' => $text]);
             };
             $toolNoted = false;
@@ -511,6 +804,7 @@ class AgentRuntime
                 $finishNoise();
                 $flushThinking(true);
                 $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
+                $flushEcho();
                 $this->db->setAgentStatus($agent, 'idle');
                 throw $e;
             } catch (OutputRepeated $e) {
@@ -519,6 +813,7 @@ class AgentRuntime
                 $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
                 $repeatGuard = $thinkingGuard->tripped ? $thinkingGuard : $guard;
                 $this->traceFilters($agent, $projectId, $markers, $noise, $repeatGuard);
+                $flushEcho();
                 if ($turnText !== '') {
                     $this->db->logAgent($agent, $projectId, 'thinking', $turnText);
                 }
@@ -531,6 +826,7 @@ class AgentRuntime
                 $emit(['type' => 'cpu', 'cpu' => true]);
                 $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
                 $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
+                $flushEcho();
                 if ($fallbackTries >= 1) {
                     $this->db->loop($agent, 'stop', 'context fallback · ' . $e->getMessage(), $projectId);
                     $this->db->setAgentStatus($agent, 'error');
@@ -569,8 +865,11 @@ class AgentRuntime
             $finishNoise();
             $rest = $guard->finish();
             if ($rest !== '') {
-                $visible .= $rest;
                 $turnText .= $rest;
+            }
+            $rest = ($rest === '' ? '' : $echo->push($rest)) . $echo->finish();
+            if ($rest !== '') {
+                $visible .= $rest;
                 $emit(['type' => 'token', 'agent' => $agent, 'text' => $rest]);
             }
             if ($turnText !== '') {
@@ -701,7 +1000,7 @@ class AgentRuntime
                     $skipCompact = true;
                     $visible = $this->withoutCalledATool($visible);
                     $messages[] = ['role' => 'assistant', 'content' => 'The tool already ran.'];
-                    $messages[] = ['role' => 'user', 'content' => 'Do not write "Called a tool." The tool result is above. Continue the task. If another tool is needed, call it now.'];
+                    $messages[] = ['role' => 'user', 'content' => 'Do not write "Called a tool." or paste the tool call. The tool result is above. Continue the task. If another tool is needed, call it now.'];
                     continue;
                 }
                 if ($agent === 'orchestrator' && $finishChecks < 2 && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop)) {
@@ -1273,7 +1572,8 @@ class AgentRuntime
 
     private function withoutCalledATool(string $text): string
     {
-        $clean = preg_replace('/Called a tool\.?/i', '', $text) ?? $text;
+        $clean = (new ToolEchoFilter($this->toolNames()))->strip($text);
+        $clean = preg_replace('/Called a tool\.?/i', '', $clean) ?? $clean;
         return trim(preg_replace('/[ \t]{2,}/', ' ', $clean) ?? $clean);
     }
 
