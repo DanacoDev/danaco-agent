@@ -395,6 +395,7 @@ class AgentRuntime
         $repeatTries = 0;
         $fallbackTries = 0;
         $finishChecks = 0;
+        $calledTries = 0;
         $skipCompact = false;
         $savedWritePath = '';
         $savedWriteBody = null;
@@ -694,6 +695,15 @@ class AgentRuntime
             }
             $retryOpen = 0;
             if (!$tail['tools']) {
+                if ($this->onlyCalledATool($turnText) && $calledTries < 4) {
+                    $calledTries++;
+                    $this->db->loop($agent, 'steer', 'called-a-tool · ' . $calledTries . '/4', $projectId);
+                    $skipCompact = true;
+                    $visible = $this->withoutCalledATool($visible);
+                    $messages[] = ['role' => 'assistant', 'content' => 'The tool already ran.'];
+                    $messages[] = ['role' => 'user', 'content' => 'Do not write "Called a tool." The tool result is above. Continue the task. If another tool is needed, call it now.'];
+                    continue;
+                }
                 if ($agent === 'orchestrator' && $finishChecks < 2 && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop)) {
                     $finishChecks++;
                     $this->db->loop($agent, 'steer', 'finish-check continue · ' . $finishChecks . '/2', $projectId);
@@ -715,9 +725,10 @@ class AgentRuntime
                 return $this->finishVisible($visible);
             }
             $finishChecks = 0;
-            $called = strip_chat_tags(strip_tool_markers($raw !== '' ? $raw : $turnText));
-            if (trim($called) === '') {
-                $called = 'Called a tool.';
+            $calledTries = 0;
+            $called = trim(strip_chat_tags(strip_tool_markers($raw !== '' ? $raw : $turnText)));
+            if ($called === '' || $this->onlyCalledATool($called)) {
+                $called = $this->calledTools($tail['tools']);
             }
             $messages[] = ['role' => 'assistant', 'content' => $called];
             $delegated = false;
@@ -1234,6 +1245,7 @@ class AgentRuntime
             'You wrote this line more than five times',
             'The job is not finished',
             'The scheduled task is not finished',
+            'Do not write "Called a tool."',
         ] as $prefix) {
             if (str_starts_with($content, $prefix)) {
                 return true;
@@ -1250,9 +1262,42 @@ class AgentRuntime
         return 'The job is not finished. You stopped before the work was done. If the last tool failed, fix that call and run it again. If you described a next step, do it now with a real tool call. Do not only describe it.';
     }
 
+    private function onlyCalledATool(string $text): bool
+    {
+        $text = trim($this->stripLeakedThink($text));
+        if ($text === '') {
+            return false;
+        }
+        return $this->withoutCalledATool($text) === '';
+    }
+
+    private function withoutCalledATool(string $text): string
+    {
+        $clean = preg_replace('/Called a tool\.?/i', '', $text) ?? $text;
+        return trim(preg_replace('/[ \t]{2,}/', ' ', $clean) ?? $clean);
+    }
+
+    private function calledTools(array $tools): string
+    {
+        $lines = [];
+        foreach ($tools as $tool) {
+            if (!is_array($tool)) {
+                continue;
+            }
+            $name = trim((string)($tool['name'] ?? ''));
+            if ($name === '') {
+                $name = 'tool';
+            }
+            $args = $tool['args'] ?? [];
+            $json = json_encode(is_array($args) ? $args : [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $lines[] = $name . ' ' . (is_string($json) ? $json : '{}');
+        }
+        return $lines === [] ? 'tool' : implode("\n", $lines);
+    }
+
     private function finishVisible(string $visible): string
     {
-        return trim($this->stripLeakedThink($visible));
+        return trim($this->stripLeakedThink($this->withoutCalledATool($visible)));
     }
 
     private function stripLeakedThink(string $text): string
