@@ -349,9 +349,14 @@ function sqlite_snapshot(string $path, string $database, string $root): void
     if (!is_file($path)) {
         return;
     }
+    sqlite_fold_wal($path);
     $backupDir = dirname($root) . '/.backups';
     if (!is_dir($backupDir) && !mkdir($backupDir, 0775, true) && !is_dir($backupDir)) {
         throw new RuntimeException('Could not create the database backup folder.');
+    }
+    $relative = 'database/' . basename($database);
+    if (sqlite_backup_matches($backupDir, basename($root), $relative, $path)) {
+        return;
     }
     $safe = preg_replace('/[^A-Za-z0-9._-]+/', '_', basename($database)) ?: 'database.db';
     $stored = date('Ymd_His') . '_' . $safe;
@@ -361,18 +366,66 @@ function sqlite_snapshot(string $path, string $database, string $root): void
     if (!copy($path, $backupDir . '/' . $stored)) {
         throw new RuntimeException('Could not back up ' . $database . ' before changing it.');
     }
+    clearstatcache(true, $backupDir . '/' . $stored);
+    $size = filesize($backupDir . '/' . $stored);
     $meta = [
-        'original' => basename($root) . '/database/' . basename($database),
+        'original' => basename($root) . '/' . $relative,
         'project_folder' => basename($root),
-        'relative_path' => 'database/' . basename($database),
+        'relative_path' => $relative,
         'backed_up_at' => date('c'),
         'filename' => basename($database),
         'stored_as' => $stored,
+        'size_bytes' => $size === false ? 0 : (int)$size,
     ];
     if (file_put_contents($backupDir . '/' . $stored . '.json', json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)) === false) {
         @unlink($backupDir . '/' . $stored);
         throw new RuntimeException('Could not save the database backup metadata.');
     }
+}
+
+function sqlite_fold_wal(string $path): void
+{
+    if (!is_file($path . '-wal')) {
+        return;
+    }
+    $db = sqlite_open($path);
+    $db->exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    $db = null;
+    clearstatcache(true, $path);
+}
+
+function sqlite_backup_matches(string $backupDir, string $projectFolder, string $relative, string $path): bool
+{
+    $latest = '';
+    $latestWhen = '';
+    foreach (scandir($backupDir) ?: [] as $name) {
+        if (!str_ends_with($name, '.json')) {
+            continue;
+        }
+        $meta = json_decode((string)file_get_contents($backupDir . '/' . $name), true);
+        if (!is_array($meta)) {
+            continue;
+        }
+        if ((string)($meta['project_folder'] ?? '') !== $projectFolder || (string)($meta['relative_path'] ?? '') !== $relative) {
+            continue;
+        }
+        $when = (string)($meta['backed_up_at'] ?? '');
+        if ($latestWhen !== '' && strcmp($when, $latestWhen) <= 0) {
+            continue;
+        }
+        $stored = basename((string)($meta['stored_as'] ?? ''));
+        if ($stored === '' || !is_file($backupDir . '/' . $stored)) {
+            continue;
+        }
+        $latest = $backupDir . '/' . $stored;
+        $latestWhen = $when;
+    }
+    if ($latest === '') {
+        return false;
+    }
+    $current = hash_file('sha256', $path);
+    $saved = hash_file('sha256', $latest);
+    return is_string($current) && $current !== '' && $current === $saved;
 }
 
 function sqlite_table_exists(PDO $db, string $table): bool

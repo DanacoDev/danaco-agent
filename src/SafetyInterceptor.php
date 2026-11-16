@@ -24,7 +24,7 @@ class SafetyInterceptor
             throw new RuntimeException('Could not create directory.');
         }
         $backedUp = false;
-        if (is_file($target)) {
+        if (is_file($target) && !$this->sameBytes($target, $content)) {
             $this->backupExisting($projectFolder, $relativePath, $target);
             $backedUp = true;
         }
@@ -655,19 +655,81 @@ class SafetyInterceptor
         if (!is_dir($dir)) {
             mkdir($dir, 0775, true);
         }
+        $relativePath = $this->cleanRelative($relativePath);
+        if ($this->latestBackupMatches($dir, $projectFolder, $relativePath, $target)) {
+            return;
+        }
         $base = $this->uniqueName($dir, basename($target));
         if (!copy($target, $dir . '/' . $base)) {
             throw new RuntimeException('Could not back up file.');
         }
+        clearstatcache(true, $dir . '/' . $base);
         $meta = [
-            'original' => $projectFolder . '/' . $this->cleanRelative($relativePath),
+            'original' => $projectFolder . '/' . $relativePath,
             'project_folder' => $projectFolder,
-            'relative_path' => $this->cleanRelative($relativePath),
+            'relative_path' => $relativePath,
             'backed_up_at' => date('c'),
             'filename' => basename($target),
             'stored_as' => $base,
+            'size_bytes' => $this->byteSize($dir . '/' . $base),
         ];
         file_put_contents($dir . '/' . $base . '.json', json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+    }
+
+    private function sameBytes(string $path, string $content): bool
+    {
+        $current = hash_file('sha256', $path);
+        return is_string($current) && $current !== '' && $current === hash('sha256', $content);
+    }
+
+    private function latestBackupMatches(string $dir, string $projectFolder, string $relativePath, string $target): bool
+    {
+        $latest = $this->latestBackupFile($dir, $projectFolder, $relativePath);
+        if ($latest === '') {
+            return false;
+        }
+        $current = hash_file('sha256', $target);
+        $saved = hash_file('sha256', $latest);
+        return is_string($current) && $current !== '' && $current === $saved;
+    }
+
+    private function latestBackupFile(string $dir, string $projectFolder, string $relativePath): string
+    {
+        $latest = '';
+        $latestWhen = '';
+        foreach (scandir($dir) ?: [] as $name) {
+            if (!str_ends_with($name, '.json')) {
+                continue;
+            }
+            $meta = json_decode((string)file_get_contents($dir . '/' . $name), true);
+            if (!is_array($meta)) {
+                continue;
+            }
+            if ((string)($meta['project_folder'] ?? '') !== $projectFolder || (string)($meta['relative_path'] ?? '') !== $relativePath) {
+                continue;
+            }
+            $when = (string)($meta['backed_up_at'] ?? '');
+            if ($latestWhen !== '' && strcmp($when, $latestWhen) <= 0) {
+                continue;
+            }
+            $stored = basename((string)($meta['stored_as'] ?? ''));
+            if ($stored === '' || !is_file($dir . '/' . $stored)) {
+                continue;
+            }
+            $latest = $dir . '/' . $stored;
+            $latestWhen = $when;
+        }
+        return $latest;
+    }
+
+    private function byteSize(string $path): int
+    {
+        clearstatcache(true, $path);
+        if (is_file($path)) {
+            $size = filesize($path);
+            return $size === false ? 0 : (int)$size;
+        }
+        return 0;
     }
 
     private function vaultDir(string $kind): string
@@ -714,7 +776,7 @@ class SafetyInterceptor
     {
         $path = $this->vaultDir($kind) . '/' . $storedAs;
         if (is_file($path)) {
-            return (int)(filesize($path) ?: 0);
+            return $this->byteSize($path);
         }
         if (!is_dir($path) || is_link($path)) {
             return 0;
