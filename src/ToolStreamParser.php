@@ -85,9 +85,15 @@ class ToolStreamParser
                         continue;
                     }
                 }
+                $drop = $this->findDropMarker($this->pending);
                 $open = $this->findToolMarker($this->pending, true, $holdLonger);
                 $close = $this->findToolMarker($this->pending, false, $holdLonger);
                 $braceAt = strpos($this->pending, '{');
+                if ($drop !== null && ($open === null || $drop['at'] <= $open['at']) && ($close === null || $drop['at'] <= $close['at']) && ($braceAt === false || $drop['at'] <= $braceAt)) {
+                    $emitted .= substr($this->pending, 0, $drop['at']);
+                    $this->pending = substr($this->pending, $drop['at'] + strlen($drop['marker']));
+                    continue;
+                }
                 if ($close !== null && ($open === null || $close['at'] <= $open['at']) && ($braceAt === false || $close['at'] <= $braceAt)) {
                     $emitted .= substr($this->pending, 0, $close['at']);
                     $this->pending = substr($this->pending, $close['at'] + strlen($close['marker']));
@@ -448,6 +454,33 @@ class ToolStreamParser
         return $best;
     }
 
+    private function findDropMarker(string $text): ?array
+    {
+        if (preg_match_all('/<{1,2}\/?[^<>\n]{0,80}>{1,2}|\[{1,2}\/?[^\[\]\n]{0,80}\]{1,2}/', $text, $matches, PREG_OFFSET_CAPTURE) < 1) {
+            return null;
+        }
+        $bestAt = null;
+        $best = '';
+        foreach ($matches[0] as $hit) {
+            if (!is_array($hit)) {
+                continue;
+            }
+            $raw = (string)$hit[0];
+            $at = (int)$hit[1];
+            if (tool_marker_kind($raw) !== 'drop') {
+                continue;
+            }
+            if ($bestAt === null || $at < $bestAt || ($at === $bestAt && strlen($raw) > strlen($best))) {
+                $bestAt = $at;
+                $best = $raw;
+            }
+        }
+        if ($bestAt === null) {
+            return null;
+        }
+        return ['at' => $bestAt, 'marker' => $best];
+    }
+
     private function findGenericMarker(string $text, bool $opener): ?array
     {
         if (preg_match_all('/<{1,2}\/?[^<>\n]{0,80}>{1,2}|\[{1,2}\/?[^\[\]\n]{0,80}\]{1,2}/', $text, $matches, PREG_OFFSET_CAPTURE) < 1) {
@@ -551,7 +584,8 @@ class ToolStreamParser
 
     private function invokeNameFrom(string $marker): string
     {
-        if (preg_match('/^<invoke\b[^>]*\bname\s*=\s*(["\'])([^"\']+)\1/i', $marker, $match) !== 1) {
+        $flat = str_replace("\u{FF5C}", '|', $marker);
+        if (preg_match('/^<\s*(?:\|dsml\|)?\s*invoke\b[^>]*\bname\s*=\s*(["\'])([^"\']+)\1/i', $flat, $match) !== 1) {
             return '';
         }
         return trim($match[2]);
@@ -564,7 +598,8 @@ class ToolStreamParser
             return null;
         }
         $args = [];
-        if (preg_match_all('/<parameter\b[^>]*\bname\s*=\s*(["\'])([^"\']+)\1[^>]*>([\s\S]*?)<\/parameter>/i', $body, $matches, PREG_SET_ORDER) > 0) {
+        $flat = str_replace("\u{FF5C}", '|', $body);
+        if (preg_match_all('/<(?:\|dsml\|)?parameter\b[^>]*\bname\s*=\s*(["\'])([^"\']+)\1[^>]*>([\s\S]*?)<\/(?:\|dsml\|)?parameter>/i', $flat, $matches, PREG_SET_ORDER) > 0) {
             foreach ($matches as $match) {
                 $key = trim((string)$match[2]);
                 if ($key !== '') {
