@@ -325,13 +325,8 @@ header('X-Danaco: 1');
                 </div>
                 <p v-if="task.result" class="task-result">{{ task.result }}</p>
                 <ul v-if="(task.subtasks || []).length" class="subtasks">
-                  <li v-for="sub in task.subtasks" :key="sub.id" class="subtask">
-                    <label class="status-pill" :class="'is-' + subtaskStatus(sub)">
-                      <select :value="subtaskStatus(sub)" aria-label="Step status" @change="setSubtaskStatus(task, sub, $event.target.value)">
-                        <option value="in_progress">In progress</option>
-                        <option value="done">Done</option>
-                      </select>
-                    </label>
+                  <li v-for="sub in task.subtasks" :key="sub.id" class="subtask" :class="{ 'is-done': subtaskStatus(sub) === 'done' }">
+                    <button class="subtask-check" type="button" :aria-pressed="subtaskStatus(sub) === 'done'" aria-label="Mark step done" @click="setSubtaskStatus(task, sub, subtaskStatus(sub) === 'done' ? 'in_progress' : 'done')"></button>
                     <input class="subtask-title" :value="sub.title" aria-label="Step" @change="saveSubtaskTitle(task, sub, $event.target.value)">
                     <button class="task-edit" type="button" aria-label="Remove step" @click="deleteSubtask(task, sub)">
                       <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>
@@ -390,16 +385,16 @@ header('X-Danaco: 1');
                 <article v-for="task in archivedVisible()" :key="'done'+task.id" class="task-card is-archive" @click="toggleArchive(task)">
                   <header class="task-row">
                     <h3 class="task-title">{{ task.title }}</h3>
+                    <span class="task-tags">
+                      <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
+                      <span class="task-tag">#{{ task.id }}</span>
+                    </span>
                     <span class="task-tools">
                       <button class="task-edit" type="button" aria-label="Delete task" @click.stop="deleteTask(task)">
                         <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
                       </button>
                     </span>
                   </header>
-                  <div class="task-tags">
-                    <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
-                    <span class="task-tag">#{{ task.id }}</span>
-                  </div>
                   <p v-if="openArchive === task.id && task.result" class="task-result is-full">{{ task.result }}</p>
                 </article>
               </div>

@@ -346,10 +346,20 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
 }
 .subtasks { list-style: none; margin: 8px 0 0; padding: 0 0 0 18px; }
 .subtask { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.subtask-check {
+  position: relative; width: 16px; height: 16px; flex: 0 0 auto; padding: 0;
+  border-radius: 50%; border: 1.5px solid var(--muted); background: transparent; appearance: none;
+}
+.subtask-check[aria-pressed="true"] { border-color: #2ea44f; background: #2ea44f; }
+.subtask-check[aria-pressed="true"]::after {
+  content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px;
+  border: solid #fff; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
+}
 .subtask-title {
   flex: 1; min-width: 0; background: transparent; border: 0; padding: 2px 0;
   font-size: 0.84rem; color: var(--text);
 }
+.subtask.is-done .subtask-title { color: var(--muted); text-decoration: line-through; }
 .subtask-add { display: flex; gap: 8px; margin: 8px 0 0 18px; }
 .subtask-add input {
   flex: 1; min-width: 0; background: #0e0e12; border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px;
@@ -363,6 +373,10 @@ mark.chat-hit.is-current { background: var(--gold); color: var(--gold-ink); }
   display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
 }
 .task-card.is-archive { cursor: pointer; }
+.task-card.is-archive .task-row { flex-wrap: nowrap; justify-content: flex-start; }
+.task-card.is-archive .task-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-card.is-archive .task-tags { margin: 0 0 0 auto; flex: 0 0 auto; flex-wrap: nowrap; }
+.task-card.is-archive .task-tools { margin-left: 0; }
 .task-result.is-full {
   display: block; -webkit-line-clamp: unset; overflow: visible; white-space: pre-wrap;
 }
