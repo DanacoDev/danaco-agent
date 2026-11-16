@@ -790,10 +790,9 @@ header('X-Danaco: 1');
                     <option value="">Not set</option>
                     <option value="yes">Yes</option>
                     <option value="no">No</option>
-                    <option value="unsure">Not sure</option>
                   </select>
                 </label>
-                <p class="hint">Yes if the organisation is in the EU/EEA, or if the system is put into service / affects people there in a way that brings the Act into scope. You decide; Danaco does not geo-detect.</p>
+                <p class="hint">Yes if the organisation is in the EU/EEA, or if the system is put into service / affects people there in a way that brings the Act into scope.</p>
                 <p class="hint setup-compliance-link"><button class="retry-link" type="button" @click="openCompliance">Compliance &amp; documentation</button></p>
               </div>
               <div class="setup-box">
