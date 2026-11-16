@@ -1001,6 +1001,13 @@ class AgentRuntime
             $retryOpen = 0;
             if (!$tail['tools']) {
                 if ($this->onlyCalledATool($turnText)) {
+                    $failed = $this->lastToolFailed($messages);
+                    if ($failed && $calledTries >= 1) {
+                        $this->db->loop($agent, 'stop', 'called-a-tool · failed tool', $projectId);
+                        $this->db->setAgentStatus($agent, 'completed');
+                        $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
+                        return 'Stopped. The last tool call failed, so it was not run again.';
+                    }
                     if ($calledTries >= 4) {
                         $this->db->loop($agent, 'stop', 'called-a-tool · retry limit', $projectId);
                         $this->db->setAgentStatus($agent, 'completed');
@@ -1008,11 +1015,17 @@ class AgentRuntime
                         return trim($this->narrationResult($messages));
                     }
                     $calledTries++;
-                    $this->db->loop($agent, 'steer', 'called-a-tool · ' . $calledTries . '/4', $projectId);
                     $skipCompact = true;
                     $visible = $this->withoutCalledATool($visible);
-                    $messages[] = ['role' => 'assistant', 'content' => 'The tool already ran.'];
-                    $messages[] = ['role' => 'user', 'content' => 'Do not write "Called a tool." or "The tool already ran." or paste the tool call. The tool result is above. Continue the task. If another tool is needed, call it now.'];
+                    if ($failed) {
+                        $this->db->loop($agent, 'steer', 'called-a-tool · failed · 1/1', $projectId);
+                        $messages[] = ['role' => 'assistant', 'content' => 'The last tool call failed.'];
+                        $messages[] = ['role' => 'user', 'content' => 'The last tool failed. Do not say that it ran. Emit one corrected tool call now:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>'];
+                    } else {
+                        $this->db->loop($agent, 'steer', 'called-a-tool · ' . $calledTries . '/4', $projectId);
+                        $messages[] = ['role' => 'assistant', 'content' => 'The tool already ran.'];
+                        $messages[] = ['role' => 'user', 'content' => 'Do not write "Called a tool." or "The tool already ran." or paste the tool call. The tool result is above. Continue the task. If another tool is needed, call it now.'];
+                    }
                     continue;
                 }
                 if ($agent === 'orchestrator' && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop)) {
@@ -1561,6 +1574,7 @@ class AgentRuntime
             'The job is not finished',
             'The scheduled task is not finished',
             'Do not write "Called a tool."',
+            'The last tool failed.',
         ] as $prefix) {
             if (str_starts_with($content, $prefix)) {
                 return true;
@@ -1575,6 +1589,29 @@ class AgentRuntime
             return 'The scheduled task is not finished. Nobody is here to answer. If the last tool failed, fix that call and run it again. Choose the sensible option and finish the task. Call the tool that is still needed. Do not only describe it.';
         }
         return 'The job is not finished. You stopped before the work was done. If the last tool failed, fix that call and run it again. If you described a next step, do it now with a real tool call. Do not only describe it.';
+    }
+
+    private function lastToolFailed(array $messages): bool
+    {
+        for ($i = count($messages) - 1; $i >= 0; $i--) {
+            $message = $messages[$i];
+            if (!is_array($message) || ($message['role'] ?? '') !== 'user') {
+                continue;
+            }
+            $content = ltrim((string)($message['content'] ?? ''));
+            if (!str_starts_with($content, 'TOOL RESULT ')) {
+                continue;
+            }
+            $body = $content;
+            $break = strpos($content, "\n");
+            if ($break !== false) {
+                $body = ltrim(substr($content, $break + 1));
+            }
+            return str_starts_with($body, 'Task not found')
+                || str_starts_with($body, 'Error:')
+                || str_starts_with($body, 'Unknown');
+        }
+        return false;
     }
 
     private function onlyCalledATool(string $text): bool

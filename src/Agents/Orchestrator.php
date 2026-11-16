@@ -648,10 +648,11 @@ Never invent another call format. These do nothing:
 : filesystem
 : wiki/NOTES.md
 filesystem
+read {"path":"..."}
 <task_breakdown>...</task_breakdown>
 <delegate><agent>writer</agent></delegate>
 Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> block runs it.
-Do not print a tool call in the reply. Draft XML such as <delegate> is thinking, not something the user should read.
+Do not print a tool call in the reply. Do not write read {"path":"..."} or a tool name followed by a JSON object. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_memory with action write first, then answer. A project file is written by a subagent with filesystem action write.
 
 {$pdfNote}These are the skills at your disposal. Read each for further instructions
@@ -1384,7 +1385,11 @@ TXT;
                 return 'Created task #' . $task['id'] . ' in ' . $board->column($task) . ': ' . $task['title'];
             }
             if ($action === 'move' || $action === 'update') {
-                $task = $board->move((int)($args['id'] ?? 0), $args, false);
+                $id = $this->kanbanCardId($projectId, $args);
+                if ($id <= 0) {
+                    return 'Task not found.' . "\n" . $this->kanbanOpenCards($projectId);
+                }
+                $task = $board->move($id, $args, false);
                 $held = (int)($task['held'] ?? 0) === 1 ? ' The card stays held and will not start.' : '';
                 return 'Moved task #' . $task['id'] . ' to ' . $board->column($task) . ': ' . $task['title'] . $held;
             }
@@ -1403,6 +1408,69 @@ TXT;
             return $e->getMessage();
         }
         return 'Unknown kanban action. Use list, create, move, or delete.';
+    }
+
+    private function kanbanCardId(int $projectId, array $args): int
+    {
+        $id = $this->kanbanId($args);
+        if ($id > 0) {
+            $task = $this->db->task($id);
+            if ($task && (int)$task['project_id'] === $projectId) {
+                return $id;
+            }
+        }
+        $title = trim((string)($args['title'] ?? ''));
+        if ($title === '') {
+            return 0;
+        }
+        foreach ($this->db->tasks($projectId) as $task) {
+            if ((string)($task['status'] ?? '') === 'done') {
+                continue;
+            }
+            if (strcasecmp(trim((string)($task['title'] ?? '')), $title) === 0) {
+                return (int)$task['id'];
+            }
+        }
+        return 0;
+    }
+
+    private function kanbanId(array $args): int
+    {
+        foreach (['id', 'task_id', 'task'] as $key) {
+            if (!array_key_exists($key, $args)) {
+                continue;
+            }
+            $id = $this->kanbanDigits($args[$key]);
+            if ($id > 0) {
+                return $id;
+            }
+        }
+        return 0;
+    }
+
+    private function kanbanDigits(mixed $raw): int
+    {
+        if (is_int($raw) || is_float($raw)) {
+            $id = (int)$raw;
+            return $id > 0 ? $id : 0;
+        }
+        $text = trim((string)$raw);
+        if ($text !== '' && preg_match('/(\d+)/', $text, $found)) {
+            return (int)$found[1];
+        }
+        return 0;
+    }
+
+    private function kanbanOpenCards(int $projectId): string
+    {
+        $lines = [];
+        foreach ($this->db->tasks($projectId) as $task) {
+            if ((string)($task['status'] ?? '') === 'done') {
+                continue;
+            }
+            $lines[] = '#' . (int)$task['id'] . ' ' . trim((string)($task['title'] ?? ''));
+        }
+        return $lines === [] ? 'No open cards.' : implode("\n", $lines);
     }
 
     private function uploadsFolder(string $folder, string $path): string
