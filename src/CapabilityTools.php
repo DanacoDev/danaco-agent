@@ -249,6 +249,8 @@ class CapabilityTools
         }
         $refusals = [];
         $sawEmpty = false;
+        $sawRows = false;
+        $partial = null;
         $terms = $this->queryTerms($query);
         foreach (['DuckDuckGo', 'Bing', 'Google'] as $name) {
             if ($name === 'Bing') {
@@ -261,11 +263,19 @@ class CapabilityTools
             $shown = $this->matchingResults($terms, $found['results']);
             $blocks = $this->searchBlocks($shown);
             if ($blocks) {
-                $blocks[] = 'Results from ' . $name . ($locale['market'] !== '' ? ' (' . $locale['market'] . ')' : '') . '.';
-                $blocks[] = 'Read a page with fetch_url. The result lists links you can open next.';
-                return clip_text(implode("\n\n", $blocks), 4000);
+                return $this->searchAnswer($query, $name, $locale, $blocks, false, []);
             }
-            if ($found['status'] === 'results' || $found['results']) {
+            if ($found['results']) {
+                $sawRows = true;
+                if ($partial === null) {
+                    $ranked = $this->partialResults($terms, $found['results']);
+                    $rankedBlocks = $this->searchBlocks($ranked['rows']);
+                    if ($rankedBlocks) {
+                        $partial = $this->searchAnswer($query, $name, $locale, $rankedBlocks, true, $ranked['missing']);
+                    }
+                }
+                $found['status'] = 'empty';
+            } elseif ($found['status'] === 'results') {
                 $found['status'] = 'empty';
             }
             if ($found['status'] === 'empty') {
@@ -273,6 +283,9 @@ class CapabilityTools
                 continue;
             }
             $refusals[] = $this->engineMiss($name, $found);
+        }
+        if ($partial !== null) {
+            return $partial;
         }
         if (!$sawEmpty) {
             $instant = $this->instantAnswer($query, $locale);
@@ -285,7 +298,29 @@ class CapabilityTools
             $home = 'https://' . strtolower($match[1]) . '/';
             return "No search hits for that query. Opened {$home} instead.\n\n" . $this->fetchUrl($home);
         }
+        if ($sawRows) {
+            return 'Query: ' . $query . "\nThe provider returned pages, and none contained these words. Open a URL you already have with fetch_url. Do not search again.";
+        }
         return $this->emptySearchMessage($query);
+    }
+
+    private function searchAnswer(string $query, string $engine, array $locale, array $blocks, bool $partial, array $missing): string
+    {
+        $head = 'Query: ' . $query;
+        if ($partial) {
+            $head .= "\nThese pages do not contain every word.";
+            if ($missing !== []) {
+                $head .= ' Missing: ' . implode(', ', $missing) . '.';
+            }
+            $head .= "\nOpen the best link with fetch_url. Do not search again.";
+        }
+        array_unshift($blocks, $head);
+        $market = $locale['market'] !== '' ? ' (' . $locale['market'] . ')' : '';
+        $blocks[] = 'Results from ' . $engine . $market . '.';
+        if (!$partial) {
+            $blocks[] = 'Read a page with fetch_url. The result lists links you can open next.';
+        }
+        return clip_text(implode("\n\n", $blocks), 4000);
     }
 
     private function searchBlocks(array $results): array
@@ -393,6 +428,44 @@ class CapabilityTools
             unset($row['_hit']);
         }
         return $kept;
+    }
+
+    private function partialResults(array $terms, array $results): array
+    {
+        $ranked = [];
+        foreach ($results as $row) {
+            $have = [];
+            foreach ($terms as $term) {
+                if ($this->resultTermScore([$term], [$row]) === 1) {
+                    $have[] = $term;
+                }
+            }
+            if ($have === []) {
+                continue;
+            }
+            $row['_hit'] = count($have);
+            $row['_have'] = $have;
+            $ranked[] = $row;
+        }
+        usort($ranked, static fn(array $a, array $b): int => ($b['_hit'] ?? 0) <=> ($a['_hit'] ?? 0));
+        $seen = [];
+        foreach ($ranked as $row) {
+            foreach ($row['_have'] as $term) {
+                $seen[$term] = true;
+            }
+        }
+        $missing = [];
+        foreach ($terms as $term) {
+            if (!isset($seen[$term])) {
+                $missing[] = $term;
+            }
+        }
+        $rows = [];
+        foreach ($ranked as $row) {
+            unset($row['_hit'], $row['_have']);
+            $rows[] = $row;
+        }
+        return ['rows' => $rows, 'missing' => $missing];
     }
 
     private function engineMiss(string $name, array $found): string
@@ -1192,6 +1265,10 @@ class CapabilityTools
     private function fetchUrl(string $url): string
     {
         $url = $this->normalizeUrl($url);
+        $direct = $this->githubDirect($url);
+        if ($direct !== null) {
+            return $direct;
+        }
         $parts = parse_url($url);
         $scheme = strtolower((string)($parts['scheme'] ?? ''));
         $host = (string)($parts['host'] ?? '');
@@ -1211,7 +1288,165 @@ class CapabilityTools
         if ($feed !== '') {
             return $feed;
         }
-        return $this->pageText($body, $pageUrl);
+        $text = $this->pageText($body, $pageUrl);
+        $shell = $this->githubShell($url, $text);
+        if ($shell !== null) {
+            return $shell;
+        }
+        return $text;
+    }
+
+    private function githubDirect(string $url): ?string
+    {
+        $repo = $this->githubPath($url);
+        if ($repo === null) {
+            return null;
+        }
+        if ($repo['kind'] === 'topic') {
+            return $this->githubTopic($repo['topic']);
+        }
+        if ($repo['kind'] === 'blob') {
+            return $this->githubRaw($repo['owner'], $repo['repo'], $repo['branch'], $repo['file']);
+        }
+        if ($repo['kind'] === 'repo') {
+            return $this->githubReadme($repo['owner'], $repo['repo']);
+        }
+        return null;
+    }
+
+    private function githubShell(string $url, string $text): ?string
+    {
+        if (strlen($text) >= 1800) {
+            return null;
+        }
+        $repo = $this->githubPath($url);
+        if ($repo === null || $repo['kind'] !== 'shell') {
+            return null;
+        }
+        return $this->githubReadme($repo['owner'], $repo['repo']);
+    }
+
+    private function githubPath(string $url): ?array
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts)) {
+            return null;
+        }
+        $host = strtolower((string)($parts['host'] ?? ''));
+        if (str_starts_with($host, 'www.')) {
+            $host = substr($host, 4);
+        }
+        if ($host !== 'github.com') {
+            return null;
+        }
+        $bits = array_values(array_filter(explode('/', trim((string)($parts['path'] ?? ''), '/')), static fn(string $bit): bool => $bit !== ''));
+        if (count($bits) >= 2 && strtolower($bits[0]) === 'topics' && $this->githubName($bits[1])) {
+            return ['kind' => 'topic', 'topic' => $bits[1]];
+        }
+        if (count($bits) < 2 || !$this->githubName($bits[0]) || !$this->githubName($bits[1]) || $this->githubReserved($bits[0])) {
+            return null;
+        }
+        if (count($bits) === 2) {
+            return ['kind' => 'repo', 'owner' => $bits[0], 'repo' => $bits[1]];
+        }
+        if (count($bits) >= 5 && strtolower($bits[2]) === 'blob' && $this->githubName($bits[3])) {
+            return [
+                'kind' => 'blob',
+                'owner' => $bits[0],
+                'repo' => $bits[1],
+                'branch' => $bits[3],
+                'file' => implode('/', array_slice($bits, 4)),
+            ];
+        }
+        return ['kind' => 'shell', 'owner' => $bits[0], 'repo' => $bits[1]];
+    }
+
+    private function githubName(string $name): bool
+    {
+        return (bool)preg_match('/^[A-Za-z0-9_.-]+$/', $name);
+    }
+
+    private function githubReserved(string $name): bool
+    {
+        return in_array(strtolower($name), [
+            'topics', 'features', 'login', 'signup', 'settings', 'explore', 'marketplace', 'sponsors',
+            'about', 'pricing', 'security', 'orgs', 'organizations', 'notifications', 'new', 'codespaces',
+            'copilot', 'account', 'search', 'trending', 'collections', 'events', 'issues', 'pulls',
+            'readme', 'apps', 'customer-stories', 'enterprise', 'team', 'resources', 'solutions',
+            'why-github', 'git', 'pages', 'community', 'education', 'nonprofit', 'join', 'users', 'site',
+        ], true);
+    }
+
+    private function githubReadme(string $owner, string $repo): string
+    {
+        foreach (['main', 'master'] as $branch) {
+            $text = $this->githubFile($owner, $repo, $branch, 'README.md');
+            if ($text !== null) {
+                return 'README from ' . $owner . '/' . $repo . ' (' . $branch . ').' . "\n\n" . $text;
+            }
+        }
+        return 'The GitHub README could not be read for ' . $owner . '/' . $repo . '.';
+    }
+
+    private function githubRaw(string $owner, string $repo, string $branch, string $file): string
+    {
+        $text = $this->githubFile($owner, $repo, $branch, $file);
+        if ($text === null) {
+            return 'The GitHub file could not be read: ' . $owner . '/' . $repo . ' ' . $file . '.';
+        }
+        return 'File from ' . $owner . '/' . $repo . ' (' . $branch . ') ' . $file . '.' . "\n\n" . $text;
+    }
+
+    private function githubFile(string $owner, string $repo, string $branch, string $file): ?string
+    {
+        $segments = array_map('rawurlencode', explode('/', $file));
+        $url = 'https://raw.githubusercontent.com/' . rawurlencode($owner) . '/' . rawurlencode($repo) . '/' . rawurlencode($branch) . '/' . implode('/', $segments);
+        $meta = [];
+        $final = $url;
+        $body = $this->request($url, 0, null, $final, $meta);
+        if ((int)($meta['code'] ?? 0) !== 200 || trim($body) === '') {
+            return null;
+        }
+        return clip_text($body, 8000);
+    }
+
+    private function githubTopic(string $topic): string
+    {
+        $url = 'https://api.github.com/search/repositories?q=' . rawurlencode('topic:' . $topic) . '&per_page=10&sort=stars';
+        $meta = [];
+        $final = $url;
+        $body = $this->request($url, 0, null, $final, $meta, ['Accept: application/vnd.github+json']);
+        $data = json_decode($body, true);
+        $items = is_array($data) ? ($data['items'] ?? null) : null;
+        if ((int)($meta['code'] ?? 0) !== 200 || !is_array($items)) {
+            return 'The GitHub topic list could not be read for ' . $topic . '.';
+        }
+        $blocks = ['GitHub topic ' . $topic . '.'];
+        $n = 0;
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $name = trim((string)($item['full_name'] ?? ''));
+            $link = trim((string)($item['html_url'] ?? ''));
+            if ($name === '' || $link === '') {
+                continue;
+            }
+            $n++;
+            $block = $n . '. ' . $name . "\n" . $link;
+            $about = trim((string)($item['description'] ?? ''));
+            if ($about !== '') {
+                $block .= "\n" . $about;
+            }
+            $blocks[] = $block;
+            if ($n >= 10) {
+                break;
+            }
+        }
+        if ($n === 0) {
+            return 'The GitHub topic ' . $topic . ' had no repositories.';
+        }
+        return clip_text(implode("\n\n", $blocks), 8000);
     }
 
     private function looksLikeFeed(string $body): bool
@@ -1572,15 +1807,21 @@ class CapabilityTools
 
     private function requestHeaders(array $extraHeaders): array
     {
-        $headers = ['Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'];
+        $headers = [];
+        $accept = 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
         $language = 'Accept-Language: en,sv;q=0.8';
         foreach ($extraHeaders as $header) {
             if (stripos($header, 'Accept-Language:') === 0) {
                 $language = $header;
                 continue;
             }
+            if (stripos($header, 'Accept:') === 0) {
+                $accept = $header;
+                continue;
+            }
             $headers[] = $header;
         }
+        array_unshift($headers, $accept);
         $headers[] = $language;
         return $headers;
     }

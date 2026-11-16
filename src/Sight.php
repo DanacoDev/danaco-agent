@@ -254,7 +254,7 @@ class Sight
         }
         $browser = self::browser();
         if ($browser === '') {
-            return 'Chromium is not installed, so that page cannot be opened.';
+            return 'The headless browser is not available. Use fetch_url for this page.';
         }
         $dir = sys_get_temp_dir() . '/danaco-browse-' . bin2hex(random_bytes(4));
         if (!self::prepareDir($dir)) {
@@ -279,12 +279,16 @@ class Sight
 
     private static function browser(): string
     {
+        foreach (self::ownedBrowsers() as $path) {
+            if (self::usableBrowser($path)) {
+                return $path;
+            }
+        }
         $fixed = [
             '/usr/bin/chromium',
             '/usr/bin/chromium-browser',
             '/usr/bin/google-chrome-stable',
             '/usr/bin/google-chrome',
-            '/snap/bin/chromium',
         ];
         if (PHP_OS_FAMILY === 'Darwin') {
             $fixed = [
@@ -296,23 +300,63 @@ class Sight
         }
         $found = [];
         foreach ($fixed as $path) {
-            if (is_executable($path)) {
+            if (self::usableBrowser($path)) {
                 $found[] = $path;
             }
         }
         foreach (['chromium', 'chromium-browser', 'google-chrome-stable', 'google-chrome'] as $name) {
             $which = Process::run(['/bin/sh', '-c', 'command -v ' . $name], null, null, 5);
             $path = trim($which['stdout']);
-            if ($which['code'] === 0 && $path !== '' && !str_contains($path, "\n") && is_executable($path)) {
+            if ($which['code'] === 0 && $path !== '' && !str_contains($path, "\n") && self::usableBrowser($path)) {
                 $found[] = $path;
             }
         }
-        foreach ($found as $path) {
-            if (!str_contains($path, '/snap/')) {
-                return $path;
+        return $found[0] ?? '';
+    }
+
+    private static function ownedBrowsers(): array
+    {
+        $root = dirname(__DIR__) . '/data/browser';
+        if (!is_dir($root)) {
+            return [];
+        }
+        $found = [];
+        foreach (scandir($root) ?: [] as $name) {
+            if ($name === '.' || $name === '..') {
+                continue;
+            }
+            $dir = $root . '/' . $name;
+            if (!is_dir($dir)) {
+                continue;
+            }
+            foreach (['chrome-headless-shell', 'chrome'] as $bin) {
+                $path = $dir . '/' . $bin;
+                if (is_file($path)) {
+                    $found[] = $path;
+                }
             }
         }
-        return $found[0] ?? '';
+        return $found;
+    }
+
+    private static function usableBrowser(string $path): bool
+    {
+        if ($path === '' || !is_executable($path) || str_contains($path, '/snap/')) {
+            return false;
+        }
+        $handle = @fopen($path, 'rb');
+        if (!is_resource($handle)) {
+            return false;
+        }
+        $head = fread($handle, 4000);
+        fclose($handle);
+        if (!is_string($head) || $head === '') {
+            return false;
+        }
+        if (str_starts_with($head, '#!') && preg_match('/\bsnap\b/', $head)) {
+            return false;
+        }
+        return true;
     }
 
     private static function freePort(): int
@@ -430,6 +474,9 @@ class Sight
         });
         if (!str_contains($ran['stdout'], '<')) {
             if ($ran['error'] !== '') {
+                if (str_contains($ran['error'], 'not a snap cgroup')) {
+                    throw new RuntimeException('The headless browser is not available. Use fetch_url for this page.');
+                }
                 throw new RuntimeException('The page could not be opened. ' . clip_text($ran['error'], 300));
             }
             return '';
@@ -440,9 +487,10 @@ class Sight
     private static function runBrowser(string $browser, string $dir, array $tail, callable $done): array
     {
         $off = (PHP_OS_FAMILY === 'Linux' && function_exists('posix_geteuid') && posix_geteuid() === 0) || str_contains($browser, '/snap/');
-        $plans = [['--headless=new', $off]];
+        $headless = str_contains($browser, 'chrome-headless-shell') ? '--headless' : '--headless=new';
+        $plans = [[$headless, $off]];
         if (PHP_OS_FAMILY === 'Linux' && !$off) {
-            $plans[] = ['--headless=new', true];
+            $plans[] = [$headless, true];
         }
         $last = ['stdout' => '', 'error' => '', 'timed_out' => false];
         $seen = [];

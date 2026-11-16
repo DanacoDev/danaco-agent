@@ -598,6 +598,9 @@ TXT;
         if ($reply === '' && $findings === [] && $other === [] && $previous === '') {
             return '';
         }
+        if ($findings === [] && $this->replyIsPromise($reply)) {
+            $reply = $this->unfinishedRecord();
+        }
         $parts = ["Final reply:\n" . ($reply !== '' ? clip_text($reply, 2500) : '(none)')];
         $foundBody = implode("\n\n", $findings);
         if ($previous !== '' && $foundBody !== '') {
@@ -643,6 +646,54 @@ TXT;
         return trim(implode("\n", $kept));
     }
 
+    private function replyIsPromise(string $reply): bool
+    {
+        $reply = trim($reply);
+        if ($reply === '' || preg_match('#https?://#i', $reply) || preg_match('/\bwiki\/[\w.-]+\.md\b/i', $reply)) {
+            return false;
+        }
+        $intent = 'I\'ll|I will|Let me|I\'m going to|I am going to';
+        $verb = 'check|inspect|read|search|find|add|insert|update|write|save|delegate|move|look|query|create|fetch|browse|open|list|verify|confirm|research|restore|restoring';
+        return (bool)preg_match('/\b(?:' . $intent . ')\b(?!\s+not\b)/i', $reply)
+            && (bool)preg_match('/\b(?:' . $verb . ')\b/i', $reply);
+    }
+
+    private function unfinishedRecord(): string
+    {
+        $queries = [];
+        $urls = [];
+        foreach ($this->runTrace as $row) {
+            $name = (string)($row['name'] ?? '');
+            $hint = (string)($row['hint'] ?? '');
+            if ($name === 'web_search' && preg_match('/(?:^|\s)query=(.*)$/', $hint, $match)) {
+                $query = trim($match[1]);
+                if ($query !== '' && !in_array($query, $queries, true)) {
+                    $queries[] = $query;
+                }
+            }
+            if (in_array($name, ['fetch_url', 'browse_url'], true) && preg_match('/(?:^|\s)url=(\S+)/', $hint, $match)) {
+                $url = trim($match[1]);
+                if ($url !== '' && !in_array($url, $urls, true)) {
+                    $urls[] = $url;
+                }
+            }
+        }
+        $lines = ['Did not finish. Do not repeat these searches. Fetch a known URL or write the wiki note.'];
+        if ($queries !== []) {
+            $lines[] = 'Searches already tried:';
+            foreach (array_slice($queries, 0, 8) as $query) {
+                $lines[] = '- ' . $query;
+            }
+        }
+        if ($urls !== []) {
+            $lines[] = 'URLs already fetched:';
+            foreach (array_slice($urls, 0, 8) as $url) {
+                $lines[] = '- ' . $url;
+            }
+        }
+        return implode("\n", $lines);
+    }
+
     private function searchHits(string $text): array
     {
         $lines = preg_split('/\R/', $text) ?: [];
@@ -653,7 +704,7 @@ TXT;
             if ($line === '') {
                 continue;
             }
-            if (str_starts_with($line, 'Results from ') || str_starts_with($line, 'Read a page')) {
+            if (str_starts_with($line, 'Results from ') || str_starts_with($line, 'Read a page') || str_starts_with($line, 'Query:') || str_starts_with($line, 'These pages do not contain') || str_starts_with($line, 'Open the best link') || str_starts_with($line, 'Missing:') || str_starts_with($line, 'The provider returned pages')) {
                 $title = '';
                 continue;
             }

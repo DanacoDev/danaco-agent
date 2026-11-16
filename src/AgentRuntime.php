@@ -905,19 +905,21 @@ class AgentRuntime
             if (!$tail['tools'] && ($cutOff || $this->llm->incomplete || $proseTools || $emptyFences)) {
                 $ranOut = $this->llm->ranOut;
                 if ($retryOpen >= 5 && !$ranOut) {
-                    if ($openStep && !$emptyFences && !$cutOff) {
-                        $this->db->loop($agent, 'steer', 'unfinished step · still going', $projectId);
-                        $retryOpen = 4;
-                    } else {
-                        $why = $emptyFences ? 'empty fences' : ($proseTools ? 'prose tool' : 'cutoff');
-                        $this->db->loop($agent, 'stop', $why . ' · retry limit', $projectId);
-                        if ($emptyFences) {
-                            throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
-                        }
-                        throw new RuntimeException($proseTools
-                            ? 'The model kept naming tools without calling them.'
-                            : 'The tool call was cut off before it finished.');
+                    $narrating = ($openStep || $proseTools) && !$emptyFences && !$cutOff;
+                    if ($narrating) {
+                        $this->db->loop($agent, 'stop', 'narration · retry limit', $projectId);
+                        $this->db->setAgentStatus($agent, 'completed');
+                        $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
+                        return trim($this->narrationResult($messages));
                     }
+                    $why = $emptyFences ? 'empty fences' : ($proseTools ? 'prose tool' : 'cutoff');
+                    $this->db->loop($agent, 'stop', $why . ' · retry limit', $projectId);
+                    if ($emptyFences) {
+                        throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
+                    }
+                    throw new RuntimeException($proseTools
+                        ? 'The model kept naming tools without calling them.'
+                        : 'The tool call was cut off before it finished.');
                 }
                 if (!$ranOut) {
                     $retryOpen++;
@@ -1000,8 +1002,10 @@ class AgentRuntime
             if (!$tail['tools']) {
                 if ($this->onlyCalledATool($turnText)) {
                     if ($calledTries >= 4) {
-                        $this->db->loop($agent, 'steer', 'called-a-tool · still going', $projectId);
-                        $calledTries = 3;
+                        $this->db->loop($agent, 'stop', 'called-a-tool · retry limit', $projectId);
+                        $this->db->setAgentStatus($agent, 'completed');
+                        $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
+                        return trim($this->narrationResult($messages));
                     }
                     $calledTries++;
                     $this->db->loop($agent, 'steer', 'called-a-tool · ' . $calledTries . '/4', $projectId);
@@ -1610,6 +1614,30 @@ class AgentRuntime
     private function finishVisible(string $visible): string
     {
         return trim($this->stripLeakedThink($this->withoutCalledATool($visible)));
+    }
+
+    private function narrationResult(array $messages): string
+    {
+        $found = [];
+        foreach ($messages as $message) {
+            if (!is_array($message) || ($message['role'] ?? '') !== 'user') {
+                continue;
+            }
+            $content = (string)($message['content'] ?? '');
+            if (!str_starts_with($content, 'TOOL RESULT ')) {
+                continue;
+            }
+            $found[] = $content;
+        }
+        $line = 'Stopped after repeated narration.';
+        if ($found === []) {
+            return $line;
+        }
+        $chunks = [];
+        foreach (array_slice($found, -6) as $content) {
+            $chunks[] = clip_text($content, 1200);
+        }
+        return implode("\n\n", $chunks) . "\n\n" . $line;
     }
 
     private function stripLeakedThink(string $text): string
