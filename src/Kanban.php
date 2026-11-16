@@ -18,7 +18,8 @@ class Kanban
         $schedule = $inactivate ? null : $this->schedule($args['schedule_time'] ?? null);
         $recurrence = $this->recurrence((string)($args['recurrence'] ?? $args['recurrence_interval'] ?? 'none'));
         $this->rejectIdea($args, $schedule, $recurrence, $byUser);
-        $description = mb_substr((string)($args['description'] ?? ''), 0, 20000);
+        $steps = $this->stepTitles($args);
+        $description = implode("\n", $steps);
         $agent = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
         if (!$byUser) {
             $duplicate = $this->exactDuplicate($projectId, $title, $description, $agent, $schedule, $recurrence);
@@ -29,7 +30,7 @@ class Kanban
         $task = $this->db->insertTask([
             'project_id' => $projectId,
             'title' => $title,
-            'description' => $description,
+            'description' => '',
             'status' => $inactivate ? 'in_progress' : $this->place((string)($args['status'] ?? 'in_progress'), $schedule, $recurrence, $byUser),
             'assigned_agent' => $agent,
             'schedule_time' => $schedule,
@@ -37,6 +38,10 @@ class Kanban
         ]);
         if ($inactivate) {
             $task = $this->db->updateTask((int)$task['id'], ['held' => 1, 'schedule_time' => null, 'status' => 'in_progress']);
+        }
+        if ($steps) {
+            $this->addSteps((int)$task['id'], $steps, false);
+            $task = $this->db->task((int)$task['id']) ?? $task;
         }
         return $task;
     }
@@ -72,8 +77,11 @@ class Kanban
             }
             $fields['title'] = $title;
         }
-        if (array_key_exists('description', $args)) {
-            $fields['description'] = mb_substr((string)$args['description'], 0, 20000);
+        $steps = $this->stepTitles($args);
+        $hasSteps = array_key_exists('steps', $args) || array_key_exists('subtasks', $args);
+        $hasInstruction = $hasSteps || array_key_exists('description', $args) || array_key_exists('instruction', $args);
+        if ($hasInstruction && $steps) {
+            $fields['description'] = '';
         }
         if (array_key_exists('result', $args)) {
             $fields['result'] = clip_text(trim((string)$args['result']), 2000);
@@ -122,7 +130,12 @@ class Kanban
         } elseif ((int)($existing['held'] ?? 0) === 1 && $this->agentReleasesHold($args, $existing, $schedule, $recurrence, $placed)) {
             $fields['held'] = 0;
         }
-        return $this->db->updateTask($id, $fields);
+        $saved = $this->db->updateTask($id, $fields);
+        if ($saved && $steps && $hasInstruction) {
+            $this->addSteps($id, $steps, !$hasSteps);
+            $saved = $this->db->task($id) ?? $saved;
+        }
+        return $saved;
     }
 
     private function agentReleasesHold(array $args, array $existing, ?string $schedule, string $recurrence, string $status): bool
@@ -255,6 +268,79 @@ class Kanban
         throw new InvalidArgumentException('There is no backlog. To keep a task without running it, set schedule_time to never. That inactivates it. A task runs now, or it has a real clock time.');
     }
 
+    private function stepTitles(array $args): array
+    {
+        $raw = $args['steps'] ?? $args['subtasks'] ?? null;
+        $titles = [];
+        if (is_array($raw)) {
+            foreach ($raw as $step) {
+                if (is_array($step)) {
+                    $text = trim((string)($step['title'] ?? $step['step'] ?? $step['text'] ?? ''));
+                } else {
+                    $text = trim((string)$step);
+                }
+                if ($text !== '') {
+                    $titles[] = mb_substr($text, 0, 2000);
+                }
+            }
+        }
+        if ($titles) {
+            return $titles;
+        }
+        $one = trim((string)($args['description'] ?? $args['instruction'] ?? ''));
+        if ($one !== '') {
+            return [mb_substr($one, 0, 2000)];
+        }
+        return [];
+    }
+
+    private function addSteps(int $taskId, array $titles, bool $onlyIfEmpty): void
+    {
+        $task = $this->db->task($taskId);
+        if (!$task) {
+            return;
+        }
+        $existing = [];
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub)) {
+                continue;
+            }
+            $title = trim((string)($sub['title'] ?? ''));
+            if ($title !== '') {
+                $existing[] = $title;
+            }
+        }
+        if ($onlyIfEmpty && $existing) {
+            return;
+        }
+        foreach ($titles as $title) {
+            if ($title === '' || in_array($title, $existing, true)) {
+                continue;
+            }
+            $this->db->insertSubtask($taskId, $title);
+            $existing[] = $title;
+        }
+    }
+
+    private function instructionOf(array $task): string
+    {
+        $description = trim((string)($task['description'] ?? ''));
+        if ($description !== '') {
+            return $description;
+        }
+        $parts = [];
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub)) {
+                continue;
+            }
+            $title = trim((string)($sub['title'] ?? ''));
+            if ($title !== '') {
+                $parts[] = $title;
+            }
+        }
+        return implode("\n", $parts);
+    }
+
     private function exactDuplicate(int $projectId, string $title, string $description, string $agent, ?string $schedule, string $recurrence): ?array
     {
         foreach ($this->db->tasks($projectId) as $task) {
@@ -264,7 +350,7 @@ class Kanban
             if (trim((string)($task['title'] ?? '')) !== $title) {
                 continue;
             }
-            if ((string)($task['description'] ?? '') !== $description) {
+            if ($this->instructionOf($task) !== $description) {
                 continue;
             }
             if ((string)($task['assigned_agent'] ?? '') !== $agent) {

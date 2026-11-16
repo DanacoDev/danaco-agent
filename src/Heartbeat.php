@@ -173,7 +173,22 @@ class Heartbeat
                 'task_id' => (int)$task['id'],
             ], (int)$task['id']);
             $this->db->updateTask((int)$task['id'], ['status' => 'in_progress']);
-            $message = 'Scheduled task: #' . (int)$task['id'] . ' ' . $task['title'] . "\n\n" . (string)($task['description'] ?? '');
+            $fresh = $this->db->task((int)$task['id']) ?? $task;
+            $lines = [];
+            foreach ($fresh['subtasks'] ?? [] as $index => $sub) {
+                if (!is_array($sub)) {
+                    continue;
+                }
+                $step = trim((string)($sub['title'] ?? ''));
+                if ($step !== '') {
+                    $lines[] = ($index + 1) . '. ' . $step;
+                }
+            }
+            $body = implode("\n", $lines);
+            if ($body === '') {
+                $body = trim((string)($fresh['description'] ?? ''));
+            }
+            $message = 'Scheduled task: #' . (int)$fresh['id'] . ' ' . $fresh['title'] . "\n\n" . $body;
             $this->db->addMessage($projectId, 'user', $message, 'task');
         } else {
             $this->db->deleteLatestFailed($projectId);

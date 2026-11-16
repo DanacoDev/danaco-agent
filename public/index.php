@@ -105,6 +105,7 @@ header('X-Danaco: 1');
   <symbol id="i-edit" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M14.5 4.5 19.5 9.5 8 21H3v-5zM12.5 6.5l5 5"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4.5 7.5h15M9.2 7.4V5.2h5.6v2.2M7.2 7.5l.8 12h8l.8-12M10 11.2v5M14 11.2v5"/></symbol>
   <symbol id="i-archive" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 8h16v11H4zM3 4.5h18V8H3zM10 12h4"/></symbol>
+  <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="7" r="1.35" fill="currentColor"/><circle cx="15" cy="7" r="1.35" fill="currentColor"/><circle cx="9" cy="12" r="1.35" fill="currentColor"/><circle cx="15" cy="12" r="1.35" fill="currentColor"/><circle cx="9" cy="17" r="1.35" fill="currentColor"/><circle cx="15" cy="17" r="1.35" fill="currentColor"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 4v10M8 10l4 4 4-4M5 19h14"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path fill="#000" stroke="#000" stroke-linejoin="round" stroke-width="1" d="M12 3.2 2.2 20.8h19.6z"/><path fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" d="M12 9v5.2"/><circle cx="12" cy="16.9" r="0.95" fill="#fff" stroke="none"/></symbol>
@@ -291,8 +292,11 @@ header('X-Danaco: 1');
               <h2>Tasks</h2>
             </div>
             <div class="task-list">
-              <article v-for="task in openTasks()" :key="task.id" class="task-card">
+              <article v-for="task in openTasks()" :key="task.id" class="task-card" :class="{ 'is-dragging': dragTaskId === task.id }" :data-task-id="task.id">
                 <header class="task-row">
+                  <button class="task-drag" type="button" aria-label="Drag to reorder" @pointerdown="onTaskPointerDown(task, $event)" @pointermove="onTaskPointerMove" @pointerup="onTaskPointerUp" @pointercancel="onTaskPointerUp">
+                    <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
+                  </button>
                   <h3 class="task-title">{{ task.title }}</h3>
                   <span class="task-meta">{{ agentLabel(task.assigned_agent) }}</span>
                   <span class="task-when">{{ taskWhen(task) }} · {{ repeatLabel(task.recurrence_interval) }}</span>
@@ -334,14 +338,12 @@ header('X-Danaco: 1');
                     </button>
                   </li>
                 </ul>
-                <form class="subtask-add" @submit.prevent="addSubtask(task)">
+                <form v-if="openTask === task.id" class="subtask-add" @submit.prevent="addSubtask(task)">
                   <input v-model="subtaskDrafts[task.id]" placeholder="Add step" aria-label="Add step">
                   <button class="btn" type="submit">Add</button>
                 </form>
                 <form v-if="openTask === task.id" @submit.prevent="saveTask(task)">
                   <label class="field">Title<input v-model="taskEdit.title"></label>
-                  <label class="field">{{ taskStatus(task)==='done' ? 'New instructions' : 'Instructions' }}<textarea v-model="taskEdit.description" rows="5" :placeholder="taskStatus(task)==='done' ? 'What should be done differently' : ''"></textarea></label>
-                  <p v-if="taskStatus(task)==='done' && taskEdit.when!=='never'" class="hint">Saving new instructions moves this back to In progress. The agent starts in 3 minutes.</p>
                   <label class="field">Agent
                     <select v-model="taskEdit.assigned_agent">
                       <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
@@ -385,13 +387,11 @@ header('X-Danaco: 1');
                 </div>
               </header>
               <div v-if="archivedVisible().length" class="task-list">
-                <article v-for="task in archivedVisible()" :key="'done'+task.id" class="task-card">
+                <article v-for="task in archivedVisible()" :key="'done'+task.id" class="task-card is-archive" @click="toggleArchive(task)">
                   <header class="task-row">
                     <h3 class="task-title">{{ task.title }}</h3>
-                    <span class="task-meta">{{ agentLabel(task.assigned_agent) }}</span>
-                    <span class="task-when">{{ taskWhen(task) }} · {{ repeatLabel(task.recurrence_interval) }}</span>
                     <span class="task-tools">
-                      <button class="task-edit" type="button" aria-label="Delete task" @click="deleteTask(task)">
+                      <button class="task-edit" type="button" aria-label="Delete task" @click.stop="deleteTask(task)">
                         <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
                       </button>
                     </span>
@@ -400,13 +400,7 @@ header('X-Danaco: 1');
                     <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
                     <span class="task-tag">#{{ task.id }}</span>
                   </div>
-                  <p v-if="task.result" class="task-result">{{ task.result }}</p>
-                  <ul v-if="(task.subtasks || []).length" class="subtasks">
-                    <li v-for="sub in task.subtasks" :key="sub.id" class="subtask">
-                      <span class="status-pill" :class="'is-' + subtaskStatus(sub)">{{ subtaskStatus(sub)==='done' ? 'Done' : 'In progress' }}</span>
-                      <span class="subtask-title">{{ sub.title }}</span>
-                    </li>
-                  </ul>
+                  <p v-if="openArchive === task.id && task.result" class="task-result is-full">{{ task.result }}</p>
                 </article>
               </div>
               <p v-else class="empty">No archived tasks yet.</p>

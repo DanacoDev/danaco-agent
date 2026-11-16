@@ -20,6 +20,7 @@ class Api
         $router->add('POST', '#^/api/projects/(?P<id>\d+)/delete$#', $this->guard(fn(array $args) => $this->deleteProject((int)$args['id'])));
         $router->add('GET', '#^/api/tasks$#', $this->guard(fn() => $this->tasks()));
         $router->add('POST', '#^/api/tasks$#', $this->guard(fn() => $this->createTask()));
+        $router->add('POST', '#^/api/tasks/reorder$#', $this->guard(fn() => $this->reorderTasks()));
         $router->add('PATCH', '#^/api/tasks/(?P<id>\d+)$#', $this->guard(fn(array $args) => $this->updateTask((int)$args['id'])));
         $router->add('POST', '#^/api/tasks/(?P<id>\d+)/delete$#', $this->guard(fn(array $args) => $this->deleteTask((int)$args['id'])));
         $router->add('POST', '#^/api/tasks/(?P<id>\d+)/subtasks$#', $this->guard(fn(array $args) => $this->createSubtask((int)$args['id'])));
@@ -259,6 +260,23 @@ class Api
         $this->json(['task' => $task], 201);
     }
 
+    private function reorderTasks(): void
+    {
+        $body = $this->input();
+        $projectId = (int)($body['project_id'] ?? 0);
+        if ($projectId <= 0 || !$this->db->project($projectId)) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return;
+        }
+        $ids = $body['ids'] ?? [];
+        if (!is_array($ids)) {
+            $this->json(['error' => 'Task order is required.'], 422);
+            return;
+        }
+        $this->db->orderTasks($projectId, $ids);
+        $this->json(['ok' => true]);
+    }
+
     private function updateTask(int $id): void
     {
         $existing = $this->db->task($id);
@@ -304,7 +322,7 @@ class Api
         }
         $body = $this->input();
         $title = trim((string)($body['title'] ?? ''));
-        if ($title === '' || strlen($title) > 200) {
+        if ($title === '' || strlen($title) > 2000) {
             $this->json(['error' => 'Step title is required.'], 422);
             return;
         }
@@ -323,7 +341,7 @@ class Api
         $fields = [];
         if (array_key_exists('title', $body)) {
             $title = trim((string)$body['title']);
-            if ($title === '' || strlen($title) > 200) {
+            if ($title === '' || strlen($title) > 2000) {
                 $this->json(['error' => 'Step title is required.'], 422);
                 return;
             }

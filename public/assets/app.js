@@ -192,6 +192,9 @@
           tasks: [],
           taskDraft: '',
           openTask: null,
+          openArchive: null,
+          dragTaskId: null,
+          dragTaskOrder: '',
           taskEdit: {},
           subtaskDrafts: {},
           finishedOpen: false,
@@ -1886,7 +1889,50 @@
           return this.tasks.filter((task) => {
             const status = this.taskStatus(task);
             return (status === 'in_progress' || status === 'done') && task.project_id === this.projectId;
-          });
+          }).sort((a, b) => (Number(a.position) - Number(b.position)) || (a.id - b.id));
+        },
+        moveOpenTask(fromId, toId, after) {
+          if (!fromId || fromId === toId) return;
+          const open = this.openTasks();
+          const from = open.findIndex((task) => task.id === fromId);
+          const to = open.findIndex((task) => task.id === toId);
+          if (from < 0 || to < 0) return;
+          let dest = after ? to + 1 : to;
+          if (from < dest) dest -= 1;
+          if (dest === from) return;
+          const next = open.slice();
+          const moved = next.splice(from, 1)[0];
+          next.splice(dest, 0, moved);
+          next.forEach((task, index) => { task.position = index; });
+        },
+        onTaskPointerDown(task, event) {
+          if (event.pointerType === 'mouse' && event.button !== 0) return;
+          this.dragTaskId = task.id;
+          this.dragTaskOrder = this.openTasks().map((item) => item.id).join(',');
+          event.currentTarget.setPointerCapture(event.pointerId);
+          event.preventDefault();
+        },
+        onTaskPointerMove(event) {
+          if (!this.dragTaskId) return;
+          const el = document.elementFromPoint(event.clientX, event.clientY);
+          const card = el && el.closest('[data-task-id]');
+          if (!card) return;
+          const overId = Number(card.getAttribute('data-task-id'));
+          const rect = card.getBoundingClientRect();
+          this.moveOpenTask(this.dragTaskId, overId, event.clientY > rect.top + rect.height / 2);
+        },
+        async onTaskPointerUp() {
+          if (!this.dragTaskId) return;
+          const order = this.openTasks().map((item) => item.id);
+          const changed = order.join(',') !== this.dragTaskOrder;
+          this.dragTaskId = null;
+          this.dragTaskOrder = '';
+          if (!changed || !this.projectId) return;
+          try {
+            await this.api('/api/tasks/reorder', { method: 'POST', body: { project_id: this.projectId, ids: order } });
+          } catch (error) {
+            await this.reloadTasks();
+          }
         },
         archivedTasks() {
           return this.tasks.filter((task) => task.status === 'archived' && task.project_id === this.projectId)
@@ -1895,6 +1941,9 @@
         archivedVisible() {
           const all = this.archivedTasks();
           return this.finishedOpen ? all : all.slice(0, 4);
+        },
+        toggleArchive(task) {
+          this.openArchive = this.openArchive === task.id ? null : task.id;
         },
         async reloadTasks() {
           if (this.taskLoading) return;
@@ -1937,7 +1986,6 @@
           const stamp = String(task.schedule_time || '').replace(' ', 'T').slice(0, 16);
           this.taskEdit = {
             title: task.title,
-            description: task.description || '',
             assigned_agent: task.assigned_agent,
             when: Number(task.held) === 1 && !stamp ? 'never' : (stamp ? 'at' : 'immediately'),
             schedule_time: stamp,
@@ -1964,14 +2012,10 @@
           }
           const body = {
             title: this.taskEdit.title,
-            description: this.taskEdit.description,
             assigned_agent: this.taskEdit.assigned_agent,
             schedule_time: never ? 'never' : (stamp || null),
             recurrence_interval: this.taskEdit.recurrence_interval
           };
-          if (this.taskStatus(task) === 'done' && (this.taskEdit.description || '').trim() !== (task.description || '').trim() && (this.taskEdit.description || '').trim() !== '') {
-            body.status = 'in_progress';
-          }
           try {
             const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: body });
             Object.assign(task, saved.task);

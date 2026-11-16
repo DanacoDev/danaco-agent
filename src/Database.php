@@ -130,6 +130,10 @@ SQL);
         if (!in_array('held', $taskColumns, true)) {
             $this->pdo->exec('ALTER TABLE tasks ADD COLUMN held INTEGER NOT NULL DEFAULT 0');
         }
+        if (!in_array('position', $taskColumns, true)) {
+            $this->pdo->exec('ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
+            $this->pdo->exec('UPDATE tasks SET position = -id');
+        }
         $projectColumns = array_column($this->pdo->query('PRAGMA table_info(projects)')->fetchAll(), 'name');
         if (!in_array('former_name', $projectColumns, true)) {
             $this->pdo->exec('ALTER TABLE projects ADD COLUMN former_name TEXT');
@@ -153,6 +157,25 @@ CREATE TABLE IF NOT EXISTS subtasks (
 );
 CREATE INDEX IF NOT EXISTS idx_subtasks_task ON subtasks(task_id, position);
 SQL);
+        if ($this->getSetting('task_steps_v1', '') !== '1') {
+            $rows = $this->pdo->query("SELECT id, description FROM tasks WHERE TRIM(COALESCE(description, '')) != '' AND id NOT IN (SELECT task_id FROM subtasks)")->fetchAll();
+            $insert = $this->pdo->prepare("INSERT INTO subtasks (task_id, title, status, position) VALUES (?, ?, 'in_progress', 1)");
+            $clear = $this->pdo->prepare("UPDATE tasks SET description = '' WHERE id = ?");
+            foreach ($rows as $row) {
+                $title = trim((string)$row['description']);
+                if (function_exists('mb_substr')) {
+                    $title = mb_substr($title, 0, 2000);
+                } elseif (strlen($title) > 2000) {
+                    $title = substr($title, 0, 2000);
+                }
+                if ($title === '') {
+                    continue;
+                }
+                $insert->execute([(int)$row['id'], $title]);
+                $clear->execute([(int)$row['id']]);
+            }
+            $this->setSetting('task_steps_v1', '1');
+        }
         $this->pdo->exec(<<<'SQL'
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -491,11 +514,11 @@ SQL);
     public function tasks(?int $projectId = null): array
     {
         if ($projectId) {
-            $stmt = $this->pdo->prepare('SELECT * FROM tasks WHERE project_id = ? ORDER BY id DESC');
+            $stmt = $this->pdo->prepare('SELECT * FROM tasks WHERE project_id = ? ORDER BY position ASC, id ASC');
             $stmt->execute([$projectId]);
             $rows = $stmt->fetchAll();
         } else {
-            $rows = $this->pdo->query('SELECT * FROM tasks ORDER BY id DESC')->fetchAll();
+            $rows = $this->pdo->query('SELECT * FROM tasks ORDER BY position ASC, id ASC')->fetchAll();
         }
         return $this->attachSubtasks(array_map([$this, 'castTask'], $rows));
     }
@@ -514,15 +537,23 @@ SQL);
 
     public function insertTask(array $fields): array
     {
-        $stmt = $this->pdo->prepare('INSERT INTO tasks (project_id, title, description, status, assigned_agent, schedule_time, recurrence_interval) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        $projectId = $fields['project_id'] ?? null;
+        $position = 0;
+        if ($projectId) {
+            $pos = $this->pdo->prepare("SELECT COALESCE(MIN(position), 1) - 1 FROM tasks WHERE project_id = ? AND status != 'archived'");
+            $pos->execute([$projectId]);
+            $position = (int)$pos->fetchColumn();
+        }
+        $stmt = $this->pdo->prepare('INSERT INTO tasks (project_id, title, description, status, assigned_agent, schedule_time, recurrence_interval, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
         $stmt->execute([
-            $fields['project_id'],
+            $projectId,
             $fields['title'],
             $fields['description'] ?? '',
             $fields['status'] ?? 'todo',
             $fields['assigned_agent'] ?? 'orchestrator',
             $fields['schedule_time'] ?? null,
             $fields['recurrence_interval'] ?? 'none',
+            $position,
         ]);
         return $this->task((int)$this->pdo->lastInsertId());
     }
@@ -544,6 +575,45 @@ SQL);
             $this->pdo->prepare('UPDATE tasks SET ' . implode(', ', $sets) . ' WHERE id = ?')->execute($values);
         }
         return $this->task($id);
+    }
+
+    public function orderTasks(int $projectId, array $ids): void
+    {
+        $wanted = [];
+        foreach ($ids as $id) {
+            $id = (int)$id;
+            if ($id > 0 && !in_array($id, $wanted, true)) {
+                $wanted[] = $id;
+            }
+        }
+        if (!$wanted) {
+            return;
+        }
+        $placeholders = implode(',', array_fill(0, count($wanted), '?'));
+        $stmt = $this->pdo->prepare('SELECT id FROM tasks WHERE id IN (' . $placeholders . ') AND project_id = ? AND status != \'archived\'');
+        $params = $wanted;
+        $params[] = $projectId;
+        $stmt->execute($params);
+        $allowed = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $allowed[(int)$row['id']] = true;
+        }
+        $update = $this->pdo->prepare('UPDATE tasks SET position = ? WHERE id = ?');
+        $this->pdo->beginTransaction();
+        try {
+            $position = 0;
+            foreach ($wanted as $id) {
+                if (!isset($allowed[$id])) {
+                    continue;
+                }
+                $update->execute([$position, $id]);
+                $position++;
+            }
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->pdo->rollBack();
+            throw $e;
+        }
     }
 
     public function deleteTask(int $id): bool
@@ -1779,6 +1849,7 @@ SQL);
         $row['id'] = (int)$row['id'];
         $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
         $row['held'] = (int)($row['held'] ?? 0);
+        $row['position'] = (int)($row['position'] ?? 0);
         return $row;
     }
 
