@@ -8,7 +8,7 @@ Usage:
   count: {"database":"link_database.db"} returns each table and the total. Add table to count one table.
   inspect: read schemas, indexes, row counts, and sample rows. database all lists every database file in the folder.
   query: run a read-only SELECT, WITH, or PRAGMA statement with params.
-  insert: add a row with table and values.
+  insert: add every row in one call. values is one object. rows is a list of objects with the same columns. Do not call insert once per row.
   drop: {"database":"link_database.db","table":"links"} deletes that table. if_exists true leaves a missing table alone.
   execute: run a parameterized write. CREATE TABLE is checked first and is not run when that table exists. DROP TABLE is the drop action.
   init: only for a preset schema the user already named. For any other file, use ensure with that same filename, table, and columns. Do not invent a filename.
@@ -295,22 +295,47 @@ try {
 
     if ($action === 'insert') {
         $table = trim((string)($args['table'] ?? ''));
-        $values = $args['values'] ?? [];
-        if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $table) || !is_array($values) || $values === []) {
-            throw new InvalidArgumentException('Insert requires a table and a non-empty values object.');
+        $rows = sqlite_insert_rows($args);
+        if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $table) || $rows === []) {
+            throw new InvalidArgumentException('Insert requires a table and at least one row. Put one object in values, or every row in rows. Do not call insert once per row.');
         }
-        sqlite_snapshot($dbPath, $database, $root);
-        $columns = array_keys($values);
+        $columns = array_keys($rows[0]);
         foreach ($columns as $column) {
             if (!is_string($column) || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $column)) {
                 throw new InvalidArgumentException('Column names may contain only letters, numbers, and underscores.');
             }
         }
+        $expected = $columns;
+        sort($expected);
+        foreach ($rows as $row) {
+            $keys = array_keys($row);
+            sort($keys);
+            if ($keys !== $expected) {
+                throw new InvalidArgumentException('Every row in one insert must use the same columns.');
+            }
+        }
+        sqlite_snapshot($dbPath, $database, $root);
         $quotedColumns = implode(', ', array_map(static fn(string $column): string => '"' . $column . '"', $columns));
         $placeholders = implode(', ', array_fill(0, count($columns), '?'));
         $statement = $db->prepare('INSERT INTO "' . $table . '" (' . $quotedColumns . ') VALUES (' . $placeholders . ')');
-        $statement->execute(array_values($values));
-        echo json_encode(['status' => 'success', 'action' => 'insert', 'database' => $database, 'table' => $table, 'id' => $db->lastInsertId(), 'changes' => $statement->rowCount()]);
+        $db->beginTransaction();
+        try {
+            foreach ($rows as $row) {
+                $bound = [];
+                foreach ($columns as $column) {
+                    $bound[] = $row[$column];
+                }
+                $statement->execute($bound);
+            }
+            $lastId = $db->lastInsertId();
+            $db->commit();
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $e;
+        }
+        echo json_encode(['status' => 'success', 'action' => 'insert', 'database' => $database, 'table' => $table, 'inserted' => count($rows), 'id' => $lastId, 'changes' => count($rows)]);
         exit(0);
     }
 
@@ -330,6 +355,26 @@ try {
 } catch (Throwable $e) {
     echo json_encode(['status' => 'error', 'action' => $action, 'message' => $e->getMessage()]);
     exit(1);
+}
+
+function sqlite_insert_rows(array $args): array
+{
+    if (isset($args['rows']) && is_array($args['rows'])) {
+        $rows = $args['rows'];
+    } elseif (isset($args['values']) && is_array($args['values'])) {
+        $values = $args['values'];
+        $rows = array_is_list($values) ? $values : [$values];
+    } else {
+        return [];
+    }
+    $clean = [];
+    foreach ($rows as $row) {
+        if (!is_array($row) || $row === [] || array_is_list($row)) {
+            throw new InvalidArgumentException('Each inserted row must be an object of column names and values.');
+        }
+        $clean[] = $row;
+    }
+    return $clean;
 }
 
 function sqlite_open(string $path): PDO

@@ -13,7 +13,10 @@ When the table exists, read columns, missing_columns, and extra_columns. Add a c
 count: {"database":"link_database.db"} returns each table and the total. Add table to count one table.
 inspect: read schemas, indexes, row counts, and sample rows. database all lists every database file in the folder.
 query: run a read-only SELECT, WITH, or PRAGMA statement with params.
-insert: add a row with table and values.
+insert: put every row you already have in one call. Do not call insert once per row.
+One row uses values: {"database":"databasen.db","table":"entries","values":{"id":1,"url":"https://www.fortnox.se/","name":"Fortnox"}}
+Several rows use rows: {"database":"databasen.db","table":"entries","rows":[{"id":1,"url":"https://www.fortnox.se/","name":"Fortnox"},{"id":2,"url":"https://www.bokio.se/","name":"Bokio"}]}
+Every object in that list needs the same columns. One insert, then stop.
 drop: {"database":"link_database.db","table":"links"} deletes that table. if_exists true leaves a missing table alone. A table drop is approved by the user through the main agent.
 execute: run a parameterized write. CREATE TABLE is checked first and is not run when that table exists. DROP TABLE is the drop action.
 init: only for a preset schema the user already named. For any other file, use ensure with that same filename, table, and columns. Do not invent a filename.

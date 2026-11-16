@@ -296,7 +296,7 @@ class ToolStreamParser
 
     private function toolObjectKind(string $slice): string
     {
-        $keys = 'tool|name|args|arguments|parameters';
+        $keys = 'tool|name|args|arguments|parameters|action|command';
         if (preg_match('/^\{\s*"(?:' . $keys . ')"\s*:/s', $slice)) {
             return 'object';
         }
@@ -313,14 +313,14 @@ class ToolStreamParser
             return 'no';
         }
         if ($key[2] !== '"') {
-            foreach (['tool', 'name', 'args', 'arguments', 'parameters'] as $candidate) {
+            foreach (['tool', 'name', 'args', 'arguments', 'parameters', 'action', 'command'] as $candidate) {
                 if (str_starts_with($candidate, $key[1])) {
                     return 'maybe';
                 }
             }
             return 'no';
         }
-        if (!in_array($key[1], ['tool', 'name', 'args', 'arguments', 'parameters'], true)) {
+        if (!in_array($key[1], ['tool', 'name', 'args', 'arguments', 'parameters', 'action', 'command'], true)) {
             return 'no';
         }
         if (preg_match('/^\s*:/s', $key[3]) || preg_match('/^\s*$/s', $key[3])) {
@@ -376,7 +376,10 @@ class ToolStreamParser
         if ($raw === '' && isset($decoded['name']) && is_string($decoded['name'])) {
             $raw = trim($decoded['name']);
         }
-        if ($raw === '' || preg_match('/^[A-Za-z][A-Za-z0-9_-]{0,64}$/', $raw) !== 1) {
+        if ($raw === '') {
+            return $this->sqliteArgs($decoded);
+        }
+        if (preg_match('/^[A-Za-z][A-Za-z0-9_-]{0,64}$/', $raw) !== 1) {
             return null;
         }
         $name = null;
@@ -422,6 +425,9 @@ class ToolStreamParser
         if (preg_match('/(?:^|\n)(`{3,})(?:json|JSON)?[ \t]*\r?\n[ \t]*$/', $before, $match, PREG_OFFSET_CAPTURE)) {
             return $match[1][1];
         }
+        if (preg_match('/(?:^|\n)(json)[ \t]*\r?\n[ \t]*$/i', $before, $match, PREG_OFFSET_CAPTURE)) {
+            return $match[1][1];
+        }
         return strlen($before);
     }
 
@@ -432,6 +438,9 @@ class ToolStreamParser
         }
         if (preg_match('/(?:^|\n)(`{3,})(?:json|JSON)?[ \t]*\r?\n$/', $text, $match, PREG_OFFSET_CAPTURE)) {
             return strlen($text) - $match[0][1];
+        }
+        if (preg_match('/(?:^|\n)(j|js|jso|json)$/i', $text, $match, PREG_OFFSET_CAPTURE)) {
+            return strlen($text) - $match[1][1];
         }
         return 0;
     }
@@ -614,11 +623,31 @@ class ToolStreamParser
     {
         $name = $decoded['name'] ?? $decoded['tool'] ?? null;
         if (!is_string($name) || trim($name) === '') {
-            return null;
+            return $this->sqliteArgs($decoded);
         }
         return [
             'name' => trim($name),
             'args' => $this->toolArgs($decoded),
         ];
+    }
+
+    private function sqliteArgs(array $decoded): ?array
+    {
+        $action = strtolower(trim((string)($decoded['action'] ?? $decoded['command'] ?? '')));
+        if (!in_array($action, ['count', 'inspect', 'insert', 'query', 'drop', 'ensure', 'execute', 'init'], true)) {
+            return null;
+        }
+        $hasTarget = false;
+        foreach (['database', 'table', 'sql', 'columns', 'values', 'directory'] as $key) {
+            if (!array_key_exists($key, $decoded) || $decoded[$key] === '' || $decoded[$key] === []) {
+                continue;
+            }
+            $hasTarget = true;
+            break;
+        }
+        if (!$hasTarget) {
+            return null;
+        }
+        return ['name' => 'sqlite_helper', 'args' => $decoded];
     }
 }

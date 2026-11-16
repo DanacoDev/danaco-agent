@@ -140,14 +140,16 @@ class ToolEchoFilter
     private function findEchoStart(string $text): ?int
     {
         $best = null;
-        if (preg_match_all('/called a tool/i', $text, $hits, PREG_OFFSET_CAPTURE)) {
-            foreach ($hits[0] as $hit) {
-                $at = $hit[1];
-                if ($at > 0 && preg_match('/[A-Za-z]/', $text[$at - 1])) {
-                    continue;
-                }
-                if ($best === null || $at < $best) {
-                    $best = $at;
+        foreach (['called a tool', 'the tool already ran'] as $phrase) {
+            if (preg_match_all('/' . preg_quote($phrase, '/') . '/i', $text, $hits, PREG_OFFSET_CAPTURE)) {
+                foreach ($hits[0] as $hit) {
+                    $at = $hit[1];
+                    if ($at > 0 && preg_match('/[A-Za-z]/', $text[$at - 1])) {
+                        continue;
+                    }
+                    if ($best === null || $at < $best) {
+                        $best = $at;
+                    }
                 }
             }
         }
@@ -177,11 +179,13 @@ class ToolEchoFilter
 
     private function echoLength(string $text, bool $end): ?int
     {
-        if (preg_match('/\Acalled a tool\.?/i', $text, $match)) {
-            return strlen($match[0]);
-        }
-        if ($this->isPrefix($text, 'called a tool')) {
-            return $end ? 0 : null;
+        foreach (['called a tool', 'the tool already ran'] as $phrase) {
+            if (preg_match('/\A' . preg_quote($phrase, '/') . '\.?/i', $text, $match)) {
+                return strlen($match[0]);
+            }
+            if ($this->isPrefix($text, $phrase)) {
+                return $end ? 0 : null;
+            }
         }
         $name = $this->nameAt($text, 0);
         if ($name === null) {
@@ -248,7 +252,7 @@ class ToolEchoFilter
         if ($text === '') {
             return false;
         }
-        if ($this->isPrefix($text, 'called a tool')) {
+        if ($this->isPrefix($text, 'called a tool') || $this->isPrefix($text, 'the tool already ran')) {
             return true;
         }
         if ($this->nameAt($text, 0) !== null) {
@@ -994,16 +998,24 @@ class AgentRuntime
             }
             $retryOpen = 0;
             if (!$tail['tools']) {
-                if ($this->onlyCalledATool($turnText) && $calledTries < 4) {
+                if ($this->onlyCalledATool($turnText)) {
+                    if ($calledTries >= 4) {
+                        $this->db->loop($agent, 'steer', 'called-a-tool · still going', $projectId);
+                        $calledTries = 3;
+                    }
                     $calledTries++;
                     $this->db->loop($agent, 'steer', 'called-a-tool · ' . $calledTries . '/4', $projectId);
                     $skipCompact = true;
                     $visible = $this->withoutCalledATool($visible);
                     $messages[] = ['role' => 'assistant', 'content' => 'The tool already ran.'];
-                    $messages[] = ['role' => 'user', 'content' => 'Do not write "Called a tool." or paste the tool call. The tool result is above. Continue the task. If another tool is needed, call it now.'];
+                    $messages[] = ['role' => 'user', 'content' => 'Do not write "Called a tool." or "The tool already ran." or paste the tool call. The tool result is above. Continue the task. If another tool is needed, call it now.'];
                     continue;
                 }
-                if ($agent === 'orchestrator' && $finishChecks < 2 && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop)) {
+                if ($agent === 'orchestrator' && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop)) {
+                    if ($finishChecks >= 2) {
+                        $this->db->loop($agent, 'steer', 'finish-check · still going', $projectId);
+                        $finishChecks = 1;
+                    }
                     $finishChecks++;
                     $this->db->loop($agent, 'steer', 'finish-check continue · ' . $finishChecks . '/2', $projectId);
                     $skipCompact = true;
@@ -1451,7 +1463,7 @@ class AgentRuntime
     private function promisedStep(string $text): bool
     {
         $intent = 'I\'ll|I will|Let me|I\'m going to|I am going to';
-        $verb = 'check|inspect|read|search|find|add|insert|update|write|save|delegate|move|look|query|create|fetch|browse|open|list|verify|confirm|research';
+        $verb = 'check|inspect|read|search|find|add|insert|update|write|save|delegate|move|look|query|create|fetch|browse|open|list|verify|confirm|research|restore|restoring';
         return (bool)preg_match('/\b(?:' . $intent . ')\b(?!\s+not\b)[^.\n]{0,160}\b(?:' . $verb . ')\b(?!\s+you\b)/i', $text);
     }
 
@@ -1573,7 +1585,7 @@ class AgentRuntime
     private function withoutCalledATool(string $text): string
     {
         $clean = (new ToolEchoFilter($this->toolNames()))->strip($text);
-        $clean = preg_replace('/Called a tool\.?/i', '', $clean) ?? $clean;
+        $clean = preg_replace('/Called a tool\.?|The tool already ran\.?/i', '', $clean) ?? $clean;
         return trim(preg_replace('/[ \t]{2,}/', ' ', $clean) ?? $clean);
     }
 
