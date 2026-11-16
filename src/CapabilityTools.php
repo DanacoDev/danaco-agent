@@ -13,7 +13,7 @@ class CapabilityTools
     public function handlers(string $projectFolder, int $projectId = 0, bool $allowInstall = false): array
     {
         $handlers = [];
-        $handlers['web_search'] = fn(array $args): string => $this->webSearch((string)($args['query'] ?? ''));
+        $handlers['web_search'] = fn(array $args): string => $this->webSearch((string)($args['query'] ?? ''), (string)($args['region'] ?? ''));
         $handlers['fetch_url'] = fn(array $args): string => $this->fetchUrl((string)($args['url'] ?? ''));
         $handlers['browse_url'] = fn(array $args): string => $this->browseUrl((string)($args['url'] ?? ''));
         $handlers['run_command'] = fn(array $args): string => $this->runCommand((string)($args['command'] ?? ''), $projectFolder, $allowInstall);
@@ -32,7 +32,7 @@ class CapabilityTools
     public function descriptions(int $projectId = 0): array
     {
         $lines = [];
-        $lines[] = '- web_search: args query. One idea, as in a normal search box: two to four plain words. Every word must match, so extra words and synonyms make it miss. Quotes are only for one exact title of several words, plus at most one plain word. Do not quote a single word, do not stack quoted phrases, and do not use OR, AND, NOT, or parentheses to join alternatives. Search the other wording on its own. site:example.com is the only operator. Returns a title, link, and snippet. Then read a result with fetch_url. Rewrite only when the message starts with "This query was not searched" or gives a shorter query, and call once more. If the search provider rejected the request, end the run. Do not call another tool. Do not fetch pages, rewrite the query, or log research. Reply with that failure so the main agent hears it. If the results page could not be read, stop. Do not call web_search again this turn.';
+        $lines[] = '- web_search: args query. Optional region is a country code such as us or se, or a language and country such as en-US. Leave region out to search this server\'s country. One idea, as in a normal search box: two to four plain words. Every word must match, so extra words and synonyms make it miss. Quotes are only for one exact title of several words, plus at most one plain word. Do not quote a single word, do not stack quoted phrases, and do not use OR, AND, NOT, or parentheses to join alternatives. Search the other wording on its own. site:example.com is the only operator. Returns a title, link, and snippet. Then read a result with fetch_url. Rewrite only when the message starts with "This query was not searched" or gives a shorter query, and call once more. If the search provider rejected the request, end the run. Do not call another tool. Do not fetch pages, rewrite the query, or log research. Reply with that failure so the main agent hears it. If the results page could not be read, stop. Do not call web_search again this turn.';
         $lines[] = '- fetch_url: args url. Reads a public page and lists links on it. Open those links to keep crawling.';
         $lines[] = '- browse_url: args url. Opens a public page in the headless browser so scripts run, then returns the text and links. Use it when fetch_url shows an empty or unfinished page.';
         $lines[] = $this->db->fullSystemControl()
@@ -233,7 +233,7 @@ class CapabilityTools
         return count($out) > 10 ? [] : $out;
     }
 
-    private function webSearch(string $query): string
+    private function webSearch(string $query, string $region = ''): string
     {
         $query = str_replace(['“', '”', '„'], '"', trim($query));
         if ($query === '') {
@@ -243,21 +243,25 @@ class CapabilityTools
         if ($problem !== '') {
             return $problem;
         }
+        $locale = $this->searchLocale($region);
+        if ($locale['error'] !== '') {
+            return $locale['error'];
+        }
         $refusals = [];
         $sawEmpty = false;
         $terms = $this->queryTerms($query);
-        foreach (['Bing', 'Google', 'DuckDuckGo'] as $name) {
+        foreach (['DuckDuckGo', 'Bing', 'Google'] as $name) {
             if ($name === 'Bing') {
-                $found = $this->bingResults($query);
+                $found = $this->bingResults($query, $locale);
             } elseif ($name === 'Google') {
-                $found = $this->googleResults($query);
+                $found = $this->googleResults($query, $locale);
             } else {
-                $found = $this->duckSearch($query);
+                $found = $this->duckSearch($query, $locale);
             }
             $shown = $this->matchingResults($terms, $found['results']);
             $blocks = $this->searchBlocks($shown);
             if ($blocks) {
-                $blocks[] = 'Results from ' . $name . '.';
+                $blocks[] = 'Results from ' . $name . ($locale['market'] !== '' ? ' (' . $locale['market'] . ')' : '') . '.';
                 $blocks[] = 'Read a page with fetch_url. The result lists links you can open next.';
                 return clip_text(implode("\n\n", $blocks), 4000);
             }
@@ -271,7 +275,7 @@ class CapabilityTools
             $refusals[] = $this->engineMiss($name, $found);
         }
         if (!$sawEmpty) {
-            $instant = $this->instantAnswer($query);
+            $instant = $this->instantAnswer($query, $locale);
             if ($instant !== '') {
                 return $instant;
             }
@@ -570,10 +574,11 @@ class CapabilityTools
         return $words;
     }
 
-    private function duckSearch(string $query): array
+    private function duckSearch(string $query, array $locale): array
     {
-        $post = 'q=' . rawurlencode($query) . '&kl=wt-wt';
-        $first = $this->searchFetch('https://html.duckduckgo.com/html/', $post);
+        $post = 'q=' . rawurlencode($query) . '&kl=' . rawurlencode($locale['duck']);
+        $headers = $locale['accept'] !== '' ? [$locale['accept']] : [];
+        $first = $this->searchFetch('https://html.duckduckgo.com/html/', $post, $headers);
         $results = $this->parseSearchResults($first['body']);
         if ($results) {
             return $this->searchOutcome($results, 'results', $first);
@@ -583,7 +588,7 @@ class CapabilityTools
         if ($blocked) {
             return $this->searchOutcome([], $status, $first);
         }
-        $lite = $this->searchFetch('https://lite.duckduckgo.com/lite/', $post);
+        $lite = $this->searchFetch('https://lite.duckduckgo.com/lite/', $post, $headers);
         $results = $this->parseSearchResults($lite['body']);
         if ($results) {
             return $this->searchOutcome($results, 'results', $lite);
@@ -591,17 +596,25 @@ class CapabilityTools
         return $this->searchOutcome([], $this->duckPageStatus($lite), $lite, true);
     }
 
-    private function bingResults(string $query): array
+    private function bingResults(string $query, array $locale): array
     {
-        $market = $this->bingMarket();
-        $headers = ['Accept-Language: sv-SE,sv;q=0.9,en;q=0.8', 'Referer: https://www.bing.com/'];
-        $cookie = $this->bingCookie();
+        $headers = ['Referer: https://www.bing.com/'];
+        if ($locale['accept'] !== '') {
+            $headers[] = $locale['accept'];
+        }
+        $cookie = $this->bingCookie($locale);
         if ($cookie !== '') {
             $headers[] = 'Cookie: ' . $cookie;
         }
         $page = 'https://www.bing.com/search?q=' . rawurlencode($query);
-        if ($market !== '') {
-            $page .= '&mkt=' . rawurlencode($market);
+        if ($locale['cc'] !== '') {
+            $page .= '&cc=' . rawurlencode($locale['cc']);
+        }
+        if ($locale['lang'] !== '') {
+            $page .= '&setlang=' . rawurlencode($locale['lang']);
+        }
+        if ($locale['market'] !== '') {
+            $page .= '&mkt=' . rawurlencode($locale['market']);
         }
         $html = $this->searchFetch($page, null, $headers);
         $parsed = $this->parseBingHtml((string)$html['body']);
@@ -609,8 +622,14 @@ class CapabilityTools
             return $this->searchOutcome($parsed, 'results', $html);
         }
         $url = 'https://www.bing.com/search?format=rss&count=8&q=' . rawurlencode($query);
-        if ($market !== '') {
-            $url .= '&mkt=' . rawurlencode($market);
+        if ($locale['cc'] !== '') {
+            $url .= '&cc=' . rawurlencode($locale['cc']);
+        }
+        if ($locale['lang'] !== '') {
+            $url .= '&setlang=' . rawurlencode($locale['lang']);
+        }
+        if ($locale['market'] !== '') {
+            $url .= '&mkt=' . rawurlencode($locale['market']);
         }
         $fetched = $this->searchFetch($url, null, $headers);
         $body = (string)$fetched['body'];
@@ -642,22 +661,204 @@ class CapabilityTools
         return $this->searchOutcome($out, 'results', $fetched);
     }
 
-    private function bingMarket(): string
+    private function bingCookie(array $locale): string
     {
-        return date_default_timezone_get() === 'Europe/Stockholm' ? 'sv-SE' : '';
-    }
-
-    private function bingCookie(): string
-    {
-        static $cookie = null;
-        if ($cookie !== null) {
-            return $cookie;
+        static $cookies = [];
+        $key = $locale['accept'];
+        if (isset($cookies[$key])) {
+            return $cookies[$key];
         }
         $meta = ['code' => 0, 'error' => ''];
         $final = '';
-        $this->request('https://www.bing.com/', 0, null, $final, $meta, ['Accept-Language: sv-SE,sv;q=0.9,en;q=0.8']);
-        $cookie = $this->setCookieHeader((string)($meta['header'] ?? ''));
-        return $cookie;
+        $headers = $locale['accept'] !== '' ? [$locale['accept']] : [];
+        $this->request('https://www.bing.com/', 0, null, $final, $meta, $headers);
+        $cookies[$key] = $this->setCookieHeader((string)($meta['header'] ?? ''));
+        return $cookies[$key];
+    }
+
+    private function searchLocale(string $region): array
+    {
+        $region = str_replace('_', '-', trim($region));
+        if ($region !== '') {
+            $picked = $this->parseRegion($region);
+            if ($picked === null) {
+                return $this->blankLocale('Region must be a country code such as se or us, or a language and country such as en-US. Leave region out to search this server\'s country.');
+            }
+            return $picked;
+        }
+        $cc = $this->serverCountry();
+        if ($cc === '') {
+            return $this->blankLocale('');
+        }
+        return $this->makeLocale($cc, $this->countryLanguage($cc));
+    }
+
+    private function parseRegion(string $region): ?array
+    {
+        if (preg_match('/^[a-z]{2}$/i', $region)) {
+            $cc = strtoupper($region);
+            if ($cc === 'UK') {
+                $cc = 'GB';
+            }
+            if (!$this->knownCountry($cc)) {
+                return null;
+            }
+            return $this->makeLocale($cc, $this->countryLanguage($cc));
+        }
+        if (!preg_match('/^([a-z]{2})-([a-z]{2})$/i', $region, $match)) {
+            return null;
+        }
+        $left = strtolower($match[1]);
+        $right = strtolower($match[2]);
+        $rightCc = strtoupper($right) === 'UK' ? 'GB' : strtoupper($right);
+        $leftCc = strtoupper($left) === 'UK' ? 'GB' : strtoupper($left);
+        if ($this->knownLanguage($left) && $this->knownCountry($rightCc)) {
+            return $this->makeLocale($rightCc, $left);
+        }
+        if ($this->knownCountry($leftCc) && $this->knownLanguage($right)) {
+            return $this->makeLocale($leftCc, $right);
+        }
+        return null;
+    }
+
+    private function makeLocale(string $cc, string $lang): array
+    {
+        $lang = strtolower($lang);
+        if ($lang === '') {
+            $lang = 'en';
+        }
+        $marketLang = $lang;
+        if ($cc === 'NO' && ($lang === 'no' || $lang === 'nb' || $lang === 'nn')) {
+            $marketLang = 'nb';
+        }
+        $google = $lang;
+        if ($lang === 'zh') {
+            $google = 'zh-' . $cc;
+        }
+        $duckCc = strtolower($cc);
+        $duckLang = $lang;
+        if ($cc === 'GB') {
+            $duckCc = 'uk';
+        }
+        if ($cc === 'JP' && $lang === 'ja') {
+            $duckLang = 'jp';
+        } elseif ($cc === 'KR' && $lang === 'ko') {
+            $duckLang = 'kr';
+        } elseif (($cc === 'TW' || $cc === 'HK') && $lang === 'zh') {
+            $duckLang = 'tzh';
+        }
+        $accept = $lang === 'en'
+            ? 'Accept-Language: en-' . $cc . ',en;q=0.9'
+            : 'Accept-Language: ' . $lang . '-' . $cc . ',' . $lang . ';q=0.9,en;q=0.8';
+        return [
+            'error' => '',
+            'cc' => $cc,
+            'lang' => $lang,
+            'market' => $marketLang . '-' . $cc,
+            'duck' => $duckCc . '-' . $duckLang,
+            'google_hl' => $google,
+            'accept' => $accept,
+        ];
+    }
+
+    private function blankLocale(string $error): array
+    {
+        return [
+            'error' => $error,
+            'cc' => '',
+            'lang' => '',
+            'market' => '',
+            'duck' => 'wt-wt',
+            'google_hl' => '',
+            'accept' => '',
+        ];
+    }
+
+    private function serverCountry(): string
+    {
+        $zone = date_default_timezone_get();
+        return $this->timezoneCountries()[$zone] ?? '';
+    }
+
+    private function timezoneCountries(): array
+    {
+        static $map = null;
+        if ($map !== null) {
+            return $map;
+        }
+        $map = [];
+        foreach (['/usr/share/zoneinfo/zone.tab', '/var/db/timezone/zoneinfo/zone.tab'] as $path) {
+            if (!is_file($path)) {
+                continue;
+            }
+            $lines = file($path, FILE_IGNORE_NEW_LINES);
+            if (!is_array($lines)) {
+                continue;
+            }
+            foreach ($lines as $line) {
+                if ($line === '' || $line[0] === '#') {
+                    continue;
+                }
+                $parts = explode("\t", $line);
+                if (count($parts) < 3) {
+                    continue;
+                }
+                $code = strtoupper(trim($parts[0]));
+                $name = trim($parts[2]);
+                if (strlen($code) === 2 && $name !== '') {
+                    $map[$name] = $code;
+                }
+            }
+            if ($map !== []) {
+                break;
+            }
+        }
+        return $map;
+    }
+
+    private function knownCountry(string $cc): bool
+    {
+        if (isset($this->countryLanguages()[$cc])) {
+            return true;
+        }
+        return in_array($cc, $this->timezoneCountries(), true);
+    }
+
+    private function knownLanguage(string $lang): bool
+    {
+        static $langs = null;
+        if ($langs === null) {
+            $langs = ['en' => true, 'nb' => true, 'nn' => true];
+            foreach ($this->countryLanguages() as $code) {
+                $langs[$code] = true;
+            }
+        }
+        return isset($langs[$lang]);
+    }
+
+    private function countryLanguage(string $cc): string
+    {
+        return $this->countryLanguages()[$cc] ?? 'en';
+    }
+
+    private function countryLanguages(): array
+    {
+        return [
+            'SE' => 'sv', 'NO' => 'no', 'DK' => 'da', 'FI' => 'fi', 'IS' => 'is', 'FO' => 'fo',
+            'DE' => 'de', 'AT' => 'de', 'CH' => 'de', 'LI' => 'de',
+            'NL' => 'nl', 'BE' => 'nl',
+            'FR' => 'fr', 'LU' => 'fr', 'MC' => 'fr',
+            'ES' => 'es', 'MX' => 'es', 'AR' => 'es', 'CL' => 'es', 'CO' => 'es', 'PE' => 'es', 'VE' => 'es', 'UY' => 'es', 'EC' => 'es', 'BO' => 'es', 'PY' => 'es', 'CR' => 'es', 'PA' => 'es', 'GT' => 'es', 'HN' => 'es', 'NI' => 'es', 'SV' => 'es', 'DO' => 'es', 'CU' => 'es',
+            'IT' => 'it', 'SM' => 'it', 'VA' => 'it',
+            'PT' => 'pt', 'BR' => 'pt',
+            'PL' => 'pl', 'CZ' => 'cs', 'SK' => 'sk', 'HU' => 'hu', 'RO' => 'ro', 'BG' => 'bg', 'GR' => 'el', 'TR' => 'tr',
+            'RU' => 'ru', 'UA' => 'uk', 'BY' => 'be', 'EE' => 'et', 'LV' => 'lv', 'LT' => 'lt',
+            'SI' => 'sl', 'HR' => 'hr', 'RS' => 'sr', 'BA' => 'bs', 'AL' => 'sq',
+            'JP' => 'ja', 'KR' => 'ko', 'CN' => 'zh', 'TW' => 'zh', 'HK' => 'zh', 'MO' => 'zh',
+            'TH' => 'th', 'VN' => 'vi', 'ID' => 'id', 'MY' => 'ms',
+            'SA' => 'ar', 'AE' => 'ar', 'EG' => 'ar', 'QA' => 'ar', 'KW' => 'ar', 'IL' => 'he', 'IR' => 'fa',
+            'US' => 'en', 'GB' => 'en', 'CA' => 'en', 'AU' => 'en', 'NZ' => 'en', 'IE' => 'en', 'IN' => 'en', 'SG' => 'en', 'ZA' => 'en', 'PH' => 'en', 'NG' => 'en',
+        ];
     }
 
     private function setCookieHeader(string $header): string
@@ -703,9 +904,17 @@ class CapabilityTools
         return $out;
     }
 
-    private function googleResults(string $query): array
+    private function googleResults(string $query, array $locale): array
     {
-        $fetched = $this->searchFetch('https://www.google.com/search?gbv=1&hl=en&num=8&q=' . rawurlencode($query));
+        $url = 'https://www.google.com/search?gbv=1&num=8&q=' . rawurlencode($query);
+        if ($locale['google_hl'] !== '') {
+            $url .= '&hl=' . rawurlencode($locale['google_hl']);
+        }
+        if ($locale['cc'] !== '') {
+            $url .= '&gl=' . rawurlencode(strtolower($locale['cc']));
+        }
+        $headers = $locale['accept'] !== '' ? [$locale['accept']] : [];
+        $fetched = $this->searchFetch($url, null, $headers);
         $body = (string)$fetched['body'];
         if ($this->searchFailedToConnect($fetched)) {
             return $this->searchOutcome([], 'transport', $fetched);
@@ -955,9 +1164,9 @@ class CapabilityTools
         return $this->absoluteUrl($href, $href);
     }
 
-    private function instantAnswer(string $query): string
+    private function instantAnswer(string $query, array $locale): string
     {
-        $body = $this->request('https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q=' . rawurlencode($query));
+        $body = $this->request('https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&kl=' . rawurlencode($locale['duck']) . '&q=' . rawurlencode($query));
         $json = json_decode($body, true);
         if (!is_array($json)) {
             return '';
