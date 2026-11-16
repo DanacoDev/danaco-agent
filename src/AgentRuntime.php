@@ -588,19 +588,25 @@ class AgentRuntime
                     $this->db->loop($agent, 'steer', 'prose delegate · ' . (string)($inferred['args']['agent'] ?? ''), $projectId);
                 }
             }
-            $proseTools = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->announcedToolsWithoutCall($turnText);
+            $openStep = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->replyLeavesWorkOpen($turnText);
+            $proseTools = !$tail['tools'] && !$cutOff && ($openStep || (!$this->llm->incomplete && $this->announcedToolsWithoutCall($turnText)));
             $emptyFences = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->emptyPayloadFences($turnText);
             if (!$tail['tools'] && ($cutOff || $this->llm->incomplete || $proseTools || $emptyFences)) {
                 $ranOut = $this->llm->ranOut;
                 if ($retryOpen >= 5 && !$ranOut) {
-                    $why = $emptyFences ? 'empty fences' : ($proseTools ? 'prose tool' : 'cutoff');
-                    $this->db->loop($agent, 'stop', $why . ' · retry limit', $projectId);
-                    if ($emptyFences) {
-                        throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
+                    if ($openStep && !$emptyFences && !$cutOff) {
+                        $this->db->loop($agent, 'steer', 'unfinished step · still going', $projectId);
+                        $retryOpen = 4;
+                    } else {
+                        $why = $emptyFences ? 'empty fences' : ($proseTools ? 'prose tool' : 'cutoff');
+                        $this->db->loop($agent, 'stop', $why . ' · retry limit', $projectId);
+                        if ($emptyFences) {
+                            throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
+                        }
+                        throw new RuntimeException($proseTools
+                            ? 'The model kept naming tools without calling them.'
+                            : 'The tool call was cut off before it finished.');
                     }
-                    throw new RuntimeException($proseTools
-                        ? 'The model kept naming tools without calling them.'
-                        : 'The tool call was cut off before it finished.');
                 }
                 if (!$ranOut) {
                     $retryOpen++;
@@ -610,6 +616,8 @@ class AgentRuntime
                     $why = 'cutoff';
                 } elseif ($emptyFences) {
                     $why = 'empty fences';
+                } elseif ($openStep && !$this->announcedToolsWithoutCall($turnText)) {
+                    $why = 'unfinished step';
                 } elseif ($proseTools) {
                     $why = 'prose tool';
                 } elseif ($ranOut) {
@@ -634,6 +642,9 @@ class AgentRuntime
                     $prompt = 'That reply was an empty code fence, so nothing was called or saved. ```markdown is not a tool call. Do not output ``` at all. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill is write_skill with name, description, and source. The same name updates a custom skill. source is the SKILL.md instructions. A project file is filesystem with action write. A wiki file is wiki_memory with action write. Send the full content.';
                 } elseif ($proseTools) {
                     $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Do not open a markdown code fence. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
+                    if ($openStep && !$this->announcedToolsWithoutCall($turnText)) {
+                        $prompt = 'You described the next step instead of doing it. Do not only say you will check, add, or save. Emit the tool call now:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
+                    }
                     if (preg_match('/\bdelegat/i', $turnText)) {
                         $prompt = 'That delegation was not run. Do not describe it. Emit the <<tool>> JSON block for kanban so the card is in_progress, then the <<tool>> JSON block for delegate. Pass task_id when the card already exists.';
                     } elseif (($xmlTool = $this->fakeXmlToolName($turnText)) !== null) {
@@ -1187,6 +1198,30 @@ class AgentRuntime
     private function finishVisible(string $visible): string
     {
         return trim($this->stripLeakedThink($visible));
+    }
+
+    private function replyLeavesWorkOpen(string $text): bool
+    {
+        $text = trim($this->stripLeakedThink($text));
+        if ($text === '' || preg_match('/\blet me know\b/i', $text)) {
+            return false;
+        }
+        if (preg_match('/\?\s*$/', $text) && preg_match('/\b(you|your)\b/i', $text)) {
+            return false;
+        }
+        if (strlen($text) <= 280 && $this->promisedStep($text)) {
+            return true;
+        }
+        $parts = preg_split('/(?<=[.!?])\s+/', $text) ?: [];
+        $last = trim((string)end($parts));
+        return $last !== '' && strlen($last) <= 200 && $this->promisedStep($last);
+    }
+
+    private function promisedStep(string $text): bool
+    {
+        $intent = 'I\'ll|I will|Let me|I\'m going to|I am going to';
+        $verb = 'check|inspect|read|search|find|add|insert|update|write|save|delegate|move|look|query|create|fetch|browse|open|list|verify|confirm|research';
+        return (bool)preg_match('/\b(?:' . $intent . ')\b(?!\s+not\b)[^.\n]{0,160}\b(?:' . $verb . ')\b(?!\s+you\b)/i', $text);
     }
 
     private function stripLeakedThink(string $text): string
