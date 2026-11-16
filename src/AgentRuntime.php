@@ -714,6 +714,7 @@ class AgentRuntime
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
                 return $this->finishVisible($visible);
             }
+            $finishChecks = 0;
             $called = strip_chat_tags(strip_tool_markers($raw !== '' ? $raw : $turnText));
             if (trim($called) === '') {
                 $called = 'Called a tool.';
@@ -1120,6 +1121,30 @@ class AgentRuntime
         return true;
     }
 
+    private function replyLeavesWorkOpen(string $text): bool
+    {
+        $text = trim($this->stripLeakedThink($text));
+        if ($text === '' || preg_match('/\blet me know\b/i', $text)) {
+            return false;
+        }
+        if (preg_match('/\?\s*$/', $text) && preg_match('/\b(you|your)\b/i', $text)) {
+            return false;
+        }
+        if (strlen($text) <= 280 && $this->promisedStep($text)) {
+            return true;
+        }
+        $parts = preg_split('/(?<=[.!?])\s+/', $text) ?: [];
+        $last = trim((string)end($parts));
+        return $last !== '' && strlen($last) <= 200 && $this->promisedStep($last);
+    }
+
+    private function promisedStep(string $text): bool
+    {
+        $intent = 'I\'ll|I will|Let me|I\'m going to|I am going to';
+        $verb = 'check|inspect|read|search|find|add|insert|update|write|save|delegate|move|look|query|create|fetch|browse|open|list|verify|confirm|research';
+        return (bool)preg_match('/\b(?:' . $intent . ')\b(?!\s+not\b)[^.\n]{0,160}\b(?:' . $verb . ')\b(?!\s+you\b)/i', $text);
+    }
+
     private function finishCheckSaysContinue(array $messages, string $reply, bool $scheduled, ?callable $shouldStop): bool
     {
         if ($shouldStop && $shouldStop()) {
@@ -1145,9 +1170,9 @@ class AgentRuntime
         $tools = $this->recentToolResults($messages);
         $reply = clip_text(trim($reply), 1500);
         if ($scheduled) {
-            $question = 'This is a scheduled task and nobody is here to answer. Is that task finished? Answer yes or no. yes only if the task is finished. A question to the user is no.';
+            $question = 'This is a scheduled task and nobody is here to answer. Is that task finished? Answer yes or no. yes only if the task is finished. A question to the user is no. A reply or tool result that only promises to check, add, or save, and did not do it, is no.';
         } else {
-            $question = 'Is the job finished, or is the agent only waiting for the user? Answer yes or no. yes = the requested work is done, or the agent asked the user a real question, or it is waiting for the user to choose, including now versus scheduled. no = work is still unfinished. The last tool failed and was not fixed, or the reply describes a next step it did not take.';
+            $question = 'Is the job finished, or is the agent only waiting for the user? Answer yes or no. yes = the requested work is done, or the agent asked the user a real question, or it is waiting for the user to choose, including now versus scheduled. no = work is still unfinished. The last tool failed and was not fixed, the reply describes a next step it did not take, or a tool result only promises to check, add, or save.';
         }
         return $question . "\n\nUser request:\n" . ($request !== '' ? $request : '(none)')
             . "\n\nRecent tool results:\n" . ($tools !== '' ? $tools : '(none)')
@@ -1228,30 +1253,6 @@ class AgentRuntime
     private function finishVisible(string $visible): string
     {
         return trim($this->stripLeakedThink($visible));
-    }
-
-    private function replyLeavesWorkOpen(string $text): bool
-    {
-        $text = trim($this->stripLeakedThink($text));
-        if ($text === '' || preg_match('/\blet me know\b/i', $text)) {
-            return false;
-        }
-        if (preg_match('/\?\s*$/', $text) && preg_match('/\b(you|your)\b/i', $text)) {
-            return false;
-        }
-        if (strlen($text) <= 280 && $this->promisedStep($text)) {
-            return true;
-        }
-        $parts = preg_split('/(?<=[.!?])\s+/', $text) ?: [];
-        $last = trim((string)end($parts));
-        return $last !== '' && strlen($last) <= 200 && $this->promisedStep($last);
-    }
-
-    private function promisedStep(string $text): bool
-    {
-        $intent = 'I\'ll|I will|Let me|I\'m going to|I am going to';
-        $verb = 'check|inspect|read|search|find|add|insert|update|write|save|delegate|move|look|query|create|fetch|browse|open|list|verify|confirm|research';
-        return (bool)preg_match('/\b(?:' . $intent . ')\b(?!\s+not\b)[^.\n]{0,160}\b(?:' . $verb . ')\b(?!\s+you\b)/i', $text);
     }
 
     private function stripLeakedThink(string $text): string
