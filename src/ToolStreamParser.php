@@ -11,6 +11,8 @@ class ToolStreamParser
     private bool $closerHold = false;
     private string $toolBuf = '';
     private array $tools = [];
+    private bool $alienOpen = false;
+    private bool $rejected = false;
 
     public function __construct(private array $toolNames = [])
     {
@@ -30,18 +32,39 @@ class ToolStreamParser
     public function finish(): array
     {
         $emitted = $this->drain(false);
+        if ($this->inTool) {
+            $call = $this->extractCall($this->toolBuf . $this->pending);
+            if ($call !== null) {
+                $this->tools[] = $call;
+                $this->inTool = false;
+                $this->holdingTool = false;
+                $this->alienOpen = false;
+                $this->toolBuf = '';
+                $this->pending = '';
+            } elseif ($this->alienOpen) {
+                $this->rejected = true;
+                $this->inTool = false;
+                $this->holdingTool = false;
+                $this->alienOpen = false;
+                $this->toolBuf = '';
+                $this->pending = '';
+            }
+        }
         $open = $this->inTool || $this->holdingTool;
         if ($this->inTool) {
             $text = $emitted . '<<tool>>' . $this->toolBuf . $this->pending;
         } else {
-            $text = $emitted . $this->pending;
+            $text = $emitted . strip_tool_markers($this->pending);
         }
         $tools = $this->tools;
+        $rejected = $this->rejected;
         $this->pending = '';
         $this->toolBuf = '';
         $this->inTool = false;
+        $this->alienOpen = false;
         $this->tools = [];
-        return ['text' => $text, 'tools' => $tools, 'open' => $open];
+        $this->rejected = false;
+        return ['text' => $text, 'tools' => $tools, 'open' => $open, 'rejected' => $rejected];
     }
 
     private function drain(bool $holdLonger): string
@@ -58,8 +81,14 @@ class ToolStreamParser
                         continue;
                     }
                 }
-                $open = $this->findMarker($this->pending, self::OPENERS, $holdLonger);
+                $open = $this->findToolMarker($this->pending, true, $holdLonger);
+                $close = $this->findToolMarker($this->pending, false, $holdLonger);
                 $braceAt = strpos($this->pending, '{');
+                if ($close !== null && ($open === null || $close['at'] <= $open['at']) && ($braceAt === false || $close['at'] <= $braceAt)) {
+                    $emitted .= substr($this->pending, 0, $close['at']);
+                    $this->pending = substr($this->pending, $close['at'] + strlen($close['marker']));
+                    continue;
+                }
                 if ($braceAt !== false && ($open === null || $braceAt < $open['at'])) {
                     $kind = $this->toolObjectKind(substr($this->pending, $braceAt));
                     if ($kind === 'maybe') {
@@ -102,7 +131,7 @@ class ToolStreamParser
                     if (!$holdLonger) {
                         break;
                     }
-                    $hold = max($this->suffixHold($this->pending, self::OPENERS), $this->fencePrefixHold($this->pending));
+                    $hold = max($this->suffixHold($this->pending, self::OPENERS), $this->suffixHold($this->pending, self::CLOSERS), $this->fencePrefixHold($this->pending), $this->genericMarkerHold($this->pending));
                     $cut = strlen($this->pending) - $hold;
                     if ($cut <= 0) {
                         break;
@@ -114,28 +143,27 @@ class ToolStreamParser
                 $emitted .= substr($this->pending, 0, $open['at']);
                 $this->pending = substr($this->pending, $open['at'] + strlen($open['marker']));
                 $this->inTool = true;
+                $this->holdingTool = false;
                 $this->toolBuf = '';
+                $this->alienOpen = !in_array($open['marker'], self::OPENERS, true);
                 continue;
             }
             $this->toolBuf .= $this->pending;
             $this->pending = '';
-            $close = $this->findMarker($this->toolBuf, self::CLOSERS, $holdLonger);
+            $close = $this->findToolMarker($this->toolBuf, false, $holdLonger);
             if ($close === null) {
                 break;
             }
-            $json = trim(substr($this->toolBuf, 0, $close['at']));
+            $json = substr($this->toolBuf, 0, $close['at']);
             $rest = substr($this->toolBuf, $close['at'] + strlen($close['marker']));
-            $decoded = json_decode($json, true);
-            if (is_array($decoded)) {
-                $name = $decoded['name'] ?? $decoded['tool'] ?? null;
-                if (is_string($name) && trim($name) !== '') {
-                    $this->tools[] = [
-                        'name' => trim($name),
-                        'args' => $this->toolArgs($decoded),
-                    ];
-                }
+            $call = $this->extractCall($json);
+            if ($call !== null) {
+                $this->tools[] = $call;
+            } elseif ($this->alienOpen) {
+                $this->rejected = true;
             }
             $this->inTool = false;
+            $this->alienOpen = false;
             $this->toolBuf = '';
             $this->pending = $rest;
         }
@@ -390,5 +418,136 @@ class ToolStreamParser
             return strlen($text) - $match[0][1];
         }
         return 0;
+    }
+
+    private function findToolMarker(string $text, bool $opener, bool $holdLonger): ?array
+    {
+        $explicit = $opener ? self::OPENERS : self::CLOSERS;
+        $found = $this->findMarker($text, $explicit, false);
+        $generic = $this->findGenericMarker($text, $opener);
+        $best = $found;
+        if ($generic !== null && ($best === null || $generic['at'] < $best['at'] || ($generic['at'] === $best['at'] && strlen($generic['marker']) > strlen($best['marker'])))) {
+            $best = $generic;
+        }
+        if ($best === null) {
+            return null;
+        }
+        if ($holdLonger && $this->markerStillGrowing($text, $best, $explicit)) {
+            return null;
+        }
+        return $best;
+    }
+
+    private function findGenericMarker(string $text, bool $opener): ?array
+    {
+        if (preg_match_all('/<{1,2}\/?[^<>\n]{0,80}>{1,2}|\[{1,2}\/?[^\[\]\n]{0,80}\]{1,2}/', $text, $matches, PREG_OFFSET_CAPTURE) < 1) {
+            return null;
+        }
+        $bestAt = null;
+        $best = '';
+        foreach ($matches[0] as $hit) {
+            if (!is_array($hit)) {
+                continue;
+            }
+            $raw = (string)$hit[0];
+            $at = (int)$hit[1];
+            $kind = tool_marker_kind($raw);
+            if (($opener && $kind !== 'open') || (!$opener && $kind !== 'close')) {
+                continue;
+            }
+            if ($bestAt === null || $at < $bestAt || ($at === $bestAt && strlen($raw) > strlen($best))) {
+                $bestAt = $at;
+                $best = $raw;
+            }
+        }
+        if ($bestAt === null) {
+            return null;
+        }
+        return ['at' => $bestAt, 'marker' => $best];
+    }
+
+    private function markerStillGrowing(string $text, array $best, array $explicit): bool
+    {
+        $end = $best['at'] + strlen($best['marker']);
+        foreach ($explicit as $marker) {
+            if (strlen($marker) <= strlen($best['marker'])) {
+                continue;
+            }
+            $minStart = max(0, $end - (strlen($marker) - 1));
+            for ($start = $minStart; $start <= $best['at']; $start++) {
+                $slice = substr($text, $start);
+                if (strlen($slice) < strlen($marker) && substr($marker, 0, strlen($slice)) === $slice) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private function genericMarkerHold(string $text): int
+    {
+        if (preg_match('/(?:<{1,2}[^<>\n]{0,80}|\[{1,2}[^\[\]\n]{0,80})$/', $text, $match, PREG_OFFSET_CAPTURE) !== 1) {
+            return 0;
+        }
+        return strlen((string)$match[0][0]);
+    }
+
+    private function extractCall(string $body): ?array
+    {
+        $body = trim($body);
+        $body = preg_replace('/^(?:[ \t]*Tool call:[ \t]*(?:\r?\n|$))+/i', '', $body) ?? $body;
+        $body = trim(strip_tool_markers($body));
+        if ($body === '') {
+            return null;
+        }
+        $decoded = json_decode($body, true);
+        if (is_array($decoded)) {
+            return $this->callFromDecoded($decoded);
+        }
+        if (preg_match('/\{[\s\S]*\}/', $body, $match) !== 1) {
+            return null;
+        }
+        $json = $match[0];
+        $decoded = json_decode($json, true);
+        if (!is_array($decoded)) {
+            return null;
+        }
+        $call = $this->callFromDecoded($decoded);
+        if ($call !== null) {
+            return $call;
+        }
+        $at = strpos($body, $json);
+        $before = trim($at === false ? '' : substr($body, 0, $at));
+        if (preg_match('/([A-Za-z][A-Za-z0-9_-]{0,64})\s*$/', $before, $name) !== 1) {
+            return null;
+        }
+        $known = null;
+        foreach ($this->toolNames as $toolName) {
+            if (strcasecmp((string)$toolName, $name[1]) === 0) {
+                $known = (string)$toolName;
+                break;
+            }
+        }
+        if ($known === null) {
+            return null;
+        }
+        $args = $this->toolArgs($decoded);
+        $hasArgKey = isset($decoded['args']) || isset($decoded['arguments']) || isset($decoded['parameters']);
+        if ($args === [] && !$hasArgKey) {
+            $args = $decoded;
+        }
+        return ['name' => $known, 'args' => $args];
+    }
+
+    private function callFromDecoded(array $decoded): ?array
+    {
+        $name = $decoded['name'] ?? $decoded['tool'] ?? null;
+        if (!is_string($name) || trim($name) === '') {
+            return null;
+        }
+        return [
+            'name' => trim($name),
+            'args' => $this->toolArgs($decoded),
+        ];
     }
 }
