@@ -341,7 +341,7 @@ class Api
                     continue;
                 }
                 if ($role === 'assistant') {
-                    $row['content'] = trim(strip_tool_markers(strip_chat_tags((string)($row['content'] ?? ''))));
+                    $row['content'] = trim(strip_chat_tags((string)($row['content'] ?? '')));
                 }
                 $row['detail'] = isset($recent[$id]) ? $this->trimThinking($row['detail'] ?? null) : $this->leanDetail($row['detail'] ?? null);
                 $out[] = $row;
@@ -571,21 +571,8 @@ class Api
         }
         $this->beginSse();
         $turn = new ChatTurn();
-        $draftId = 0;
-        $lastDraft = 0.0;
-        $emit = function (array $event) use (&$draftId, &$lastDraft, $turn, $projectId): void {
-            $type = (string)($event['type'] ?? 'message');
-            $this->rememberDraft($turn, $projectId, $type, (string)($event['agent'] ?? ''), $draftId, $lastDraft);
-            $this->sse($type, $event);
-        };
-        $save = function (string $text, bool $failed = false) use (&$draftId, $projectId, $turn): array {
-            $detail = ChatTurn::encodeDetail($turn->detail);
-            if ($draftId > 0) {
-                return $this->db->updateMessage($draftId, $text, $failed, $detail);
-            }
-            $saved = $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', $failed, $detail);
-            $draftId = (int)($saved['id'] ?? 0);
-            return $saved;
+        $emit = function (array $event): void {
+            $this->sse((string)($event['type'] ?? 'message'), $event);
         };
         $lastPing = 0.0;
         $lastStopCheck = 0.0;
@@ -624,7 +611,7 @@ class Api
                 if (trim($answer) === '' && $detail === null) {
                     throw new RuntimeException('The model returned an empty answer.');
                 }
-                $saved = $save($answer);
+                $saved = $this->db->addMessage($projectId, 'assistant', $answer, 'orchestrator', false, $detail);
                 $this->db->markChatAnswerSaved($jobId);
                 $this->db->takeChatFollowup($projectId, $jobId);
                 $this->db->loop('orchestrator', 'process', 'Answer saved · job ' . $jobId . ' finished');
@@ -640,7 +627,7 @@ class Api
                 if ($followup && !$runStop) {
                     $this->db->loop('orchestrator', 'process', 'Follow-up · answer kept · job ' . $jobId . ' finished');
                     if ($text !== '') {
-                        $save($text);
+                        $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, ChatTurn::encodeDetail($turn->detail));
                     }
                     $this->db->setAgentStatus('orchestrator', 'idle');
                     $this->sse('stopped', ['text' => 'Stopped.']);
@@ -648,21 +635,21 @@ class Api
                     $this->db->acknowledgeRunStop($projectId, $jobId);
                     $this->db->loop('orchestrator', 'process', 'Stopped by user · job ' . $jobId . ' finished');
                     if ($text !== '') {
-                        $save($text);
+                        $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, ChatTurn::encodeDetail($turn->detail));
                     }
                     $this->db->setAgentStatus('orchestrator', 'idle');
                     $this->sse('stopped', ['text' => 'All processes stopped by user. Waiting for further instructions.']);
                 } elseif ($asked) {
                     $this->db->loop('orchestrator', 'process', 'Intentional stop · job ' . $jobId . ' finished');
                     $text = $text === '' ? 'Stopped.' : $text . "\n\nStopped.";
-                    $save($text);
+                    $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, ChatTurn::encodeDetail($turn->detail));
                     $this->db->setAgentStatus('orchestrator', 'idle');
                     $this->sse('stopped', ['text' => 'Stopped.']);
                 } else {
                     $this->db->loop('orchestrator', 'process', 'Stop while the model was still thinking · job ' . $jobId . ' finished');
                     $why = error_text('The reply stopped while the model was still thinking.');
                     $text = $text !== '' ? $text . "\n\n" . $why : $why;
-                    $save($text, true);
+                    $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
                     $this->db->setAgentStatus('orchestrator', 'idle');
                     $this->sse('error', ['text' => $why]);
                 }
@@ -680,9 +667,9 @@ class Api
                 $line .= $retry === 1 ? ' · give up' : ' · heartbeat may retry';
                 $this->db->loop('orchestrator', 'process', $line);
                 $error = error_text($reason);
-                $text = trim(strip_tool_markers($turn->streamed));
+                $text = trim($turn->streamed);
                 $text = $text !== '' ? $text . "\n\n" . $error : $error;
-                $save($text, true);
+                $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
                 $this->db->markChatAnswerSaved($jobId);
                 $this->db->takeChatFollowup($projectId, $jobId);
                 $this->sse('status', ['agent' => 'orchestrator', 'status' => 'error']);
@@ -691,34 +678,6 @@ class Api
         } finally {
             app_services()['llm']->releaseIfIdle();
             $this->db->loopPop();
-        }
-    }
-
-    private function rememberDraft(ChatTurn $turn, int $projectId, string $type, string $agent, int &$draftId, float &$lastDraft): void
-    {
-        $mine = $agent === '' || $agent === 'orchestrator';
-        $write = $type === 'notice' || ($mine && ($type === 'tool_call' || $type === 'tool_result' || $type === 'token'));
-        if (!$write) {
-            return;
-        }
-        if ($type === 'token' && (microtime(true) - $lastDraft) < 2) {
-            return;
-        }
-        $text = trim($turn->streamed);
-        $detail = ChatTurn::encodeDetail($turn->detail);
-        if ($text === '' && $detail === null) {
-            return;
-        }
-        $lastDraft = microtime(true);
-        try {
-            if ($draftId > 0) {
-                $this->db->updateMessage($draftId, $text, false, $detail);
-            } else {
-                $saved = $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', false, $detail);
-                $draftId = (int)($saved['id'] ?? 0);
-            }
-        } catch (Throwable $e) {
-            $this->db->loop('orchestrator', 'process', 'Draft not saved · ' . $e->getMessage());
         }
     }
 
@@ -1909,8 +1868,8 @@ class Api
         if ($remoteCount === '') {
             $remoteCount = substr($remote, 0, 7);
         }
-        if (!self::newerVersion($remoteCount, $localCount)) {
-            return $this->noUpdate($none, $fetchError);
+        if ($remoteCount === $localCount) {
+            $remoteCount .= ' (' . substr($remote, 0, 7) . ')';
         }
         $blocked = '';
         if (ctype_digit($ahead) && (int)$ahead > 0) {
@@ -2347,306 +2306,12 @@ class Api
             $this->json(['error' => 'The CPU failsafe model stays installed.'], 422);
             return;
         }
-        $stored = $this->ollamaStoredModel($name);
-        if ($stored !== null) {
-            $this->unloadOllamaModel($name);
-            $removed = $this->removeStoredModelFiles($stored);
-            if ($removed !== null) {
-                $this->json(['error' => $removed], 500);
-                return;
-            }
-        }
         $result = $this->ollamaRequest('DELETE', '/api/delete', ['model' => $name], 60);
         if ($result['error'] !== null) {
             $this->json(['error' => $result['error']], 502);
             return;
         }
         $this->json(['ok' => true]);
-    }
-
-    private function unloadOllamaModel(string $name): void
-    {
-        $ps = $this->ollamaRequest('GET', '/api/ps', null, 8);
-        $running = false;
-        $want = strtolower($name);
-        foreach (($ps['json']['models'] ?? []) as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-            $live = strtolower(trim((string)($row['name'] ?? $row['model'] ?? '')));
-            if ($live === $want || $live === $want . ':latest' || $want === $live . ':latest') {
-                $running = true;
-                break;
-            }
-        }
-        if (!$running) {
-            return;
-        }
-        $this->ollamaRequest('POST', '/api/generate', ['model' => $name, 'keep_alive' => 0], 30);
-        foreach (['/opt/homebrew/bin/ollama', '/usr/local/bin/ollama', '/usr/bin/ollama'] as $bin) {
-            if (is_executable($bin)) {
-                Process::run([$bin, 'stop', $name], null, null, 30);
-                return;
-            }
-        }
-        if (!Process::commandExists('ollama')) {
-            return;
-        }
-        $found = Process::run(['/bin/sh', '-c', 'command -v ollama'], null, null, 5);
-        $path = trim($found['stdout']);
-        if ($path !== '' && is_executable($path)) {
-            Process::run([$path, 'stop', $name], null, null, 30);
-        }
-    }
-
-    private function ollamaStoredModel(string $name): ?array
-    {
-        $relative = $this->ollamaManifestRelative($name);
-        if ($relative === null) {
-            return null;
-        }
-        foreach ($this->ollamaModelsDirs() as $root) {
-            $path = $this->ollamaManifestFile($root, $relative);
-            if ($path === null) {
-                continue;
-            }
-            return [
-                'root' => $root,
-                'path' => $path,
-                'digests' => $this->manifestDigests($path),
-            ];
-        }
-        return null;
-    }
-
-    private function ollamaManifestRelative(string $name): ?string
-    {
-        $name = trim($name);
-        $tag = 'latest';
-        $slash = strrpos($name, '/');
-        $colon = strrpos($name, ':');
-        if ($colon !== false && ($slash === false || $colon > $slash)) {
-            $tag = substr($name, $colon + 1);
-            $name = substr($name, 0, $colon);
-        }
-        if ($name === '' || $tag === '' || str_contains($name, '..') || str_contains($tag, '..')) {
-            return null;
-        }
-        $parts = explode('/', $name);
-        if (count($parts) === 1) {
-            $parts = ['registry.ollama.ai', 'library', $parts[0]];
-        } elseif (count($parts) === 2) {
-            if (strpbrk($parts[0], '.:') !== false) {
-                $parts = [$parts[0], 'library', $parts[1]];
-            } else {
-                array_unshift($parts, 'registry.ollama.ai');
-            }
-        } elseif (count($parts) !== 3) {
-            return null;
-        }
-        foreach ($parts as $part) {
-            if ($part === '' || $part === '.' || $part === '..') {
-                return null;
-            }
-        }
-        if ($tag === '.' || str_contains($tag, '/')) {
-            return null;
-        }
-        $parts[] = $tag;
-        return implode('/', $parts);
-    }
-
-    private function ollamaModelsDirs(): array
-    {
-        $dirs = [];
-        $add = function (string $dir) use (&$dirs): void {
-            $dir = rtrim($dir, '/');
-            if ($dir === '' || !is_dir($dir . '/manifests') || !is_dir($dir . '/blobs')) {
-                return;
-            }
-            $real = realpath($dir);
-            if ($real === false) {
-                return;
-            }
-            $dirs[$real] = $real;
-        };
-        $env = getenv('OLLAMA_MODELS');
-        if (is_string($env)) {
-            $add($env);
-        }
-        $home = getenv('HOME');
-        if (is_string($home) && $home !== '') {
-            $add($home . '/.ollama/models');
-        }
-        $add('/usr/share/ollama/.ollama/models');
-        if (function_exists('posix_getpwnam')) {
-            $info = posix_getpwnam('ollama');
-            if (is_array($info) && is_string($info['dir'] ?? null) && $info['dir'] !== '') {
-                $add($info['dir'] . '/.ollama/models');
-            }
-        }
-        foreach ($this->ollamaProcessModelDirs() as $dir) {
-            $add($dir);
-        }
-        return array_values($dirs);
-    }
-
-    private function ollamaProcessModelDirs(): array
-    {
-        if (!is_dir('/proc')) {
-            return [];
-        }
-        $dirs = [];
-        foreach (glob('/proc/[0-9]*/cmdline', GLOB_NOSORT) ?: [] as $cmdline) {
-            $raw = @file_get_contents($cmdline);
-            if (!is_string($raw) || !preg_match('/(^|\0)([^\0]*\/)?ollama(\0|$)/', $raw)) {
-                continue;
-            }
-            $pid = basename(dirname($cmdline));
-            if (!preg_match('/^[0-9]+$/', $pid)) {
-                continue;
-            }
-            $env = @file_get_contents('/proc/' . $pid . '/environ');
-            if (is_string($env)) {
-                foreach (explode("\0", $env) as $item) {
-                    if (str_starts_with($item, 'OLLAMA_MODELS=') && strlen($item) > 14) {
-                        $dirs[] = substr($item, 14);
-                    }
-                }
-            }
-            $status = @file_get_contents('/proc/' . $pid . '/status');
-            if (!is_string($status) || !preg_match('/^Uid:\s+(\d+)/m', $status, $match) || !function_exists('posix_getpwuid')) {
-                continue;
-            }
-            $info = posix_getpwuid((int)$match[1]);
-            if (is_array($info) && is_string($info['dir'] ?? null) && $info['dir'] !== '') {
-                $dirs[] = $info['dir'] . '/.ollama/models';
-            }
-        }
-        return $dirs;
-    }
-
-    private function ollamaManifestFile(string $root, string $relative): ?string
-    {
-        $base = $root . '/manifests';
-        $direct = $base . '/' . $relative;
-        if (is_file($direct)) {
-            return $direct;
-        }
-        if (!is_dir($base)) {
-            return null;
-        }
-        $want = strtolower($relative);
-        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($base, FilesystemIterator::SKIP_DOTS));
-        foreach ($iterator as $file) {
-            if (!$file->isFile()) {
-                continue;
-            }
-            $full = $file->getPathname();
-            $suffix = substr($full, strlen($base) + 1);
-            $suffix = str_replace('\\', '/', $suffix);
-            if (strtolower($suffix) === $want) {
-                return $full;
-            }
-        }
-        return null;
-    }
-
-    private function manifestDigests(string $path): array
-    {
-        $json = json_decode((string)@file_get_contents($path), true);
-        if (!is_array($json)) {
-            return [];
-        }
-        $digests = [];
-        $config = $json['config']['digest'] ?? '';
-        if (is_string($config) && preg_match('/^sha256:[0-9a-f]{64}$/', $config)) {
-            $digests[$config] = $config;
-        }
-        foreach ($json['layers'] ?? [] as $layer) {
-            if (!is_array($layer)) {
-                continue;
-            }
-            $digest = $layer['digest'] ?? '';
-            if (is_string($digest) && preg_match('/^sha256:[0-9a-f]{64}$/', $digest)) {
-                $digests[$digest] = $digest;
-            }
-        }
-        return array_values($digests);
-    }
-
-    private function removeStoredModelFiles(array $stored): ?string
-    {
-        $blobDir = realpath($stored['root'] . '/blobs');
-        if ($blobDir === false || !is_dir($blobDir)) {
-            return 'Could not delete the model files.';
-        }
-        $others = $this->otherManifestDigests($stored['root'], $stored['path']);
-        foreach ($stored['digests'] as $digest) {
-            if (!is_string($digest) || isset($others[$digest]) || !preg_match('/^sha256:([0-9a-f]{64})$/', $digest, $match)) {
-                continue;
-            }
-            $matches = glob($blobDir . '/sha256-' . $match[1] . '*', GLOB_NOSORT) ?: [];
-            if ($matches === []) {
-                continue;
-            }
-            foreach ($matches as $path) {
-                $base = basename($path);
-                if (!preg_match('/^sha256-[0-9a-f]{64}(-partial.*)?$/', $base)) {
-                    continue;
-                }
-                if (!$this->removeBlobFile($blobDir, $path)) {
-                    return 'Could not delete the model files.';
-                }
-            }
-        }
-        return null;
-    }
-
-    private function otherManifestDigests(string $root, string $keep): array
-    {
-        $base = $root . '/manifests';
-        $keepReal = realpath($keep);
-        $digests = [];
-        if (!is_dir($base)) {
-            return $digests;
-        }
-        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($base, FilesystemIterator::SKIP_DOTS));
-        foreach ($iterator as $file) {
-            if (!$file->isFile()) {
-                continue;
-            }
-            $full = $file->getPathname();
-            $real = realpath($full);
-            if ($keepReal !== false && $real === $keepReal) {
-                continue;
-            }
-            foreach ($this->manifestDigests($full) as $digest) {
-                $digests[$digest] = true;
-            }
-        }
-        return $digests;
-    }
-
-    private function removeBlobFile(string $blobDir, string $path): bool
-    {
-        if (!is_file($path)) {
-            return true;
-        }
-        $real = realpath($path);
-        if ($real === false || !str_starts_with($real, $blobDir . DIRECTORY_SEPARATOR)) {
-            return false;
-        }
-        if (@unlink($real) || !is_file($real)) {
-            return true;
-        }
-        $sudo = is_file('/usr/bin/sudo') ? '/usr/bin/sudo' : 'sudo';
-        $probe = Process::run([$sudo, '-n', 'true'], null, null, 8);
-        if ($probe['code'] !== 0) {
-            return false;
-        }
-        $removed = Process::run([$sudo, '-n', 'rm', '-f', '--', $real], null, null, 15);
-        return $removed['code'] === 0 && !is_file($real);
     }
 
     private function pullModel(): void
@@ -3733,10 +3398,9 @@ class Api
         $options = ['num_predict' => 1];
         if ((string)$this->db->getSetting('model_mode', '') === 'local') {
             $wanted = app_services()['hardware']->effectiveContext('local');
-            $options['num_ctx'] = $wanted;
             $gpu = app_services()['llm']->gpuOptions($model, $wanted);
-            if (isset($gpu['num_gpu'])) {
-                $options['num_gpu'] = $gpu['num_gpu'];
+            if ($gpu !== []) {
+                $options = array_merge($options, $gpu);
             }
         }
         $payload = json_encode([

@@ -28,8 +28,6 @@ class LLMClient
 
     public bool $brief = false;
 
-    public bool $keepBrief = false;
-
     public bool $usingFailsafe = false;
 
     private int $attemptTry = 1;
@@ -202,7 +200,7 @@ class LLMClient
             return null;
         }
         $maxCtx = (int)(floor(($budgetMb / 154) * 1024 / 1024) * 1024);
-        if ($maxCtx < $wanted) {
+        if ($maxCtx < 2048) {
             $this->ctxCache[$cacheKey] = 'context';
             $this->gpuSkip = 'context';
             return null;
@@ -218,8 +216,9 @@ class LLMClient
             }
             $this->db->setSetting('gpu_split_model', '');
         }
-        $this->ctxCache[$cacheKey] = $wanted;
-        return $wanted;
+        $ctx = min($wanted, $maxCtx);
+        $this->ctxCache[$cacheKey] = $ctx;
+        return $ctx;
     }
 
     public function keepSplit(string $model): void
@@ -490,9 +489,8 @@ class LLMClient
         $this->incomplete = false;
         $this->ranOut = false;
         $this->doneReason = '';
-        $short = $this->brief;
+        $brief = $this->brief;
         $this->brief = false;
-        $brief = $short || $this->keepBrief;
         $mode = $failsafe ? 'cpu_failsafe' : (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
         $numCtx = $this->hardware->effectiveContext($mode);
         if (!$brief && $this->db->getSetting('recovery_hint', '0') === '1') {
@@ -506,7 +504,7 @@ class LLMClient
         if (!$failsafe && ($cloud || $mode === 'cloud')) {
             $cloudModel = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
             $this->traceModel($agent, $messages, $cloudModel, $numCtx, $brief, 'cloud');
-            return $this->streamOpenAi($messages, $onToken, $shouldStop, $onThinking, $short);
+            return $this->streamOpenAi($messages, $onToken, $shouldStop, $onThinking, $brief);
         }
         $model = $mode === 'cpu_failsafe'
             ? (string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model'])
@@ -516,7 +514,7 @@ class LLMClient
         }
         $base = rtrim((string)$this->db->getSetting('ollama_url', app_config()['ollama_url']), '/');
         $predict = 65536;
-        if ($short) {
+        if ($brief) {
             $predict = 4096;
         } else {
             $predictOverride = (int)$this->db->getSetting('recovery_num_predict', '0');

@@ -200,50 +200,6 @@ if [[ "$ndeps" -ne 0 && "$ndeps" -ne 10 ]]; then
   exit 1
 fi
 
-remember_gpu() {
-  local mem="$1" label="$2"
-  mem="${mem// /}"
-  [[ "$mem" =~ ^[0-9]+$ ]] || return 0
-  [[ "$mem" -gt "$VRAM_MB" ]] || return 0
-  if [[ -z "$label" ]]; then
-    label="GPU"
-  fi
-  VRAM_MB="$mem"
-  GPU_LABEL="$label"
-}
-
-drm_gpu_name() {
-  local card="$1" vendor name slot
-  name=""
-  if [[ -r "$card/device/product_name" ]]; then
-    name="$(tr -d '\0' < "$card/device/product_name")"
-    name="${name//$'\n'/ }"
-    name="${name#"${name%%[![:space:]]*}"}"
-    name="${name%"${name##*[![:space:]]}"}"
-  fi
-  if [[ -z "$name" && -r "$card/device/uevent" ]] && command -v lspci >/dev/null 2>&1; then
-    slot="$(awk -F= '/^PCI_SLOT_NAME=/ { print $2; exit }' "$card/device/uevent")"
-    if [[ "$slot" =~ ^[0-9A-Fa-f:.]+$ ]]; then
-      name="$(lspci -s "$slot" -mm 2>/dev/null | awk -F'"' 'NR==1 { print $6; exit }' || true)"
-      name="${name#"${name%%[![:space:]]*}"}"
-      name="${name%"${name##*[![:space:]]}"}"
-    fi
-  fi
-  if [[ -z "$name" && -r "$card/device/vendor" ]]; then
-    vendor="$(tr -d '[:space:]' < "$card/device/vendor")"
-    case "$vendor" in
-      0x1002) name="AMD GPU" ;;
-      0x8086) name="Intel GPU" ;;
-      0x10de) name="NVIDIA GPU" ;;
-      *) name="GPU" ;;
-    esac
-  fi
-  if [[ -z "$name" ]]; then
-    name="GPU"
-  fi
-  printf '%s' "$name"
-}
-
 echo
 echo "Hardware"
 VRAM_MB=0
@@ -254,89 +210,12 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     [[ -z "$gpu_line" ]] && continue
     gpu_mem="${gpu_line##*, }"
     gpu_name="${gpu_line%, *}"
-    remember_gpu "$gpu_mem" "$gpu_name"
+    gpu_mem="${gpu_mem// /}"
+    if [[ "$gpu_mem" =~ ^[0-9]+$ ]] && [[ "$gpu_mem" -gt "$VRAM_MB" ]]; then
+      VRAM_MB="$gpu_mem"
+      GPU_LABEL="$gpu_name"
+    fi
   done < <(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null || true)
-fi
-if [[ "$OS" == "Linux" ]]; then
-  drm_seen=" "
-  for card in /sys/class/drm/card[0-9]*; do
-    [[ -d "$card/device" ]] || continue
-    [[ "${card##*/}" =~ ^card[0-9]+$ ]] || continue
-    drm_key="$(readlink -f "$card/device" 2>/dev/null || printf '%s' "$card")"
-    case " $drm_seen " in
-      *" $drm_key "*) continue ;;
-    esac
-    drm_seen="$drm_seen $drm_key"
-    drm_bytes=""
-    if [[ -r "$card/device/mem_info_vram_total" ]]; then
-      drm_bytes="$(tr -d '[:space:]' < "$card/device/mem_info_vram_total")"
-    else
-      drm_sum=0
-      drm_found=0
-      for tile in "$card"/device/tile[0-9]*/mem_info_vram_total; do
-        [[ -r "$tile" ]] || continue
-        drm_part="$(tr -d '[:space:]' < "$tile")"
-        [[ "$drm_part" =~ ^[0-9]+$ ]] || continue
-        drm_sum=$((drm_sum + drm_part))
-        drm_found=1
-      done
-      if [[ "$drm_found" == "1" ]]; then
-        drm_bytes="$drm_sum"
-      fi
-    fi
-    [[ "$drm_bytes" =~ ^[0-9]+$ ]] || continue
-    remember_gpu "$((drm_bytes / 1048576))" "$(drm_gpu_name "$card")"
-  done
-  for bank in /sys/class/kfd/kfd/topology/nodes/*/mem_banks/*/properties; do
-    [[ -r "$bank" ]] || continue
-    [[ "$(awk '/^heap_type / { print $2; exit }' "$bank")" == "1" ]] || continue
-    kfd_bytes="$(awk '/^size_in_bytes / { print $2; exit }' "$bank")"
-    [[ "$kfd_bytes" =~ ^[0-9]+$ ]] || continue
-    remember_gpu "$((kfd_bytes / 1048576))" "AMD GPU"
-  done
-  if command -v rocm-smi >/dev/null 2>&1; then
-    if command -v timeout >/dev/null 2>&1; then
-      rocm_text="$(timeout 8 rocm-smi --showmeminfo vram 2>/dev/null || true)"
-    else
-      rocm_text="$(rocm-smi --showmeminfo vram 2>/dev/null || true)"
-    fi
-    while IFS= read -r rocm_line; do
-      if [[ "$rocm_line" =~ [Vv][Rr][Aa][Mm][[:space:]]+Total[[:space:]]+Memory[[:space:]]+\(B\):[[:space:]]*([0-9]+) ]]; then
-        remember_gpu "$((BASH_REMATCH[1] / 1048576))" "AMD GPU"
-      elif [[ "$rocm_line" =~ [Vv][Rr][Aa][Mm][[:space:]]+Total[[:space:]]+Memory[[:space:]]+\(MiB\):[[:space:]]*([0-9]+) ]]; then
-        remember_gpu "${BASH_REMATCH[1]}" "AMD GPU"
-      fi
-    done <<< "$rocm_text"
-  fi
-  if command -v amd-smi >/dev/null 2>&1; then
-    if command -v timeout >/dev/null 2>&1; then
-      amd_text="$(timeout 8 amd-smi static --vram 2>/dev/null || true)"
-    else
-      amd_text="$(amd-smi static --vram 2>/dev/null || true)"
-    fi
-    while IFS= read -r amd_line; do
-      if [[ "$amd_line" =~ SIZE:[[:space:]]*([0-9]+)[[:space:]]*MB ]]; then
-        remember_gpu "${BASH_REMATCH[1]}" "AMD GPU"
-      fi
-    done <<< "$amd_text"
-  fi
-  if command -v xpu-smi >/dev/null 2>&1; then
-    if command -v timeout >/dev/null 2>&1; then
-      xpu_text="$(timeout 8 xpu-smi discovery 2>/dev/null || true)"
-    else
-      xpu_text="$(xpu-smi discovery 2>/dev/null || true)"
-    fi
-    xpu_name="Intel GPU"
-    while IFS= read -r xpu_line; do
-      if [[ "$xpu_line" =~ Device[[:space:]]+Name:[[:space:]]*(.+) ]]; then
-        xpu_name="${BASH_REMATCH[1]}"
-        xpu_name="${xpu_name%%|*}"
-        xpu_name="${xpu_name%"${xpu_name##*[![:space:]]}"}"
-      elif [[ "$xpu_line" =~ Memory[[:space:]]+Physical[[:space:]]+Size:[[:space:]]*([0-9]+) ]]; then
-        remember_gpu "${BASH_REMATCH[1]}" "$xpu_name"
-      fi
-    done <<< "$xpu_text"
-  fi
 fi
 if [[ "$OS" == "Darwin" ]]; then
   RAM_MB="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1048576 ))"
@@ -370,13 +249,15 @@ if [[ -n "$GPU_LABEL" && "$VRAM_MB" -gt 0 ]]; then
 elif [[ "$OS" == "Darwin" ]]; then
   echo "No separate GPU detected. System memory: ${RAM_MB} MB"
 else
-  echo "No GPU detected. System memory: ${RAM_MB} MB"
+  echo "No NVIDIA GPU detected. System memory: ${RAM_MB} MB"
 fi
 
 FAILSAFE_MODEL="qwen2.5:0.5b"
 SUGGESTED_MODE="local"
-if [[ "$VRAM_MB" -gt 0 ]]; then
-  SUGGESTED_MODEL="Maternion/sage-a1.5:35b-q4_K_M"
+if [[ "$VRAM_MB" -ge 22528 ]]; then
+  SUGGESTED_MODEL="hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M"
+elif [[ "$VRAM_MB" -ge 15360 ]]; then
+  SUGGESTED_MODEL="hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_S"
 elif [[ "$RAM_MB" -ge 7168 ]]; then
   SUGGESTED_MODEL="qwen3.5:9b-q4_K_M"
 else
@@ -871,20 +752,20 @@ refresh_ollama() {
 tune_model() {
   local name="$1" file
   case "$name" in
-    hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_S|hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M|hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ3_S) ;;
+    hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q3_K_S|hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M) ;;
     *) return 0 ;;
   esac
   file="$(mktemp)"
   cat > "$file" <<EOF
 FROM ${name}
 PARAMETER min_p 0
-PARAMETER num_ctx 65536
+PARAMETER num_ctx 32768
 PARAMETER temperature 1
 PARAMETER top_k 20
 PARAMETER top_p 0.95
 PARAMETER draft_num_predict 2
 EOF
-  echo "Saving Ollama settings for ${name}: context 65536, temperature 1, top_k 20, top_p 0.95, min_p 0, draft_num_predict 2."
+  echo "Saving Ollama settings for ${name}: context 32768, temperature 1, top_k 20, top_p 0.95, min_p 0, draft_num_predict 2."
   if ! ollama create "$name" -f "$file"; then
     rm -f "$file"
     echo "Could not save the Ollama settings for ${name}. The model is still installed." >&2
@@ -967,10 +848,6 @@ import_unsloth_gguf() {
       file="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
       url="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
       ;;
-    hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ3_S)
-      file="Qwen3.6-35B-A3B-UD-IQ3_S.gguf"
-      url="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-IQ3_S.gguf"
-      ;;
     *) return 1 ;;
   esac
   model_tmp="${TMPDIR:-/tmp}"
@@ -986,7 +863,7 @@ import_unsloth_gguf() {
   cat > "$modelfile" <<EOF
 FROM ${dest}/${file}
 PARAMETER min_p 0
-PARAMETER num_ctx 65536
+PARAMETER num_ctx 32768
 PARAMETER temperature 1
 PARAMETER top_k 20
 PARAMETER top_p 0.95

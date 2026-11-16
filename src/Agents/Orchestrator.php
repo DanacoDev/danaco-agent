@@ -308,7 +308,7 @@ class Orchestrator
         if (app_services()['llm']->usingFailsafe) {
             $mode = 'cpu_failsafe';
         }
-        return app_services()['hardware']->agentContext($mode);
+        return app_services()['hardware']->effectiveContext($mode);
     }
 
     private function endsWithCutOff(array $messages): bool
@@ -328,7 +328,7 @@ class Orchestrator
 
     private function toolWasCutOff(string $content): bool
     {
-        $markers = ['<<tool>>', '<tool>>', '<<tool>', '<tool>', '[[tool]]', '[tool]]', '[[tool]', '[tool]', '<|tool|>'];
+        $markers = ['<<tool>>', '<tool>>', '<<tool>', '<tool>', '[[tool]]', '[tool]]', '[[tool]', '[tool]'];
         $pos = false;
         foreach ($markers as $marker) {
             $at = strrpos($content, $marker);
@@ -340,7 +340,7 @@ class Orchestrator
             return false;
         }
         $rest = substr($content, $pos);
-        foreach (['<<end>>', '<end>>', '<<end>', '<end>', '[[end]]', '[end]]', '[[end]', '[end]', '[[/tool]]', '[/tool]]', '[[/tool]', '[/tool]', '<</tool>>', '</tool>>', '<</tool>', '</tool>', '<|end|>'] as $end) {
+        foreach (['<<end>>', '<end>>', '<<end>', '<end>', '[[end]]', '[end]]', '[[end]', '[end]', '[[/tool]]', '[/tool]]', '[[/tool]', '[/tool]', '<</tool>>', '</tool>>', '<</tool>', '</tool>'] as $end) {
             if (str_contains($rest, $end)) {
                 return false;
             }
@@ -717,7 +717,7 @@ TXT;
     {
         $content = (string)($row['content'] ?? '');
         if (($row['role'] ?? '') === 'assistant') {
-            $content = strip_tool_markers(strip_chat_tags($content));
+            $content = strip_chat_tags($content);
         }
         $content = clip_text($content, 8000);
         if (($row['role'] ?? '') !== 'user' || str_starts_with($content, 'Scheduled task:')) {

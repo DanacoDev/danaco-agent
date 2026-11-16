@@ -115,65 +115,6 @@ function strip_chat_tags(string $text): string
     return $clean;
 }
 
-function tool_marker_kind(string $raw): string
-{
-    $lower = strtolower(str_replace("\u{FF5C}", '|', $raw));
-    if (preg_match('/^<{1,2}\s*\/?\s*(?:\|dsml\|)?\s*function_calls\b/', $lower) === 1) {
-        return 'drop';
-    }
-    if (preg_match('/^<{1,2}\s*(\/?)\s*(?:\|dsml\|)?\s*invoke\b/', $lower, $invoke) === 1) {
-        return $invoke[1] === '/' ? 'close' : 'open';
-    }
-    $hasTool = preg_match('/(?:^|[^a-z])tool(?:[^a-z]|$)/', $lower) === 1;
-    $hasEnd = preg_match('/(?:^|[^a-z])end(?:[^a-z]|$)/', $lower) === 1;
-    if (!$hasTool && !$hasEnd) {
-        return '';
-    }
-    $closer = $hasEnd || preg_match('#</|\[/|/tool#', $lower) === 1;
-    if ($hasTool && !$closer) {
-        return 'open';
-    }
-    if ($closer) {
-        return 'close';
-    }
-    return '';
-}
-
-function strip_tool_markers(string $text): string
-{
-    $clean = preg_replace_callback(
-        '/<{1,2}\/?[^<>\n]{0,80}>{1,2}|\[{1,2}\/?[^\[\]\n]{0,80}\]{1,2}/',
-        static function (array $match): string {
-            $kind = tool_marker_kind($match[0]);
-            if ($kind === '' || $kind === 'drop') {
-                return $kind === 'drop' ? '' : $match[0];
-            }
-            return "\x00" . $kind . "\x00";
-        },
-        $text
-    );
-    if (!is_string($clean)) {
-        $clean = $text;
-    }
-    $clean = preg_replace('/\x00open\x00[\s\S]*?\x00close\x00/', '', $clean) ?? $clean;
-    $clean = str_replace(["\x00open\x00", "\x00close\x00"], '', $clean);
-    $clean = preg_replace_callback(
-        '/(?:<{1,2}[^<>\n]{0,80}|\[{1,2}[^\[\]\n]{0,80})$/',
-        static function (array $match): string {
-            $slice = strtolower($match[0]);
-            $flat = strtolower(str_replace("\u{FF5C}", '|', $slice));
-            if (preg_match('/(?:^|[^a-z])(?:tool|end)(?:[^a-z]|$)/', $slice) === 1 || preg_match('/^<{1,2}\/?\s*(?:invoke|parameter)\b/', $flat) === 1 || preg_match('/^<{1,2}\/?\s*\|dsml\|/', $flat) === 1) {
-                return '';
-            }
-            return $match[0];
-        },
-        $clean
-    ) ?? $clean;
-    $clean = preg_replace('/<\/?(?:[\x{FF5C}|]dsml[\x{FF5C}|])?parameter\b[^>]*>/iu', '', $clean) ?? $clean;
-    $clean = preg_replace('/^[ \t]*Tool call:[ \t]*\r?$/m', '', $clean) ?? $clean;
-    return $clean;
-}
-
 function app_boot_web(): void
 {
     $config = app_config();

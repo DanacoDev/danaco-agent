@@ -58,7 +58,7 @@ class OutputLineFilter
     private function isMarker(string $line): bool
     {
         $text = trim($line);
-        return strcasecmp($text, 'output') === 0 || strcasecmp($text, '<<output>>') === 0 || strcasecmp($text, 'Tool call:') === 0;
+        return strcasecmp($text, 'output') === 0 || strcasecmp($text, '<<output>>') === 0;
     }
 
     private function couldBeMarker(string $text): bool
@@ -67,7 +67,7 @@ class OutputLineFilter
         if ($trim === '') {
             return true;
         }
-        foreach (['output', '<<output>>', 'Tool call:'] as $marker) {
+        foreach (['output', '<<output>>'] as $marker) {
             if (strlen($trim) <= strlen($marker) && strncasecmp($trim, $marker, strlen($trim)) === 0) {
                 return true;
             }
@@ -390,16 +390,12 @@ class AgentRuntime
         }
         $visible = '';
         $retryOpen = 0;
-        $roomNoted = false;
-        $heldBrief = $this->llm->keepBrief;
         $repeatTries = 0;
         $fallbackTries = 0;
         $finishChecks = 0;
-        $failedCalls = [];
         $skipCompact = false;
         $savedWritePath = '';
         $savedWriteBody = null;
-        try {
         for ($turn = 0; $turn < $maxTurns; $turn++) {
             if ($shouldStop && $shouldStop()) {
                 throw new ChatStopped('Stopped.');
@@ -585,10 +581,6 @@ class AgentRuntime
                 continue;
             }
             $repeatTries = 0;
-            $wrongTool = !$tail['tools'] && !empty($tail['rejected']);
-            if ($wrongTool) {
-                $cutOff = false;
-            }
             if ($agent === 'orchestrator' && !$tail['tools'] && !$cutOff && !$this->llm->incomplete) {
                 $inferred = $this->proseDelegation($turnText);
                 if ($inferred !== null) {
@@ -596,25 +588,19 @@ class AgentRuntime
                     $this->db->loop($agent, 'steer', 'prose delegate · ' . (string)($inferred['args']['agent'] ?? ''), $projectId);
                 }
             }
-            $openStep = !$tail['tools'] && !$cutOff && !$wrongTool && !$this->llm->incomplete && $this->replyLeavesWorkOpen($turnText);
-            $proseTools = !$tail['tools'] && !$cutOff && ($wrongTool || $openStep || (!$this->llm->incomplete && $this->announcedToolsWithoutCall($turnText)));
+            $proseTools = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->announcedToolsWithoutCall($turnText);
             $emptyFences = !$tail['tools'] && !$cutOff && !$this->llm->incomplete && $this->emptyPayloadFences($turnText);
             if (!$tail['tools'] && ($cutOff || $this->llm->incomplete || $proseTools || $emptyFences)) {
                 $ranOut = $this->llm->ranOut;
                 if ($retryOpen >= 5 && !$ranOut) {
-                    if ($openStep && !$emptyFences && !$cutOff) {
-                        $this->db->loop($agent, 'steer', 'unfinished step · still going', $projectId);
-                        $retryOpen = 4;
-                    } else {
-                        $why = $emptyFences ? 'empty fences' : ($proseTools ? 'prose tool' : 'cutoff');
-                        $this->db->loop($agent, 'stop', $why . ' · retry limit', $projectId);
-                        if ($emptyFences) {
-                            throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
-                        }
-                        throw new RuntimeException($proseTools
-                            ? 'The model kept naming tools without calling them.'
-                            : 'The tool call was cut off before it finished.');
+                    $why = $emptyFences ? 'empty fences' : ($proseTools ? 'prose tool' : 'cutoff');
+                    $this->db->loop($agent, 'stop', $why . ' · retry limit', $projectId);
+                    if ($emptyFences) {
+                        throw new RuntimeException('The model kept returning empty code fences instead of a tool call.');
                     }
+                    throw new RuntimeException($proseTools
+                        ? 'The model kept naming tools without calling them.'
+                        : 'The tool call was cut off before it finished.');
                 }
                 if (!$ranOut) {
                     $retryOpen++;
@@ -624,10 +610,6 @@ class AgentRuntime
                     $why = 'cutoff';
                 } elseif ($emptyFences) {
                     $why = 'empty fences';
-                } elseif ($wrongTool) {
-                    $why = 'wrong tool';
-                } elseif ($openStep && !$this->announcedToolsWithoutCall($turnText)) {
-                    $why = 'unfinished step';
                 } elseif ($proseTools) {
                     $why = 'prose tool';
                 } elseif ($ranOut) {
@@ -645,26 +627,13 @@ class AgentRuntime
                         $replay = 'The previous reply was empty code fences.';
                     }
                 }
-                $replayBody = trim($replay . ($cutOff ? $tail['text'] : ''));
-                if ($wrongTool) {
-                    $replayBody = trim(strip_tool_markers($replayBody));
-                    if ($replayBody === '') {
-                        $replayBody = 'The previous reply was not a tool call.';
-                    }
-                }
-                $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($replayBody)];
+                $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags(trim($replay . ($cutOff ? $tail['text'] : '')))];
                 if ($cutOff) {
                     $prompt = 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.';
                 } elseif ($emptyFences) {
                     $prompt = 'That reply was an empty code fence, so nothing was called or saved. ```markdown is not a tool call. Do not output ``` at all. Do not ask a question. Emit one tool call and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>' . "\n" . 'A skill is write_skill with name, description, and source. The same name updates a custom skill. source is the SKILL.md instructions. A project file is filesystem with action write. A wiki file is wiki_memory with action write. Send the full content.';
                 } elseif ($proseTools) {
                     $prompt = 'That was not a tool call. Do not write : tool_name or name a tool in prose. Do not open a markdown code fence. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
-                    if ($openStep && !$this->announcedToolsWithoutCall($turnText)) {
-                        $prompt = 'You described the next step instead of doing it. Do not only say you will check, add, or save. Emit the tool call now:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
-                    }
-                    if ($wrongTool) {
-                        $prompt = 'That was not a tool call. Do not write <|tool_code_begin|>, <invoke>, or a line that only says Tool call:. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
-                    }
                     if (preg_match('/\bdelegat/i', $turnText)) {
                         $prompt = 'That delegation was not run. Do not describe it. Emit the <<tool>> JSON block for kanban so the card is in_progress, then the <<tool>> JSON block for delegate. Pass task_id when the card already exists.';
                     } elseif (($xmlTool = $this->fakeXmlToolName($turnText)) !== null) {
@@ -678,13 +647,9 @@ class AgentRuntime
                     $prompt = $agent === 'orchestrator'
                         ? 'That reply used the whole output limit while thinking and wrote nothing. Keep this reply short. Do not restate the plan. Split the remaining work into smaller tasks and delegate the next one. One tool call, then stop.'
                         : 'That reply used the whole output limit while thinking and wrote nothing. Keep this reply short. Do one small step and call the tool. Then stop.';
-                    $this->llm->keepBrief = true;
-                    if (!$roomNoted) {
-                        $roomNoted = true;
-                        $this->llm->brief = true;
-                        $note = 'The reply ran out of room while thinking. Continuing with a shorter step.';
-                        $this->postNotice($emit, $projectId, $agent, $note, $scheduled);
-                    }
+                    $this->llm->brief = true;
+                    $note = 'The reply ran out of room while thinking. Continuing with a shorter step.';
+                    $this->postNotice($emit, $projectId, $agent, $note, $scheduled);
                 } else {
                     $prompt = 'The reply stopped before the work finished. Continue that same task. If a tool still needs to run, call it now.';
                 }
@@ -715,12 +680,7 @@ class AgentRuntime
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
                 return $this->finishVisible($visible);
             }
-            $finishChecks = 0;
-            $called = strip_chat_tags(strip_tool_markers($raw !== '' ? $raw : $turnText));
-            if (trim($called) === '') {
-                $called = 'Called a tool.';
-            }
-            $messages[] = ['role' => 'assistant', 'content' => $called];
+            $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($raw !== '' ? $raw : $turnText)];
             $delegated = false;
             $savedThisTurn = '';
             foreach ($tail['tools'] as $tool) {
@@ -732,15 +692,6 @@ class AgentRuntime
                 $toolArgs = is_array($tool['args'] ?? null) ? $tool['args'] : [];
                 $writePath = $this->repeatWritePath($toolName, $toolArgs);
                 $writeBody = $this->repeatWriteBody($toolName, $toolArgs);
-                $callKey = $this->callKey($toolName, $toolArgs);
-                if (($failedCalls[$callKey] ?? 0) >= 2) {
-                    $skipped = 'That same call already failed twice. Change the arguments or use a different tool. Do not repeat this call.';
-                    $this->db->loop($agent, 'steer', 'same call · ' . $toolName, $projectId);
-                    $emit(['type' => 'tool_call', 'agent' => $agent, 'name' => $tool['name'], 'args' => $tool['args']]);
-                    $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => $tool['name'], 'text' => $skipped]);
-                    $messages[] = ['role' => 'user', 'content' => "TOOL RESULT {$tool['name']}:\n{$skipped}"];
-                    continue;
-                }
                 if ($writeBody !== null && $writePath === $savedWritePath && $writeBody === $savedWriteBody) {
                     $this->db->loop($agent, 'stop', 'write-streak · ' . $writePath, $projectId);
                     $this->db->setAgentStatus($agent, 'completed');
@@ -778,9 +729,6 @@ class AgentRuntime
                     $savedWriteBody = $writeBody;
                     $savedThisTurn = $writePath;
                 }
-                if ($this->callFailed($toolName, $result)) {
-                    $failedCalls[$callKey] = ($failedCalls[$callKey] ?? 0) + 1;
-                }
                 $result = clip_text($result);
                 $this->db->loop($agent, 'tool', $this->toolResultTrace($toolName, $result), $projectId);
                 $this->db->logAgent($agent, $projectId, 'output', $result);
@@ -812,9 +760,6 @@ class AgentRuntime
         $this->db->setAgentStatus($agent, 'completed');
         $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
         return $this->finishVisible($visible);
-        } finally {
-            $this->llm->keepBrief = $heldBrief;
-        }
     }
 
     private function kanbanFollowsDelegate(string $agent, string $tool, string $result): bool
@@ -857,31 +802,6 @@ class AgentRuntime
             }
         }
         return $name;
-    }
-
-    private function callKey(string $tool, array $args): string
-    {
-        $this->sortKeys($args);
-        $json = json_encode($args, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        return $tool . "\n" . (is_string($json) ? $json : '');
-    }
-
-    private function sortKeys(array &$value): void
-    {
-        ksort($value);
-        foreach ($value as &$item) {
-            if (is_array($item)) {
-                $this->sortKeys($item);
-            }
-        }
-    }
-
-    private function callFailed(string $tool, string $result): bool
-    {
-        if (str_starts_with($result, 'Error:')) {
-            return true;
-        }
-        return $tool === 'web_search' && str_starts_with($result, 'No web results');
     }
 
     private function repeatWritePath(string $tool, array $args): string
@@ -1159,30 +1079,6 @@ class AgentRuntime
         return true;
     }
 
-    private function replyLeavesWorkOpen(string $text): bool
-    {
-        $text = trim($this->stripLeakedThink($text));
-        if ($text === '' || preg_match('/\blet me know\b/i', $text)) {
-            return false;
-        }
-        if (preg_match('/\?\s*$/', $text) && preg_match('/\b(you|your)\b/i', $text)) {
-            return false;
-        }
-        if (strlen($text) <= 280 && $this->promisedStep($text)) {
-            return true;
-        }
-        $parts = preg_split('/(?<=[.!?])\s+/', $text) ?: [];
-        $last = trim((string)end($parts));
-        return $last !== '' && strlen($last) <= 200 && $this->promisedStep($last);
-    }
-
-    private function promisedStep(string $text): bool
-    {
-        $intent = 'I\'ll|I will|Let me|I\'m going to|I am going to';
-        $verb = 'check|inspect|read|search|find|add|insert|update|write|save|delegate|move|look|query|create|fetch|browse|open|list|verify|confirm|research';
-        return (bool)preg_match('/\b(?:' . $intent . ')\b(?!\s+not\b)[^.\n]{0,160}\b(?:' . $verb . ')\b(?!\s+you\b)/i', $text);
-    }
-
     private function finishCheckSaysContinue(array $messages, string $reply, bool $scheduled, ?callable $shouldStop): bool
     {
         if ($shouldStop && $shouldStop()) {
@@ -1208,9 +1104,9 @@ class AgentRuntime
         $tools = $this->recentToolResults($messages);
         $reply = clip_text(trim($reply), 1500);
         if ($scheduled) {
-            $question = 'This is a scheduled task and nobody is here to answer. Is that task finished? Answer yes or no. yes only if the task is finished. A question to the user is no. A reply or tool result that only promises to check, add, or save, and did not do it, is no.';
+            $question = 'This is a scheduled task and nobody is here to answer. Is that task finished? Answer yes or no. yes only if the task is finished. A question to the user is no.';
         } else {
-            $question = 'Is the job finished, or is the agent only waiting for the user? Answer yes or no. yes = the requested work is done, or the agent asked the user a real question, or it is waiting for the user to choose, including now versus scheduled. no = work is still unfinished. The last tool failed and was not fixed, the reply describes a next step it did not take, or a tool result only promises to check, add, or save.';
+            $question = 'Is the job finished, or is the agent only waiting for the user? Answer yes or no. yes = the requested work is done, or the agent asked the user a real question, or it is waiting for the user to choose, including now versus scheduled. no = work is still unfinished. The last tool failed and was not fixed, or the reply describes a next step it did not take.';
         }
         return $question . "\n\nUser request:\n" . ($request !== '' ? $request : '(none)')
             . "\n\nRecent tool results:\n" . ($tools !== '' ? $tools : '(none)')
@@ -1302,7 +1198,7 @@ class AgentRuntime
         }
         $text = preg_replace('/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*$/i', '', $text) ?? $text;
         $text = preg_replace('/```[^\n]*\n\s*```/', '', $text) ?? $text;
-        return strip_tool_markers(strip_chat_tags($text));
+        return strip_chat_tags($text);
     }
 
     private function releaseMarker(OutputLineFilter $markers, ToolStreamParser $parser): string

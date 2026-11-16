@@ -4,8 +4,6 @@ class SubagentRunner
 {
     private CapabilityTools $capabilities;
 
-    private array $runTrace = [];
-
     public function __construct(
         private AgentRuntime $runtime,
         private Database $db,
@@ -31,29 +29,20 @@ class SubagentRunner
         }
         $this->capabilities->blockedInstalls = [];
         $this->capabilities->missingPython = [];
-        $this->runTrace = [];
-        $stored = false;
         $messages = [
             ['role' => 'system', 'content' => $this->systemPrompt($agent, $projectFolder, $projectId)],
-            ['role' => 'user', 'content' => $this->withPriorRun($projectId, $agent, "project: {$projectFolder}\n\n{$instruction}")],
+            ['role' => 'user', 'content' => "project: {$projectFolder}\n\n{$instruction}"],
         ];
         $watch = function () use ($shouldStop): bool {
             $this->db->setSetting('subagent_lock', (string)time());
             return $shouldStop && $shouldStop();
         };
         try {
-            $result = $this->runtime->run($agent, $messages, $this->traced($this->tools($agent, $projectFolder, $projectId, $emit, $watch)), $emit, $this->runtime->maxTurns(), $projectId, $watch, false, $scheduled);
+            $result = $this->runtime->run($agent, $messages, $this->tools($agent, $projectFolder, $projectId, $emit, $watch), $emit, $this->runtime->maxTurns(), $projectId, $watch, false, $scheduled);
             $excerpt = trim(preg_replace('/\s+/', ' ', $result) ?? '');
             $this->db->loop($agent, 'process', 'Context released · ' . $excerpt);
-            $result = $this->finishSubagent($result);
-            $this->storeRun($projectId, $agent, $result);
-            $stored = true;
-            return $result;
+            return $this->finishSubagent($result);
         } finally {
-            if (!$stored) {
-                $this->storeRun($projectId, $agent, '');
-            }
-            $this->runTrace = [];
             $this->runtime->releaseLocalModel();
             $this->db->unlock('subagent_lock');
         }
@@ -77,8 +66,6 @@ class SubagentRunner
         }
         $this->capabilities->blockedInstalls = [];
         $this->capabilities->missingPython = [];
-        $this->runTrace = [];
-        $stored = false;
         $watch = function () use ($shouldStop): bool {
             $this->db->setSetting('consultant_lock', (string)time());
             return $shouldStop && $shouldStop();
@@ -92,18 +79,11 @@ class SubagentRunner
         $user = $projectFolder !== '' ? "project: {$projectFolder}\n\n{$instruction}" : $instruction;
         $messages = [
             ['role' => 'system', 'content' => $prompt],
-            ['role' => 'user', 'content' => $this->withPriorRun($projectId, 'consultant', $user)],
+            ['role' => 'user', 'content' => $user],
         ];
         try {
-            $result = $this->finishSubagent($this->runtime->run('consultant', $messages, $this->traced($tools), $emit, $this->runtime->maxTurns(), $projectId > 0 ? $projectId : null, $watch, true, $scheduled));
-            $this->storeRun($projectId, 'consultant', $result);
-            $stored = true;
-            return $result;
+            return $this->finishSubagent($this->runtime->run('consultant', $messages, $tools, $emit, $this->runtime->maxTurns(), $projectId > 0 ? $projectId : null, $watch, true, $scheduled));
         } finally {
-            if (!$stored) {
-                $this->storeRun($projectId, 'consultant', '');
-            }
-            $this->runTrace = [];
             $this->db->unlock('consultant_lock');
         }
     }
@@ -196,7 +176,7 @@ TXT;
         }
         $rules = <<<TXT
 {$identity}
-Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card. You cannot create, move, edit, or delete a kanban card, and you do not call task_breakdown. When the instruction names a card, add a short result to it with the kanban tool before you finish. The main agent checks that work and then moves or updates the card. If the task includes a previous run, that record is what you already found, wrote, or returned. Continue from it. Do not start that work over. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
+Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card. You cannot create, move, edit, or delete a kanban card, and you do not call task_breakdown. When the instruction names a card, add a short result to it with the kanban tool before you finish. The main agent checks that work and then moves or updates the card. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
 
 Do not install software or dependencies. If something is missing, say what it is and stop. The main agent asks the user and installs it.
 
@@ -516,237 +496,5 @@ TXT;
             return $result;
         }
         return rtrim($result) . "\n\n" . implode("\n\n", $notes);
-    }
-
-    private function traced(array $tools): array
-    {
-        $wrapped = [];
-        foreach ($tools as $name => $handler) {
-            $wrapped[$name] = function (array $args) use ($handler, $name): string {
-                $result = (string)$handler($args);
-                $this->runTrace[] = [
-                    'name' => (string)$name,
-                    'hint' => $this->toolHint($args),
-                    'text' => $result,
-                ];
-                return $result;
-            };
-        }
-        return $wrapped;
-    }
-
-    private function withPriorRun(int $projectId, string $agent, string $user): string
-    {
-        $prior = trim((string)$this->db->getSetting($this->runKey($projectId, $agent), ''));
-        if ($prior === '') {
-            return $user;
-        }
-        $this->db->loop($agent, 'process', 'Previous run injected · ' . strlen($prior) . ' chars', $projectId > 0 ? $projectId : null);
-        return $user . "\n\nPrevious run of yours in this project. Use this record. Continue from what it already found or wrote, and do the part that is still missing. Do not start that work over.\n\n" . $prior;
-    }
-
-    private function storeRun(int $projectId, string $agent, string $reply): void
-    {
-        $record = $this->runRecord($projectId, $agent, $reply);
-        if ($record === '') {
-            return;
-        }
-        $this->db->setSetting($this->runKey($projectId, $agent), $record);
-        $this->db->loop($agent, 'process', 'Previous run saved · ' . strlen($record) . ' chars', $projectId > 0 ? $projectId : null);
-    }
-
-    private function runKey(int $projectId, string $agent): string
-    {
-        return 'subagent_last_run_' . max(0, $projectId) . '_' . $agent;
-    }
-
-    private function runRecord(int $projectId, string $agent, string $reply): string
-    {
-        $reply = trim($reply);
-        $findings = [];
-        $other = [];
-        $seen = [];
-        foreach ($this->runTrace as $row) {
-            $name = (string)($row['name'] ?? '');
-            $hint = (string)($row['hint'] ?? '');
-            $text = trim((string)($row['text'] ?? ''));
-            if ($name === '' || $text === '') {
-                continue;
-            }
-            if ($name === 'web_search') {
-                $hits = [];
-                foreach ($this->searchHits($text) as $hit) {
-                    if (!preg_match('#https?://\S+#i', $hit, $match)) {
-                        $hits[] = $hit;
-                        continue;
-                    }
-                    $url = strtolower(rtrim($match[0], '.,);'));
-                    if (isset($seen[$url])) {
-                        continue;
-                    }
-                    $seen[$url] = true;
-                    $hits[] = $hit;
-                }
-                if ($hits !== []) {
-                    $findings[] = $this->traceBlock($name, $hint, implode("\n", $hits));
-                    continue;
-                }
-            }
-            $other[] = $this->traceBlock($name, $hint, $this->compactTool($name, $text));
-        }
-        $previous = $this->priorFindings($projectId, $agent, $seen);
-        if ($reply === '' && $findings === [] && $other === [] && $previous === '') {
-            return '';
-        }
-        $parts = ["Final reply:\n" . ($reply !== '' ? clip_text($reply, 2500) : '(none)')];
-        $foundBody = implode("\n\n", $findings);
-        if ($previous !== '' && $foundBody !== '') {
-            $foundBody = $previous . "\n\n" . $foundBody;
-        } elseif ($previous !== '') {
-            $foundBody = $previous;
-        }
-        $found = $this->fitText($foundBody, 7000);
-        if ($found !== '') {
-            $parts[] = "Findings:\n" . $found;
-        }
-        $used = strlen(implode("\n\n", $parts));
-        $rest = $this->fitBlocks($other, max(0, 11000 - $used));
-        if ($rest !== '') {
-            $parts[] = "Tool results:\n" . $rest;
-        }
-        return implode("\n\n", $parts);
-    }
-
-    private function priorFindings(int $projectId, string $agent, array $seen): string
-    {
-        $prior = (string)$this->db->getSetting($this->runKey($projectId, $agent), '');
-        $mark = "Findings:\n";
-        $start = strpos($prior, $mark);
-        if ($start === false) {
-            return '';
-        }
-        $body = substr($prior, $start + strlen($mark));
-        $end = strpos($body, "\n\nTool results:\n");
-        if ($end !== false) {
-            $body = substr($body, 0, $end);
-        }
-        $kept = [];
-        foreach (preg_split('/\R/', $body) ?: [] as $line) {
-            if (preg_match('#https?://\S+#i', $line, $match)) {
-                $url = strtolower(rtrim($match[0], '.,);'));
-                if (isset($seen[$url])) {
-                    continue;
-                }
-            }
-            $kept[] = $line;
-        }
-        return trim(implode("\n", $kept));
-    }
-
-    private function searchHits(string $text): array
-    {
-        $lines = preg_split('/\R/', $text) ?: [];
-        $hits = [];
-        $title = '';
-        foreach ($lines as $line) {
-            $line = trim($line);
-            if ($line === '') {
-                continue;
-            }
-            if (str_starts_with($line, 'Results from ') || str_starts_with($line, 'Read a page')) {
-                $title = '';
-                continue;
-            }
-            if (preg_match('#^https?://\S+#i', $line, $match)) {
-                $url = rtrim($match[0], '.,);');
-                $hits[] = $title !== '' ? $title . ' ' . $url : $url;
-                $title = '';
-                if (count($hits) >= 12) {
-                    break;
-                }
-                continue;
-            }
-            $title = $line;
-        }
-        return $hits;
-    }
-
-    private function compactTool(string $name, string $text): string
-    {
-        $flat = trim(preg_replace('/\s+/', ' ', $text) ?? $text);
-        if (str_contains($flat, 'No web results') || str_contains($flat, 'listing omitted') || strlen($flat) < 220) {
-            return strlen($flat) > 240 ? substr($flat, 0, 240) . '…' : $flat;
-        }
-        if ($name === 'fetch_url' || $name === 'browse_url') {
-            return clip_text($text, 900);
-        }
-        return clip_text($text, 1200);
-    }
-
-    private function traceBlock(string $name, string $hint, string $body): string
-    {
-        $head = $hint !== '' ? $name . ' (' . $hint . ')' : $name;
-        return $head . ":\n" . $body;
-    }
-
-    private function toolHint(array $args): string
-    {
-        $bits = [];
-        foreach (['action', 'query', 'url', 'path', 'database', 'table', 'name'] as $key) {
-            $value = trim((string)($args[$key] ?? ''));
-            if ($value === '') {
-                continue;
-            }
-            $value = trim(preg_replace('/\s+/', ' ', $value) ?? $value);
-            if (strlen($value) > 160) {
-                $value = substr($value, 0, 160) . '…';
-            }
-            $bits[] = $key . '=' . $value;
-            if (count($bits) >= 3) {
-                break;
-            }
-        }
-        return implode(' ', $bits);
-    }
-
-    private function fitBlocks(array $blocks, int $budget): string
-    {
-        if ($budget < 80 || $blocks === []) {
-            return '';
-        }
-        $kept = [];
-        $used = 0;
-        for ($i = count($blocks) - 1; $i >= 0; $i--) {
-            $block = (string)$blocks[$i];
-            $need = strlen($block) + 2;
-            if ($used + $need > $budget) {
-                $room = $budget - $used - 20;
-                if ($room < 160) {
-                    break;
-                }
-                $block = clip_text($block, $room);
-                $need = strlen($block) + 2;
-            }
-            array_unshift($kept, $block);
-            $used += $need;
-            if ($used >= $budget) {
-                break;
-            }
-        }
-        return implode("\n\n", $kept);
-    }
-
-    private function fitText(string $text, int $budget): string
-    {
-        $text = trim($text);
-        if ($text === '' || $budget < 80) {
-            return '';
-        }
-        if (strlen($text) <= $budget) {
-            return $text;
-        }
-        $head = (int)floor($budget * 0.55);
-        $tail = max(0, $budget - $head - 20);
-        return rtrim(substr($text, 0, $head)) . "\n…\n" . ltrim(substr($text, -$tail));
     }
 }

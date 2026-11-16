@@ -83,8 +83,11 @@ class HardwareMonitor
         if ($mode === 'cpu_failsafe') {
             return 8192;
         }
-        // KV cache Ollama loads. The agent packs a smaller share so thinking and the reply still fit.
-        return 65536;
+        $reported = $this->modelContextLength();
+        if ($reported >= 512) {
+            return min(32768, $reported);
+        }
+        return $this->ramContext();
     }
 
     public function effectiveContext(string $mode): int
@@ -95,15 +98,6 @@ class HardwareMonitor
             $total = min($total, $override);
         }
         return max(512, $total);
-    }
-
-    public function agentContext(string $mode): int
-    {
-        $loaded = $this->effectiveContext($mode);
-        if ($mode !== 'local') {
-            return $loaded;
-        }
-        return min(32768, $loaded);
     }
 
     private function cloudContext(): int
@@ -147,6 +141,31 @@ class HardwareMonitor
             return $length;
         }
         return 128000;
+    }
+
+    private function ramContext(): int
+    {
+        $system = $this->systemMemory();
+        $ram = (int)($system['available_mb'] ?? 0);
+        if ($ram <= 0) {
+            $ram = (int)($system['total_mb'] ?? 0);
+        }
+        // Free VRAM looks empty once qwen3.6 is loaded. The extra context is the
+        // KV cache, and Ollama keeps that in system RAM when it does not fit on the GPU.
+        // About 0.15 GB of RAM per 1024 tokens, with room left for the system.
+        if ($ram >= 6144) {
+            return 32768;
+        }
+        if ($ram >= 3072) {
+            return 16384;
+        }
+        return 8192;
+    }
+
+    private function modelContextLength(): int
+    {
+        $shown = $this->ollamaShow();
+        return (int)($shown['context_length'] ?? 0);
     }
 
     private function nvidiaSmi(): ?array

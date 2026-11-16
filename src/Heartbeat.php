@@ -310,7 +310,7 @@ class Heartbeat
             } catch (Throwable $e) {
                 if (!($e instanceof ChatStopped)) {
                     $error = error_text($e->getMessage());
-                    $text = trim(strip_tool_markers($turn->streamed));
+                    $text = trim($turn->streamed);
                     $text = $text !== '' ? $text . "\n\n" . $error : $error;
                     $this->db->addMessage($projectId, 'assistant', $text, 'orchestrator', true, ChatTurn::encodeDetail($turn->detail));
                 }
