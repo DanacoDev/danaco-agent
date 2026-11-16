@@ -79,7 +79,7 @@ if ($projectId <= 0 || !$exists->fetch()) {
     echo json_encode(['status' => 'error', 'message' => 'Project not found.']);
     exit(1);
 }
-$open = $db->prepare("SELECT id, title, description, status, assigned_agent, schedule_time, recurrence_interval FROM tasks WHERE project_id = ? AND status != 'done'");
+$open = $db->prepare("SELECT id, title, description, status, assigned_agent, schedule_time, recurrence_interval FROM tasks WHERE project_id = ? AND status != 'archived'");
 $open->execute([$projectId]);
 $existing = $open->fetchAll(PDO::FETCH_ASSOC);
 $insert = $db->prepare("INSERT INTO tasks (project_id, title, description, status, assigned_agent, recurrence_interval) VALUES (?, ?, '', 'in_progress', ?, 'none')");
@@ -128,11 +128,11 @@ foreach ($cards as $card) {
     $added++;
 }
 if ($duplicates) {
-    $message = 'Error: These cards are already on the board and were not added: ' . implode('; ', $duplicates) . '. Use those cards.';
+    $message = 'Error: These tasks are already on the task list and were not added: ' . implode('; ', $duplicates) . '. Use those tasks.';
     if ($added > 0) {
-        $message .= ' Added ' . $added . ' other ' . ($added === 1 ? 'card' : 'cards') . '.';
+        $message .= ' Added ' . $added . ' other ' . ($added === 1 ? 'task' : 'tasks') . '.';
     }
     echo json_encode(['status' => $added > 0 ? 'success' : 'error', 'message' => $message]);
     exit($added > 0 ? 0 : 1);
 }
-echo json_encode(['status' => 'success', 'message' => $added . ' cards added in in_progress.']);
+echo json_encode(['status' => 'success', 'message' => $added . ' tasks added in in_progress.']);

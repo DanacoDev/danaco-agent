@@ -101,7 +101,7 @@ class ComplianceDocs
             '',
             '- Stop generation in chat',
             '- Install confirmation before dependency installs',
-            '- Kanban review column (agent cannot mark work done)',
+            '- Task list: the agent sets a finished task to Done. You archive it.',
             '- Optional extra approval gates for email / FTP / MCP: ' . ($status['hitl_external_actions'] ? 'On' : 'Off'),
             '- Optional compliance action log: ' . ($status['compliance_logging'] ? 'On' : 'Off'),
             '- Log retention (days): ' . $status['retention_days'],

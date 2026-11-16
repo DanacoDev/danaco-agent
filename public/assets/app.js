@@ -193,12 +193,7 @@
           taskDraft: '',
           openTask: null,
           taskEdit: {},
-          canDrag: window.matchMedia('(pointer: fine)').matches,
-          dragId: null,
-          columns: [
-            { id: 'in_progress', label: 'In progress', hint: 'Being worked on, or scheduled' },
-            { id: 'review', label: 'Review', hint: 'Finished run-once tasks waiting for you' }
-          ],
+          subtaskDrafts: {},
           finishedOpen: false,
           taskError: '',
           taskLoading: false,
@@ -1878,24 +1873,28 @@
         taskRepeats(task) {
           return !!(task.recurrence_interval && task.recurrence_interval !== 'none');
         },
-        columnStatus(task) {
+        taskStatus(task) {
+          if (task.status === 'archived') return 'archived';
           if (this.taskRepeats(task)) return 'in_progress';
-          if (task.status === 'done' || task.status === 'review' || task.status === 'in_progress') return task.status;
+          if (task.status === 'done' || task.status === 'review') return 'done';
           return 'in_progress';
         },
-        finishedTasks() {
-          return this.tasks.filter((task) => task.status === 'done' && task.project_id === this.projectId)
+        subtaskStatus(sub) {
+          return sub && sub.status === 'done' ? 'done' : 'in_progress';
+        },
+        openTasks() {
+          return this.tasks.filter((task) => {
+            const status = this.taskStatus(task);
+            return (status === 'in_progress' || status === 'done') && task.project_id === this.projectId;
+          });
+        },
+        archivedTasks() {
+          return this.tasks.filter((task) => task.status === 'archived' && task.project_id === this.projectId)
             .sort((a, b) => String(b.finished_at || b.created_at || '').localeCompare(String(a.finished_at || a.created_at || '')) || (b.id - a.id));
         },
-        finishedVisible() {
-          const all = this.finishedTasks();
+        archivedVisible() {
+          const all = this.archivedTasks();
           return this.finishedOpen ? all : all.slice(0, 4);
-        },
-        tasksFor(status) {
-          return this.tasks.filter((task) => {
-            if (this.columnStatus(task) !== status) return false;
-            return task.project_id === this.projectId;
-          });
         },
         async reloadTasks() {
           if (this.taskLoading) return;
@@ -1970,25 +1969,51 @@
             schedule_time: never ? 'never' : (stamp || null),
             recurrence_interval: this.taskEdit.recurrence_interval
           };
-          if (task.status === 'review' && (this.taskEdit.description || '').trim() !== (task.description || '').trim() && (this.taskEdit.description || '').trim() !== '') {
+          if (this.taskStatus(task) === 'done' && (this.taskEdit.description || '').trim() !== (task.description || '').trim() && (this.taskEdit.description || '').trim() !== '') {
             body.status = 'in_progress';
           }
           try {
             const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: body });
             Object.assign(task, saved.task);
-            if (saved.task.status !== 'review') this.openTask = null;
+            if (this.taskStatus(saved.task) !== 'done') this.openTask = null;
           } catch (error) {
             this.taskError = error.message || 'Could not save the task.';
           }
         },
-        async finishTask(task) {
-          const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: { status: 'done' } });
+        async setTaskStatus(task, status) {
+          const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: { status: status } });
+          Object.assign(task, saved.task);
+        },
+        async archiveTask(task) {
+          const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: { status: 'archived' } });
           Object.assign(task, saved.task);
           if (this.openTask === task.id) this.openTask = null;
         },
-        async moveTask(task, status) {
-          const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: { status: status } });
-          Object.assign(task, saved.task);
+        replaceTask(saved) {
+          if (!saved || !saved.id) return;
+          const index = this.tasks.findIndex((item) => item.id === saved.id);
+          if (index >= 0) this.tasks.splice(index, 1, saved);
+        },
+        async addSubtask(task) {
+          const title = String(this.subtaskDrafts[task.id] || '').trim();
+          if (!title) return;
+          const saved = await this.api('/api/tasks/' + task.id + '/subtasks', { method: 'POST', body: { title: title } });
+          this.replaceTask(saved.task);
+          this.subtaskDrafts[task.id] = '';
+        },
+        async setSubtaskStatus(task, sub, status) {
+          const saved = await this.api('/api/subtasks/' + sub.id, { method: 'PATCH', body: { status: status } });
+          this.replaceTask(saved.task);
+        },
+        async saveSubtaskTitle(task, sub, value) {
+          const title = String(value || '').trim();
+          if (!title || title === sub.title) return;
+          const saved = await this.api('/api/subtasks/' + sub.id, { method: 'PATCH', body: { title: title } });
+          this.replaceTask(saved.task);
+        },
+        async deleteSubtask(task, sub) {
+          const saved = await this.api('/api/subtasks/' + sub.id + '/delete', { method: 'POST', body: {} });
+          this.replaceTask(saved.task);
         },
         async deleteTask(task) {
           if (!window.confirm('Delete ' + task.title + '?')) return;
@@ -1996,25 +2021,14 @@
           this.tasks = this.tasks.filter((item) => item.id !== task.id);
           if (this.openTask === task.id) this.openTask = null;
         },
-        async clearFinishedTasks() {
-          const finished = this.finishedTasks();
-          if (!finished.length || !window.confirm('Delete all finished tasks?')) return;
+        async clearArchivedTasks() {
+          const archived = this.archivedTasks();
+          if (!archived.length || !window.confirm('Delete all archived tasks?')) return;
           await this.api('/api/tasks/finished/clear', { method: 'POST', body: { project_id: this.projectId } });
           const ids = {};
-          finished.forEach((task) => { ids[task.id] = true; });
+          archived.forEach((task) => { ids[task.id] = true; });
           this.tasks = this.tasks.filter((item) => !ids[item.id]);
           if (ids[this.openTask]) this.openTask = null;
-        },
-        onDragStart(task, event) {
-          this.dragId = task.id;
-          event.dataTransfer.setData('text/plain', String(task.id));
-          event.dataTransfer.effectAllowed = 'move';
-        },
-        async onDrop(status, event) {
-          const id = Number(event.dataTransfer.getData('text/plain') || this.dragId);
-          const task = this.tasks.find((item) => item.id === id);
-          if (!task || this.taskRepeats(task) || this.columnStatus(task) === status) return;
-          await this.moveTask(task, status);
         },
         collectOpen(nodes, into) {
           (nodes || []).forEach((node) => {

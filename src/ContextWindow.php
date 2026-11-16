@@ -271,7 +271,7 @@ class ContextWindow
             return true;
         }
         $action = strtolower(trim((string)($args['action'] ?? '')));
-        if ($name === 'kanban') {
+        if ($name === 'kanban' || $name === 'tasklist') {
             if (in_array($action, ['create', 'move', 'update', 'delete'], true)) {
                 return false;
             }

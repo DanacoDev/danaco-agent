@@ -971,7 +971,7 @@ class AgentRuntime
                         $prompt = 'That was not a tool call. Do not write <|tool_code_begin|>, <invoke>, or a line that only says Tool call:. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
                     }
                     if (preg_match('/\bdelegat/i', $turnText)) {
-                        $prompt = 'That delegation was not run. Do not describe it. Emit the <<tool>> JSON block for kanban so the card is in_progress, then the <<tool>> JSON block for delegate. Pass task_id when the card already exists.';
+                        $prompt = 'That delegation was not run. Do not describe it. Emit the <<tool>> JSON block for tasklist so the task is in_progress, then the <<tool>> JSON block for delegate. Pass task_id when the task already exists.';
                     } elseif (($xmlTool = $this->fakeXmlToolName($turnText)) !== null) {
                         $prompt = 'XML tags are not a tool call. Do not write <' . $xmlTool . '>. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"' . $xmlTool . '","args":{}}' . "\n" . '<<end>>' . "\n" . 'Fill args with the real JSON for that tool, then stop.';
                     } elseif ($this->claimedSkillWithoutCall($turnText)) {
@@ -1119,8 +1119,8 @@ class AgentRuntime
                 }
                 $messages[] = ['role' => 'user', 'content' => "TOOL RESULT {$tool['name']}:\n{$result}"];
                 if ($this->kanbanFollowsDelegate($agent, (string)($tool['name'] ?? ''), $result)) {
-                    $this->db->loop($agent, 'steer', 'kanban after delegate', $projectId);
-                    $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the kanban and read the result the subagent added. Check that the work was done, then you move or update the matching cards before you reply or delegate again. A subagent cannot move or edit a card. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has cards. Move a finished run-once card to review with a short result. Leave a repeating card in in_progress. Move the card you are starting to in_progress. You never mark a task done. Do not explain the board workflow in place of listing it and updating the cards.'];
+                    $this->db->loop($agent, 'steer', 'tasklist after delegate', $projectId);
+                    $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the task list and read the result. Set a finished run-once task to done. Leave a repeating task in progress. Do not archive it. A subagent cannot update a task. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has tasks. Do not explain these steps in place of listing the tasks and updating them.'];
                 }
             }
             if ($cutOff) {
@@ -1301,7 +1301,7 @@ class AgentRuntime
     {
         return [
             'delegate', 'filesystem', 'list_files', 'read_file', 'read_image', 'read_pdf', 'screenshot', 'write_file', 'delete_file', 'move_file',
-            'create_pdf', 'run_command', 'run_python', 'py_install', 'kanban', 'wiki_memory', 'wiki_search', 'wiki_read', 'wiki_write',
+            'create_pdf', 'run_command', 'run_python', 'py_install', 'tasklist', 'kanban', 'wiki_memory', 'wiki_search', 'wiki_read', 'wiki_write',
             'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'write_skill', 'test_skill', 'remember', 'send_email',
             'web_search', 'fetch_url', 'browse_url', 'ftp', 'mcp', 'download_large', 'task_breakdown',
             'research_pipeline', 'sqlite_helper', 'code_verifier', 'humanizer', 'write_article', 'make_graphic', 'save_note',

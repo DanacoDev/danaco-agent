@@ -134,9 +134,25 @@ SQL);
         if (!in_array('former_name', $projectColumns, true)) {
             $this->pdo->exec('ALTER TABLE projects ADD COLUMN former_name TEXT');
         }
+        if ($this->getSetting('task_status_v2', '') !== '1') {
+            $this->pdo->exec("UPDATE tasks SET status = 'archived' WHERE status = 'done'");
+            $this->pdo->exec("UPDATE tasks SET status = 'done' WHERE status = 'review'");
+            $this->setSetting('task_status_v2', '1');
+        }
         $this->pdo->exec("UPDATE tasks SET status = 'in_progress' WHERE schedule_time IS NOT NULL AND status IN ('todo', 'backlog')");
-        $this->pdo->exec("UPDATE tasks SET status = 'in_progress' WHERE recurrence_interval IS NOT NULL AND recurrence_interval NOT IN ('', 'none') AND status IN ('todo', 'backlog', 'review', 'done')");
+        $this->pdo->exec("UPDATE tasks SET status = 'in_progress' WHERE recurrence_interval IS NOT NULL AND recurrence_interval NOT IN ('', 'none') AND status IN ('todo', 'backlog', 'review', 'done', 'archived')");
         $this->pdo->exec("UPDATE tasks SET status = 'in_progress', held = 1 WHERE status IN ('todo', 'backlog')");
+        $this->pdo->exec(<<<'SQL'
+CREATE TABLE IF NOT EXISTS subtasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    position INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_subtasks_task ON subtasks(task_id, position);
+SQL);
         $this->pdo->exec(<<<'SQL'
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -481,7 +497,7 @@ SQL);
         } else {
             $rows = $this->pdo->query('SELECT * FROM tasks ORDER BY id DESC')->fetchAll();
         }
-        return array_map([$this, 'castTask'], $rows);
+        return $this->attachSubtasks(array_map([$this, 'castTask'], $rows));
     }
 
     public function task(int $id): ?array
@@ -489,7 +505,11 @@ SQL);
         $stmt = $this->pdo->prepare('SELECT * FROM tasks WHERE id = ?');
         $stmt->execute([$id]);
         $row = $stmt->fetch();
-        return $row ? $this->castTask($row) : null;
+        if (!$row) {
+            return null;
+        }
+        $tasks = $this->attachSubtasks([$this->castTask($row)]);
+        return $tasks[0];
     }
 
     public function insertTask(array $fields): array
@@ -531,9 +551,55 @@ SQL);
         if (!$this->task($id)) {
             return false;
         }
+        $this->pdo->prepare('DELETE FROM subtasks WHERE task_id = ?')->execute([$id]);
         $this->pdo->prepare("DELETE FROM jobs WHERE kind = 'task' AND ref_id = ?")->execute([$id]);
         $this->pdo->prepare('DELETE FROM tasks WHERE id = ?')->execute([$id]);
         return true;
+    }
+
+    public function subtask(int $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM subtasks WHERE id = ?');
+        $stmt->execute([$id]);
+        $row = $stmt->fetch();
+        return $row ? $this->castSubtask($row) : null;
+    }
+
+    public function insertSubtask(int $taskId, string $title, string $status = 'in_progress'): array
+    {
+        $status = $status === 'done' ? 'done' : 'in_progress';
+        $stmt = $this->pdo->prepare('SELECT COALESCE(MAX(position), 0) + 1 FROM subtasks WHERE task_id = ?');
+        $stmt->execute([$taskId]);
+        $position = (int)$stmt->fetchColumn();
+        $insert = $this->pdo->prepare('INSERT INTO subtasks (task_id, title, status, position) VALUES (?, ?, ?, ?)');
+        $insert->execute([$taskId, $title, $status, $position]);
+        return $this->subtask((int)$this->pdo->lastInsertId());
+    }
+
+    public function updateSubtask(int $id, array $fields): ?array
+    {
+        $allowed = ['title', 'status', 'position'];
+        $sets = [];
+        $values = [];
+        foreach ($allowed as $key) {
+            if (!array_key_exists($key, $fields)) {
+                continue;
+            }
+            $sets[] = $key . ' = ?';
+            $values[] = $key === 'status' ? (($fields[$key] === 'done') ? 'done' : 'in_progress') : $fields[$key];
+        }
+        if ($sets) {
+            $values[] = $id;
+            $this->pdo->prepare('UPDATE subtasks SET ' . implode(', ', $sets) . ' WHERE id = ?')->execute($values);
+        }
+        return $this->subtask($id);
+    }
+
+    public function deleteSubtask(int $id): bool
+    {
+        $stmt = $this->pdo->prepare('DELETE FROM subtasks WHERE id = ?');
+        $stmt->execute([$id]);
+        return $stmt->rowCount() > 0;
     }
 
     public function deleteFinishedTasks(int $projectId): int
@@ -541,8 +607,9 @@ SQL);
         if ($projectId <= 0) {
             return 0;
         }
-        $this->pdo->prepare("DELETE FROM jobs WHERE kind = 'task' AND ref_id IN (SELECT id FROM tasks WHERE project_id = ? AND status = 'done')")->execute([$projectId]);
-        $stmt = $this->pdo->prepare("DELETE FROM tasks WHERE project_id = ? AND status = 'done'");
+        $this->pdo->prepare('DELETE FROM subtasks WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ? AND status = \'archived\')')->execute([$projectId]);
+        $this->pdo->prepare("DELETE FROM jobs WHERE kind = 'task' AND ref_id IN (SELECT id FROM tasks WHERE project_id = ? AND status = 'archived')")->execute([$projectId]);
+        $stmt = $this->pdo->prepare("DELETE FROM tasks WHERE project_id = ? AND status = 'archived'");
         $stmt->execute([$projectId]);
         return $stmt->rowCount();
     }
@@ -1713,6 +1780,38 @@ SQL);
         $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
         $row['held'] = (int)($row['held'] ?? 0);
         return $row;
+    }
+
+    private function castSubtask(array $row): array
+    {
+        $row['id'] = (int)$row['id'];
+        $row['task_id'] = (int)$row['task_id'];
+        $row['position'] = (int)($row['position'] ?? 0);
+        $row['status'] = ($row['status'] ?? '') === 'done' ? 'done' : 'in_progress';
+        return $row;
+    }
+
+    private function attachSubtasks(array $tasks): array
+    {
+        if (!$tasks) {
+            return [];
+        }
+        $ids = [];
+        foreach ($tasks as $task) {
+            $ids[] = (int)$task['id'];
+        }
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $this->pdo->prepare('SELECT * FROM subtasks WHERE task_id IN (' . $placeholders . ') ORDER BY position, id');
+        $stmt->execute($ids);
+        $grouped = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $sub = $this->castSubtask($row);
+            $grouped[$sub['task_id']][] = $sub;
+        }
+        foreach ($tasks as $index => $task) {
+            $tasks[$index]['subtasks'] = $grouped[(int)$task['id']] ?? [];
+        }
+        return $tasks;
     }
 
     private function castMessage(array $row): array

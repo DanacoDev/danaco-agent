@@ -22,6 +22,9 @@ class Api
         $router->add('POST', '#^/api/tasks$#', $this->guard(fn() => $this->createTask()));
         $router->add('PATCH', '#^/api/tasks/(?P<id>\d+)$#', $this->guard(fn(array $args) => $this->updateTask((int)$args['id'])));
         $router->add('POST', '#^/api/tasks/(?P<id>\d+)/delete$#', $this->guard(fn(array $args) => $this->deleteTask((int)$args['id'])));
+        $router->add('POST', '#^/api/tasks/(?P<id>\d+)/subtasks$#', $this->guard(fn(array $args) => $this->createSubtask((int)$args['id'])));
+        $router->add('PATCH', '#^/api/subtasks/(?P<id>\d+)$#', $this->guard(fn(array $args) => $this->updateSubtask((int)$args['id'])));
+        $router->add('POST', '#^/api/subtasks/(?P<id>\d+)/delete$#', $this->guard(fn(array $args) => $this->deleteSubtask((int)$args['id'])));
         $router->add('POST', '#^/api/tasks/finished/clear$#', $this->guard(fn() => $this->clearFinishedTasks()));
         $router->add('GET', '#^/api/messages$#', $this->guard(fn() => $this->messages()));
         $router->add('POST', '#^/api/messages$#', $this->guard(fn() => $this->saveMessage()));
@@ -290,6 +293,63 @@ class Api
             return;
         }
         $this->json(['ok' => true, 'removed' => $this->db->deleteFinishedTasks($projectId)]);
+    }
+
+    private function createSubtask(int $taskId): void
+    {
+        $task = $this->db->task($taskId);
+        if (!$task) {
+            $this->json(['error' => 'Task not found.'], 404);
+            return;
+        }
+        $body = $this->input();
+        $title = trim((string)($body['title'] ?? ''));
+        if ($title === '' || strlen($title) > 200) {
+            $this->json(['error' => 'Step title is required.'], 422);
+            return;
+        }
+        $this->db->insertSubtask($taskId, $title, $this->subtaskStatus((string)($body['status'] ?? 'in_progress')));
+        $this->json(['task' => $this->db->task($taskId)], 201);
+    }
+
+    private function updateSubtask(int $id): void
+    {
+        $existing = $this->db->subtask($id);
+        if (!$existing) {
+            $this->json(['error' => 'Step not found.'], 404);
+            return;
+        }
+        $body = $this->input();
+        $fields = [];
+        if (array_key_exists('title', $body)) {
+            $title = trim((string)$body['title']);
+            if ($title === '' || strlen($title) > 200) {
+                $this->json(['error' => 'Step title is required.'], 422);
+                return;
+            }
+            $fields['title'] = $title;
+        }
+        if (array_key_exists('status', $body)) {
+            $fields['status'] = $this->subtaskStatus((string)$body['status']);
+        }
+        $this->db->updateSubtask($id, $fields);
+        $this->json(['task' => $this->db->task((int)$existing['task_id'])]);
+    }
+
+    private function deleteSubtask(int $id): void
+    {
+        $existing = $this->db->subtask($id);
+        if (!$existing || !$this->db->deleteSubtask($id)) {
+            $this->json(['error' => 'Step not found.'], 404);
+            return;
+        }
+        $this->json(['task' => $this->db->task((int)$existing['task_id'])]);
+    }
+
+    private function subtaskStatus(string $status): string
+    {
+        $status = strtolower(trim(str_replace(['-', ' '], '_', $status)));
+        return in_array($status, ['done', 'complete', 'completed', 'finished'], true) ? 'done' : 'in_progress';
     }
 
     private function presentMessages(int $projectId, array $rows): array

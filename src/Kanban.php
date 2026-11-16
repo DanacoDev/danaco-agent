@@ -23,7 +23,7 @@ class Kanban
         if (!$byUser) {
             $duplicate = $this->exactDuplicate($projectId, $title, $description, $agent, $schedule, $recurrence);
             if ($duplicate) {
-                throw new InvalidArgumentException('Error: Task #' . $duplicate['id'] . ' is already on the board in ' . $this->column($duplicate) . ' and matches this card exactly: ' . $duplicate['title'] . '. It was not added. Use that card.');
+                throw new InvalidArgumentException('Error: Task #' . $duplicate['id'] . ' is already on the task list as ' . $this->column($duplicate) . ' and matches this task exactly: ' . $duplicate['title'] . '. It was not added. Use that task.');
             }
         }
         $task = $this->db->insertTask([
@@ -103,11 +103,12 @@ class Kanban
             $fields['recurrence_interval'] = $recurrence;
         }
         if (array_key_exists('status', $args) || array_key_exists('schedule_time', $args) || array_key_exists('schedule_time', $fields) || array_key_exists('recurrence', $args) || array_key_exists('recurrence_interval', $args)) {
-            $status = $this->place((string)($args['status'] ?? $existing['status'] ?? 'in_progress'), $schedule, $recurrence, $byUser);
+            $keepArchived = (string)($existing['status'] ?? '') === 'archived' && !array_key_exists('status', $args);
+            $status = $this->place((string)($args['status'] ?? $existing['status'] ?? 'in_progress'), $schedule, $recurrence, $byUser, $keepArchived);
             $fields['status'] = $status;
-            if ($status === 'done') {
+            if ($status === 'archived') {
                 $fields['finished_at'] = date('Y-m-d H:i:s');
-            } elseif (($existing['status'] ?? '') === 'done') {
+            } elseif (($existing['status'] ?? '') === 'archived') {
                 $fields['finished_at'] = null;
             }
         }
@@ -138,7 +139,7 @@ class Kanban
                 return true;
             }
         }
-        return $status === 'review' || $status === 'done';
+        return $status === 'done' || $status === 'archived';
     }
 
     public function listing(?int $projectId): string
@@ -148,7 +149,7 @@ class Kanban
         }
         $lines = [];
         foreach ($this->db->tasks($projectId) as $task) {
-            if (($task['status'] ?? '') === 'done') {
+            if ($this->column($task) === 'archived' || (string)($task['status'] ?? '') === 'archived') {
                 continue;
             }
             $line = '#' . $task['id'] . ' [' . $this->column($task) . '] ' . $task['title'] . ' (' . $task['assigned_agent'] . ')';
@@ -172,6 +173,17 @@ class Kanban
                 $line .= ' — ' . trim(clip_text(preg_replace('/\s+/', ' ', $result) ?? $result, 180));
             }
             $lines[] = $line;
+            foreach ($task['subtasks'] ?? [] as $sub) {
+                if (!is_array($sub)) {
+                    continue;
+                }
+                $title = trim((string)($sub['title'] ?? ''));
+                if ($title === '') {
+                    continue;
+                }
+                $subStatus = (string)($sub['status'] ?? '') === 'done' ? 'done' : 'in_progress';
+                $lines[] = '  - [' . $subStatus . '] ' . $title;
+            }
         }
         return $lines ? implode("\n", $lines) : 'No open tasks.';
     }
@@ -182,13 +194,16 @@ class Kanban
             return 'in_progress';
         }
         $status = (string)($task['status'] ?? '');
-        if ($status === 'done' || $status === 'review' || $status === 'in_progress') {
+        if ($status === 'review') {
+            return 'done';
+        }
+        if ($status === 'archived' || $status === 'done' || $status === 'in_progress') {
             return $status;
         }
         return 'in_progress';
     }
 
-    public function place(string $status, ?string $schedule, string $recurrence, bool $byUser): string
+    public function place(string $status, ?string $schedule, string $recurrence, bool $byUser, bool $keepArchived = false): string
     {
         $status = strtolower(trim(str_replace(['-', ' '], '_', $status)));
         $aliases = [
@@ -204,20 +219,22 @@ class Kanban
             'working' => 'in_progress',
             'wip' => 'in_progress',
             'inprogress' => 'in_progress',
+            'review' => 'done',
+            'complete' => 'done',
+            'completed' => 'done',
+            'finished' => 'done',
+            'archive' => 'archived',
         ];
         if (array_key_exists($status, $aliases)) {
             $status = $aliases[$status];
         }
-        if (in_array($status, ['complete', 'completed', 'finished'], true)) {
-            $status = $byUser ? 'done' : 'review';
+        if (!$byUser && $status === 'archived') {
+            $status = $keepArchived ? 'archived' : 'done';
         }
-        if (!$byUser && $status === 'done') {
-            $status = 'review';
-        }
-        if (!in_array($status, ['in_progress', 'review', 'done'], true)) {
+        if (!in_array($status, ['in_progress', 'done', 'archived'], true)) {
             $status = 'in_progress';
         }
-        if ($this->repeats($recurrence) && in_array($status, ['review', 'done'], true)) {
+        if ($this->repeats($recurrence) && in_array($status, ['done', 'archived'], true)) {
             return 'in_progress';
         }
         return $status;
@@ -235,13 +252,13 @@ class Kanban
         if ($this->isScheduled($schedule, $recurrence)) {
             return;
         }
-        throw new InvalidArgumentException('There is no backlog. To keep a card without running it, set schedule_time to never. That inactivates it. A card runs now, or it has a real clock time.');
+        throw new InvalidArgumentException('There is no backlog. To keep a task without running it, set schedule_time to never. That inactivates it. A task runs now, or it has a real clock time.');
     }
 
     private function exactDuplicate(int $projectId, string $title, string $description, string $agent, ?string $schedule, string $recurrence): ?array
     {
         foreach ($this->db->tasks($projectId) as $task) {
-            if ($this->column($task) === 'done') {
+            if ($this->column($task) === 'archived' || (string)($task['status'] ?? '') === 'archived') {
                 continue;
             }
             if (trim((string)($task['title'] ?? '')) !== $title) {
@@ -275,7 +292,7 @@ class Kanban
     private function shouldDelayRestart(array $existing, string $recurrence): bool
     {
         $status = (string)($existing['status'] ?? '');
-        if ($status === 'review') {
+        if ($status === 'done') {
             return true;
         }
         if ($status !== 'in_progress' || $recurrence !== 'none') {

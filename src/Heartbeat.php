@@ -450,13 +450,13 @@ class Heartbeat
             $board->move((int)$task['id'], $fields, false);
             return;
         }
-        $line = 'Task ' . (int)$task['id'] . ' settled to review';
+        $line = 'Task ' . (int)$task['id'] . ' settled to done';
         if ($failed || $noted) {
             $line .= ' · result noted';
         }
         $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'orchestrator', 'process', $line);
         $board->move((int)$task['id'], [
-            'status' => 'review',
+            'status' => 'done',
             'result' => $result,
         ], false);
     }

@@ -104,6 +104,7 @@ header('X-Danaco: 1');
   <symbol id="i-setup" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
   <symbol id="i-edit" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M14.5 4.5 19.5 9.5 8 21H3v-5zM12.5 6.5l5 5"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4.5 7.5h15M9.2 7.4V5.2h5.6v2.2M7.2 7.5l.8 12h8l.8-12M10 11.2v5M14 11.2v5"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 8h16v11H4zM3 4.5h18V8H3zM10 12h4"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 4v10M8 10l4 4 4-4M5 19h14"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path fill="#000" stroke="#000" stroke-linejoin="round" stroke-width="1" d="M12 3.2 2.2 20.8h19.6z"/><path fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" d="M12 9v5.2"/><circle cx="12" cy="16.9" r="0.95" fill="#fff" stroke="none"/></symbol>
@@ -289,88 +290,106 @@ header('X-Danaco: 1');
             <div class="view-head">
               <h2>Tasks</h2>
             </div>
-            <div class="kanban">
-              <section v-for="column in columns" :key="column.id" class="column" @dragover.prevent @drop.prevent="onDrop(column.id, $event)">
-                <header>
-                  <div class="column-title"><span>{{ column.label }}</span><span class="tag">{{ tasksFor(column.id).length }}</span></div>
-                  <p class="hint">{{ column.hint }}</p>
-                </header>
-                <article v-for="task in tasksFor(column.id)" :key="task.id" class="task-card" :draggable="canDrag && !taskRepeats(task)" @dragstart="onDragStart(task, $event)">
-                  <header>
-                    <h3 class="task-title">{{ task.title }}</h3>
-                    <span class="task-tools" @mousedown.stop>
-                      <button class="task-edit" type="button" :aria-label="openTask === task.id ? 'Close' : 'Edit'" @click="toggleTask(task)">
-                        <svg class="ico" aria-hidden="true"><use :href="openTask === task.id ? '#i-close' : '#i-edit'"></use></svg>
-                      </button>
-                      <button class="task-edit" type="button" aria-label="Delete task" @click="deleteTask(task)">
-                        <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
-                      </button>
-                    </span>
-                  </header>
-                  <div class="task-tags">
-                    <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
-                    <span class="task-tag">#{{ task.id }}</span>
-                    <span class="task-when">{{ taskWhen(task) }} · {{ repeatLabel(task.recurrence_interval) }}</span>
-                  </div>
-                  <p v-if="task.result" class="task-result">{{ task.result }}</p>
-                  <label v-if="!taskRepeats(task)" class="field move-field">Move
-                    <select :value="columnStatus(task)" @change="moveTask(task, $event.target.value)">
-                      <option v-for="col in columns" :key="col.id" :value="col.id">{{ col.label }}</option>
+            <div class="task-list">
+              <article v-for="task in openTasks()" :key="task.id" class="task-card">
+                <header class="task-row">
+                  <h3 class="task-title">{{ task.title }}</h3>
+                  <span class="task-meta">{{ agentLabel(task.assigned_agent) }}</span>
+                  <span class="task-when">{{ taskWhen(task) }} · {{ repeatLabel(task.recurrence_interval) }}</span>
+                  <label v-if="!taskRepeats(task)" class="status-pill" :class="'is-' + taskStatus(task)">
+                    <select :value="taskStatus(task)" aria-label="Status" @change="setTaskStatus(task, $event.target.value)">
+                      <option value="in_progress">In progress</option>
+                      <option value="done">Done</option>
                     </select>
                   </label>
-                  <div v-if="column.id==='review'" class="task-actions">
-                    <button class="btn btn-gold" type="button" @click="finishTask(task)">Mark finished</button>
+                  <span v-else class="status-pill is-in_progress">In progress</span>
+                  <span class="task-tools">
+                    <button v-if="taskStatus(task)==='done' && !taskRepeats(task)" class="task-edit" type="button" aria-label="Archive task" @click="archiveTask(task)">
+                      <svg class="ico" aria-hidden="true"><use href="#i-archive"></use></svg>
+                    </button>
+                    <button class="task-edit" type="button" :aria-label="openTask === task.id ? 'Close' : 'Edit'" @click="toggleTask(task)">
+                      <svg class="ico" aria-hidden="true"><use :href="openTask === task.id ? '#i-close' : '#i-edit'"></use></svg>
+                    </button>
+                    <button class="task-edit" type="button" aria-label="Delete task" @click="deleteTask(task)">
+                      <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
+                    </button>
+                  </span>
+                </header>
+                <div class="task-tags">
+                  <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
+                  <span class="task-tag">#{{ task.id }}</span>
+                </div>
+                <p v-if="task.result" class="task-result">{{ task.result }}</p>
+                <ul v-if="(task.subtasks || []).length" class="subtasks">
+                  <li v-for="sub in task.subtasks" :key="sub.id" class="subtask">
+                    <label class="status-pill" :class="'is-' + subtaskStatus(sub)">
+                      <select :value="subtaskStatus(sub)" aria-label="Step status" @change="setSubtaskStatus(task, sub, $event.target.value)">
+                        <option value="in_progress">In progress</option>
+                        <option value="done">Done</option>
+                      </select>
+                    </label>
+                    <input class="subtask-title" :value="sub.title" aria-label="Step" @change="saveSubtaskTitle(task, sub, $event.target.value)">
+                    <button class="task-edit" type="button" aria-label="Remove step" @click="deleteSubtask(task, sub)">
+                      <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>
+                    </button>
+                  </li>
+                </ul>
+                <form class="subtask-add" @submit.prevent="addSubtask(task)">
+                  <input v-model="subtaskDrafts[task.id]" placeholder="Add step" aria-label="Add step">
+                  <button class="btn" type="submit">Add</button>
+                </form>
+                <form v-if="openTask === task.id" @submit.prevent="saveTask(task)">
+                  <label class="field">Title<input v-model="taskEdit.title"></label>
+                  <label class="field">{{ taskStatus(task)==='done' ? 'New instructions' : 'Instructions' }}<textarea v-model="taskEdit.description" rows="5" :placeholder="taskStatus(task)==='done' ? 'What should be done differently' : ''"></textarea></label>
+                  <p v-if="taskStatus(task)==='done' && taskEdit.when!=='never'" class="hint">Saving new instructions moves this back to In progress. The agent starts in 3 minutes.</p>
+                  <label class="field">Agent
+                    <select v-model="taskEdit.assigned_agent">
+                      <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
+                    </select>
+                  </label>
+                  <label class="field">Time
+                    <select v-model="taskEdit.when">
+                      <option value="immediately">immediately</option>
+                      <option value="at">at a time</option>
+                      <option value="never">Never (inactivated)</option>
+                    </select>
+                  </label>
+                  <label v-if="taskEdit.when==='at'" class="field">When<input type="datetime-local" v-model="taskEdit.schedule_time"></label>
+                  <p v-if="taskError" class="form-error">{{ taskError }}</p>
+                  <label class="field">Repeat
+                    <select v-model="taskEdit.recurrence_interval">
+                      <option value="none">run once</option>
+                      <option value="5min">every 5 min</option>
+                      <option value="15min">every 15 min</option>
+                      <option value="30min">every 30 min</option>
+                      <option value="hourly">hourly</option>
+                      <option value="daily">daily</option>
+                      <option value="weekly">weekly</option>
+                      <option value="monthly">monthly</option>
+                    </select>
+                  </label>
+                  <div class="task-actions">
+                    <button class="btn btn-gold" type="submit">Save task</button>
+                    <button class="btn" type="button" @click="toggleTask(task)">Cancel</button>
                   </div>
-                  <form v-if="openTask === task.id" @submit.prevent="saveTask(task)">
-                    <label class="field">Title<input v-model="taskEdit.title"></label>
-                    <label class="field">{{ column.id==='review' ? 'New instructions' : 'Instructions' }}<textarea v-model="taskEdit.description" rows="5" :placeholder="column.id==='review' ? 'What should be done differently' : ''"></textarea></label>
-                    <p v-if="column.id==='review' && taskEdit.when!=='never'" class="hint">Saving new instructions moves this back to In progress. The agent starts in 3 minutes.</p>
-                    <label class="field">Agent
-                      <select v-model="taskEdit.assigned_agent">
-                        <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
-                      </select>
-                    </label>
-                    <label class="field">Time
-                      <select v-model="taskEdit.when">
-                        <option value="immediately">immediately</option>
-                        <option value="at">at a time</option>
-                        <option value="never">Never (inactivated)</option>
-                      </select>
-                    </label>
-                    <label v-if="taskEdit.when==='at'" class="field">When<input type="datetime-local" v-model="taskEdit.schedule_time"></label>
-                    <p v-if="taskError" class="form-error">{{ taskError }}</p>
-                    <label class="field">Repeat
-                      <select v-model="taskEdit.recurrence_interval">
-                        <option value="none">run once</option>
-                        <option value="5min">every 5 min</option>
-                        <option value="15min">every 15 min</option>
-                        <option value="30min">every 30 min</option>
-                        <option value="hourly">hourly</option>
-                        <option value="daily">daily</option>
-                        <option value="weekly">weekly</option>
-                        <option value="monthly">monthly</option>
-                      </select>
-                    </label>
-                    <div class="task-actions">
-                      <button class="btn btn-gold" type="submit">Save task</button>
-                      <button class="btn" type="button" @click="toggleTask(task)">Cancel</button>
-                    </div>
-                  </form>
-                </article>
-              </section>
+                </form>
+              </article>
+              <p v-if="!openTasks().length" class="empty">No tasks yet.</p>
             </div>
             <section class="task-archive">
               <header>
-                <h3>Finished</h3>
+                <h3>Archive</h3>
                 <div class="archive-actions">
-                  <button v-if="finishedTasks().length" class="btn btn-ghost" type="button" @click="clearFinishedTasks">Clear all</button>
-                  <button v-if="finishedTasks().length > 4" class="btn btn-ghost" type="button" @click="finishedOpen = !finishedOpen">{{ finishedOpen ? 'Show less' : 'Show all' }}</button>
+                  <button v-if="archivedTasks().length" class="btn btn-ghost" type="button" @click="clearArchivedTasks">Clear all</button>
+                  <button v-if="archivedTasks().length > 4" class="btn btn-ghost" type="button" @click="finishedOpen = !finishedOpen">{{ finishedOpen ? 'Show less' : 'Show all' }}</button>
                 </div>
               </header>
-              <div v-if="finishedVisible().length" class="archive-row">
-                <article v-for="task in finishedVisible()" :key="'done'+task.id" class="task-card">
-                  <header>
+              <div v-if="archivedVisible().length" class="task-list">
+                <article v-for="task in archivedVisible()" :key="'done'+task.id" class="task-card">
+                  <header class="task-row">
                     <h3 class="task-title">{{ task.title }}</h3>
+                    <span class="task-meta">{{ agentLabel(task.assigned_agent) }}</span>
+                    <span class="task-when">{{ taskWhen(task) }} · {{ repeatLabel(task.recurrence_interval) }}</span>
                     <span class="task-tools">
                       <button class="task-edit" type="button" aria-label="Delete task" @click="deleteTask(task)">
                         <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
@@ -382,9 +401,15 @@ header('X-Danaco: 1');
                     <span class="task-tag">#{{ task.id }}</span>
                   </div>
                   <p v-if="task.result" class="task-result">{{ task.result }}</p>
+                  <ul v-if="(task.subtasks || []).length" class="subtasks">
+                    <li v-for="sub in task.subtasks" :key="sub.id" class="subtask">
+                      <span class="status-pill" :class="'is-' + subtaskStatus(sub)">{{ subtaskStatus(sub)==='done' ? 'Done' : 'In progress' }}</span>
+                      <span class="subtask-title">{{ sub.title }}</span>
+                    </li>
+                  </ul>
                 </article>
               </div>
-              <p v-else class="empty">No finished tasks yet.</p>
+              <p v-else class="empty">No archived tasks yet.</p>
             </section>
           </section>
 

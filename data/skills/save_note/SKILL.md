@@ -4,4 +4,4 @@ description: Append a short reminder or idea to wiki/NOTES.md, the project doodl
 version: 1.0.0
 ---
 
-args note. Appends that reminder or idea to wiki/NOTES.md. This is the doodle board for small reminders and ideas to keep for later. It does not write the project description, and an idea that is not scheduled does not get a kanban card.
+args note. Appends that reminder or idea to wiki/NOTES.md. This is the doodle board for small reminders and ideas to keep for later. It does not write the project description, and an idea that is not scheduled does not get a task.

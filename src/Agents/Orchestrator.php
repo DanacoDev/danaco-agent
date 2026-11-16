@@ -593,7 +593,7 @@ TXT;
             $context = <<<TXT
 Assigned project folder: {$folder}
 Assigned project name: {$project['name']}
-{$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file in that folder, such as wiki/research.md, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The board has no backlog. An idea that is not scheduled does not get a kanban card.
+{$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file in that folder, such as wiki/research.md, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task.
 When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat.
 When this chat settles conclusions, decisions, or facts worth keeping, read the matching wiki file and then write or edit it with wiki_memory action write before you finish. Keep doing this as the chat continues and those conclusions change. Do not wait for the end of a long task, and do not leave the record only in the chat.
 Tag every delegation exactly as project: {$folder}
@@ -642,7 +642,7 @@ Other correct examples:
 {"name":"wiki_memory","args":{"action":"read"}}
 <<end>>
 <<tool>>
-{"name":"kanban","args":{"action":"list"}}
+{"name":"tasklist","args":{"action":"list"}}
 <<end>>
 Never invent another call format. These do nothing:
 : filesystem
@@ -937,7 +937,7 @@ TXT;
                     }
                     $runInstruction = $instruction;
                     if (preg_match('/Task #(\d+)/', $note, $card)) {
-                        $runInstruction .= "\n\nThis is card #" . $card[1] . ". When you finish, add a short result to that card with the kanban tool. Do not move or edit the card.";
+                        $runInstruction .= "\n\nThis is task #" . $card[1] . ". When you finish, add a short result to that task with the tasklist tool. Do not update or delete the task.";
                     }
                     $emit(['type' => 'delegation', 'agent' => 'consultant', 'project' => $shownProject !== '' ? $shownProject : 'general', 'text' => $instruction]);
                     try {
@@ -975,7 +975,7 @@ TXT;
                 }
                 $runInstruction = $instruction;
                 if (preg_match('/Task #(\d+)/', $note, $card)) {
-                    $runInstruction .= "\n\nThis is card #" . $card[1] . ". When you finish, add a short result to that card with the kanban tool. Do not move or edit the card.";
+                    $runInstruction .= "\n\nThis is task #" . $card[1] . ". When you finish, add a short result to that task with the tasklist tool. Do not update or delete the task.";
                 }
                 $emit(['type' => 'delegation', 'agent' => $agent, 'project' => $shownProject, 'text' => $instruction]);
                 $jobId = $this->db->startJob('subagent', $projectId > 0 ? $projectId : null, [
@@ -1022,6 +1022,9 @@ TXT;
                 } finally {
                     $this->db->loopPop();
                 }
+            },
+            'tasklist' => function (array $args) use ($projectId, &$createdTaskIds): string {
+                return $this->kanban($projectId, $args, $createdTaskIds);
             },
             'kanban' => function (array $args) use ($projectId, &$createdTaskIds): string {
                 return $this->kanban($projectId, $args, $createdTaskIds);
@@ -1328,13 +1331,13 @@ TXT;
         $open = null;
         if ($id > 0) {
             $task = $this->db->task($id);
-            if ($task && (int)$task['project_id'] === $projectId && !in_array($board->column($task), ['review', 'done'], true)) {
+            if ($task && (int)$task['project_id'] === $projectId && !in_array($board->column($task), ['done', 'archived'], true)) {
                 $open = $task;
             }
         }
         if ($open === null && count($createdTaskIds) === 1) {
             $task = $this->db->task((int)$createdTaskIds[0]);
-            if ($task && (int)$task['project_id'] === $projectId && !in_array($board->column($task), ['review', 'done'], true)) {
+            if ($task && (int)$task['project_id'] === $projectId && !in_array($board->column($task), ['done', 'archived'], true)) {
                 $open = $task;
             }
         }
@@ -1350,7 +1353,7 @@ TXT;
             if (strcasecmp(trim((string)$task['title']), $title) !== 0) {
                 continue;
             }
-            if (in_array($board->column($task), ['review', 'done'], true)) {
+            if (in_array($board->column($task), ['done', 'archived'], true)) {
                 continue;
             }
             $saved = $board->move((int)$task['id'], ['status' => 'in_progress', 'agent' => $agent], false);
@@ -1390,8 +1393,8 @@ TXT;
                     return 'Task not found.' . "\n" . $this->kanbanOpenCards($projectId);
                 }
                 $task = $board->move($id, $args, false);
-                $held = (int)($task['held'] ?? 0) === 1 ? ' The card stays held and will not start.' : '';
-                return 'Moved task #' . $task['id'] . ' to ' . $board->column($task) . ': ' . $task['title'] . $held;
+                $held = (int)($task['held'] ?? 0) === 1 ? ' The task stays held and will not start.' : '';
+                return 'Updated task #' . $task['id'] . ' to ' . $board->column($task) . ': ' . $task['title'] . $held;
             }
             if ($action === 'delete') {
                 $id = (int)($args['id'] ?? 0);
@@ -1407,7 +1410,7 @@ TXT;
         } catch (RuntimeException $e) {
             return $e->getMessage();
         }
-        return 'Unknown kanban action. Use list, create, move, or delete.';
+        return 'Unknown tasklist action. Use list, create, update, or delete.';
     }
 
     private function kanbanCardId(int $projectId, array $args): int
@@ -1424,7 +1427,7 @@ TXT;
             return 0;
         }
         foreach ($this->db->tasks($projectId) as $task) {
-            if ((string)($task['status'] ?? '') === 'done') {
+            if ((string)($task['status'] ?? '') === 'archived') {
                 continue;
             }
             if (strcasecmp(trim((string)($task['title'] ?? '')), $title) === 0) {
@@ -1465,12 +1468,12 @@ TXT;
     {
         $lines = [];
         foreach ($this->db->tasks($projectId) as $task) {
-            if ((string)($task['status'] ?? '') === 'done') {
+            if ((string)($task['status'] ?? '') === 'archived') {
                 continue;
             }
             $lines[] = '#' . (int)$task['id'] . ' ' . trim((string)($task['title'] ?? ''));
         }
-        return $lines === [] ? 'No open cards.' : implode("\n", $lines);
+        return $lines === [] ? 'No open tasks.' : implode("\n", $lines);
     }
 
     private function uploadsFolder(string $folder, string $path): string
