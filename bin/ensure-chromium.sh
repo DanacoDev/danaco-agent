@@ -171,6 +171,12 @@ download_headless() {
   echo "Installed the headless browser."
 }
 
+has_candidate() {
+  local candidate
+  candidate="$(apt-cache policy "$1" 2>/dev/null | awk '/^  Candidate:/ {print $2; exit}')"
+  [[ -n "$candidate" && "$candidate" != "(none)" ]]
+}
+
 install_browser_libs() {
   local pkg available=()
   local pkgs=(
@@ -204,7 +210,10 @@ install_browser_libs() {
     libxshmfence1
   )
   for pkg in "${pkgs[@]}"; do
-    if apt-cache show "$pkg" >/dev/null 2>&1; then
+    if [[ "$pkg" != *t64 ]] && has_candidate "${pkg}t64"; then
+      continue
+    fi
+    if has_candidate "$pkg"; then
       available+=("$pkg")
     fi
   done
