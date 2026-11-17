@@ -4,7 +4,7 @@ description: Workflow for a poem, book, web content, or article. args path, inst
 version: 1.0.0
 ---
 
-This is the workflow for a poem, a book, web content, or an article. Do the saved passes in order. Save the working file at the end of each pass before you start the next. Do not skip a pass because the draft looks fine.
+This is the workflow for a poem, a book, web content, or an article. Calling it does not save the file and does not write the piece. You write the piece and save the working file. Do the saved passes in order. Save the working file at the end of each pass before you start the next. Do not skip a pass because the draft looks fine. Do not read the working file until a write has saved it.
 
 args path, instructions, optional sources or source_paths, language, voice or voice_path. If path is set, that is the working file. Create it in step 2 if it does not exist. Markdown belongs in wiki/. The working file is not wiki/PROJECT.md or wiki/NOTES.md. If no path was passed, choose one markdown file in wiki/ and use that same path for every step. Read source_paths yourself. Read voice_path yourself when a voice sample is a file.
 

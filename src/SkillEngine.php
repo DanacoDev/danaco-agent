@@ -129,7 +129,8 @@ class SkillEngine
             }
             $handlers[$name] = function (array $args) use ($skill, $projectFolder): string {
                 $result = $this->run($skill['name'], $args, $projectFolder);
-                return "exit {$result['exit_code']}\n{$result['stdout']}" . ($result['stderr'] !== '' ? "\n{$result['stderr']}" : '');
+                $head = !empty($result['instructions']) ? '' : "exit {$result['exit_code']}\n";
+                return $head . $result['stdout'] . ($result['stderr'] !== '' ? "\n{$result['stderr']}" : '');
             };
         }
         return $handlers;
@@ -160,11 +161,21 @@ class SkillEngine
             $body = $this->markdownBody($dir);
             $payload = $args;
             unset($payload['read']);
+            $path = isset($payload['path']) && is_string($payload['path']) ? trim($payload['path']) : '';
+            $savePath = $path !== '' ? $path : 'wiki/draft.md';
+            $call = json_encode([
+                'name' => 'filesystem',
+                'args' => ['action' => 'write', 'path' => $savePath, 'content' => 'the full piece'],
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $note = $path !== ''
+                ? 'Nothing was written. ' . $path . ' was not saved.'
+                : 'Nothing was written. No file was saved.';
+            $note .= ' You write the piece. content is that text, not these steps. Save it with this call and stop:' . "\n" . '<<tool>>' . "\n" . $call . "\n" . '<<end>>';
             if ($payload !== []) {
                 $encoded = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
                 $body = rtrim($body) . "\n\nArguments:\n" . $encoded . "\n";
             }
-            return ['exit_code' => 0, 'stdout' => $body, 'stderr' => ''];
+            return ['exit_code' => 0, 'stdout' => $note . "\n\n" . $body, 'stderr' => '', 'instructions' => true];
         }
         $ext = strtolower(pathinfo($runner, PATHINFO_EXTENSION));
         $bin = $ext === 'py' ? 'python3' : (PHP_BINARY ?: 'php');

@@ -931,6 +931,9 @@ TXT;
                     if ($folder !== '') {
                         try {
                             $note = $this->startDelegatedTask($projectId, $agent, $instruction, $args, $createdTaskIds);
+                        } catch (InvalidArgumentException $e) {
+                            $this->db->loop('orchestrator', 'process', 'Delegate rejected · no steps');
+                            return $e->getMessage();
                         } catch (Throwable $e) {
                             $note = '';
                         }
@@ -970,6 +973,9 @@ TXT;
                 $note = '';
                 try {
                     $note = $this->startDelegatedTask($projectId, $agent, $instruction, $args, $createdTaskIds);
+                } catch (InvalidArgumentException $e) {
+                    $this->db->loop('orchestrator', 'process', 'Delegate rejected · no steps');
+                    return $e->getMessage();
                 } catch (Throwable $e) {
                     $note = '';
                 }
@@ -1342,6 +1348,10 @@ TXT;
             }
         }
         if ($open !== null) {
+            if (!$this->taskHasStep($open)) {
+                $id = (int)$open['id'];
+                throw new InvalidArgumentException('Task #' . $id . ' has no steps. It was not started. Add at least one step with tasklist action update and id ' . $id . ', then delegate again. Pass steps as a list. One instruction is step 1.');
+            }
             $saved = $board->move((int)$open['id'], ['status' => 'in_progress', 'agent' => $agent], false);
             return "\nTask #" . $saved['id'] . ' is in in_progress.';
         }
@@ -1356,6 +1366,10 @@ TXT;
             if (in_array($board->column($task), ['done', 'archived'], true)) {
                 continue;
             }
+            if (!$this->taskHasStep($task)) {
+                $id = (int)$task['id'];
+                throw new InvalidArgumentException('Task #' . $id . ' has no steps. It was not started. Add at least one step with tasklist action update and id ' . $id . ', then delegate again. Pass steps as a list. One instruction is step 1.');
+            }
             $saved = $board->move((int)$task['id'], ['status' => 'in_progress', 'agent' => $agent], false);
             return "\nTask #" . $saved['id'] . ' is in in_progress.';
         }
@@ -1367,6 +1381,19 @@ TXT;
         ], false);
         $createdTaskIds[] = (int)$saved['id'];
         return "\nCreated task #" . $saved['id'] . ' in in_progress.';
+    }
+
+    private function taskHasStep(array $task): bool
+    {
+        if (trim((string)($task['description'] ?? '')) !== '') {
+            return true;
+        }
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (is_array($sub) && trim((string)($sub['title'] ?? '')) !== '') {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function kanban(int $projectId, array $args, ?array &$createdTaskIds = null): string

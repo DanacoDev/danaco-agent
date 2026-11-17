@@ -83,6 +83,10 @@ $open = $db->prepare("SELECT id, title, description, status, assigned_agent, sch
 $open->execute([$projectId]);
 $existing = $open->fetchAll(PDO::FETCH_ASSOC);
 $insert = $db->prepare("INSERT INTO tasks (project_id, title, description, status, assigned_agent, recurrence_interval) VALUES (?, ?, '', 'in_progress', ?, 'none')");
+$step = null;
+if ($db->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'subtasks'")->fetchColumn()) {
+    $step = $db->prepare("INSERT INTO subtasks (task_id, title, status, position) VALUES (?, ?, 'in_progress', 1)");
+}
 $added = 0;
 $duplicates = [];
 foreach ($cards as $card) {
@@ -116,8 +120,12 @@ foreach ($cards as $card) {
         continue;
     }
     $insert->execute([$projectId, $card['title'], $card['agent']]);
+    $taskId = (int)$db->lastInsertId();
+    if ($step) {
+        $step->execute([$taskId, $card['title']]);
+    }
     $existing[] = [
-        'id' => (int)$db->lastInsertId(),
+        'id' => $taskId,
         'title' => $card['title'],
         'description' => '',
         'status' => 'in_progress',

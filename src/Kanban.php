@@ -19,6 +19,9 @@ class Kanban
         $recurrence = $this->recurrence((string)($args['recurrence'] ?? $args['recurrence_interval'] ?? 'none'));
         $this->rejectIdea($args, $schedule, $recurrence, $byUser);
         $steps = $this->stepTitles($args);
+        if (!$byUser && $steps === []) {
+            throw new InvalidArgumentException('A task needs at least one step. It was not added. Pass steps as a list. One instruction is step 1.');
+        }
         $description = implode("\n", $steps);
         $agent = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
         if (!$byUser) {
@@ -272,7 +275,12 @@ class Kanban
     {
         $raw = $args['steps'] ?? $args['subtasks'] ?? null;
         $titles = [];
-        if (is_array($raw)) {
+        if (is_string($raw)) {
+            $text = trim($raw);
+            if ($text !== '') {
+                $titles[] = mb_substr($text, 0, 2000);
+            }
+        } elseif (is_array($raw)) {
             foreach ($raw as $step) {
                 if (is_array($step)) {
                     $text = trim((string)($step['title'] ?? $step['step'] ?? $step['text'] ?? ''));
