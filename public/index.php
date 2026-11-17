@@ -301,6 +301,7 @@ header('X-Danaco: 1');
                   <span class="task-meta">{{ agentLabel(task.assigned_agent) }}</span>
                   <span class="task-when">{{ taskWhen(task) }} · {{ repeatLabel(task.recurrence_interval) }}</span>
                   <span class="status-pill" :class="'is-' + taskStatus(task)">{{ taskStatus(task)==='done' ? 'Done' : 'In progress' }}</span>
+                  <span class="task-tag">#{{ task.id }}</span>
                   <span class="task-tools">
                     <button v-if="taskStatus(task)==='done' && !taskRepeats(task)" class="task-edit" type="button" aria-label="Archive task" @click="archiveTask(task)">
                       <svg class="ico" aria-hidden="true"><use href="#i-archive"></use></svg>
@@ -313,11 +314,6 @@ header('X-Danaco: 1');
                     </button>
                   </span>
                 </header>
-                <div class="task-tags">
-                  <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
-                  <span class="task-tag">#{{ task.id }}</span>
-                </div>
-                <p v-if="task.result" class="task-result">{{ task.result }}</p>
                 <ul v-if="expandedTasks[task.id] && (task.subtasks || []).length" class="subtasks">
                   <li v-for="sub in task.subtasks" :key="sub.id" class="subtask" :class="{ 'is-done': subtaskStatus(sub) === 'done' }">
                     <button class="subtask-check" type="button" :aria-pressed="subtaskStatus(sub) === 'done'" aria-label="Mark step done" @click="setSubtaskStatus(task, sub, subtaskStatus(sub) === 'done' ? 'in_progress' : 'done')"></button>
@@ -327,6 +323,7 @@ header('X-Danaco: 1');
                     </button>
                   </li>
                 </ul>
+                <p v-if="task.result && (taskStatus(task) !== 'in_progress' || expandedTasks[task.id])" class="task-result is-full">Results: {{ task.result }}</p>
                 <form v-if="openTask === task.id" class="subtask-add" @submit.prevent="addSubtask(task)">
                   <input v-model="subtaskDrafts[task.id]" placeholder="Add step" aria-label="Add step">
                   <button class="btn" type="submit">Add</button>
