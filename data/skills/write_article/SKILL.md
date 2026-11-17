@@ -1,17 +1,20 @@
 ---
 name: write_article
-description: Article workflow in five saved passes. args path, instructions, optional sources or source_paths, language, voice or voice_path. Follow every step before you present the file.
+description: Workflow for a poem, book, web content, or article. args path, instructions, optional sources or source_paths, language, voice or voice_path.
 version: 1.0.0
 ---
 
-Do these five steps in order. Save the wiki file at the end of each step before you start the next. Do not present the article until step 5 is saved. Do not skip a step because the draft looks fine.
+This is the workflow for a poem, a book, web content, or an article. Do the saved passes in order. Save the working file at the end of each pass before you start the next. Do not skip a pass because the draft looks fine.
 
-args path, instructions, optional sources or source_paths, language, voice or voice_path. If path is set, that is the working file. Create it in step 2 if it does not exist. Markdown belongs in wiki/. If no path was passed, choose one markdown file in wiki/ and use that same path for every step. Read source_paths yourself. Read voice_path yourself when a voice sample is a file.
+args path, instructions, optional sources or source_paths, language, voice or voice_path. If path is set, that is the working file. Create it in step 2 if it does not exist. Markdown belongs in wiki/. The working file is not wiki/PROJECT.md or wiki/NOTES.md. If no path was passed, choose one markdown file in wiki/ and use that same path for every step. Read source_paths yourself. Read voice_path yourself when a voice sample is a file.
 
-Language: use the language the user asked for. The whole article stays in that language. Names and quotes from the source may stay as they are. Do not leave sentences in another language. When the language is Swedish, the first draft will be wrong in places. On every pass, fix grammar a Swedish reader would notice. Write compounds as one word unless the source splits them. Keep en or ett with its noun. Use å, ä, and ö. Do not swap in an English word to dodge a Swedish one.
+Language: use the language the user asked for. The whole piece stays in that language. Names and quotes from the source may stay as they are. Do not leave sentences in another language. When the language is Swedish, the first draft will be wrong in places. On every pass, fix grammar a Swedish reader would notice. Write compounds as one word unless the source splits them. Keep en or ett with its noun. Use å, ä, and ö. Do not swap in an English word to dodge a Swedish one.
 
-1. Sources and instructions. Read the instructions and every source. Note the facts you may use, and what you must not invent. If the task named files that are not in the arguments, read those files before you draft. Do not write the article in this step.
-2. Draft. Write the full article into the working file and save it. One idea per section. Say who does what. Stop. Do not polish it in the same breath.
-3. Repetition and contradiction. Read the saved file from the start. Delete a section that repeats an earlier one. When two sentences disagree, keep the one the sources support and delete the other. Save the file again.
-4. Humanizer. Run humanizer with path set to the working file. If a voice sample was given, pass voice or voice_path too. Rewrite from that checklist, in the same language, and save the file. Do not paste the checklist into the article.
-5. Spelling. Read the saved article line by line. Fix misspellings, wrong word forms, and agreement. Do not change the meaning and do not open a new style pass. Save the file. Then present that path. The file is the result. Do not show an earlier draft.
+1. Sources and instructions. Read the instructions and every source. Note the facts you may use, and what you must not invent. If the task named files that are not in the arguments, read those files before you draft. Do not write the piece in this step.
+2. Draft. Write the full piece into the working file and save it. Keep the form the task asked for. A poem stays a poem. A book may use chapters. Web content and an article may use sections. Say who does what when the piece has actors. Stop. Do not polish it in the same breath.
+3. Repetition and contradiction. Read the saved file from the start. Delete a section that repeats an earlier one. A refrain or a repeated line that belongs to the form stays. When two sentences disagree, keep the one the sources support and delete the other. Save the file again.
+4. Humanizer. Run humanizer with path set to the working file. If a voice sample was given, pass voice or voice_path too. Rewrite from that checklist, in the same language, and save the file. Do not paste the checklist into the piece.
+5. Spelling. Read the saved file line by line. Fix misspellings, wrong word forms, and agreement. Do not change the meaning and do not open a new style pass. Save the file. When the task does not ask for a PDF, present that path. The file is the result. Do not show an earlier draft.
+6. PDF. Do this step only when the task asks for a PDF. Call create_pdf once with the finished text. Put the file in docs/ unless another folder was named. Call read_pdf on the path the tool wrote. When that read shows the text, delete the working markdown with filesystem action delete. Cite the PDF path and stop. Do not write the markdown again and do not call create_pdf again. When the read does not show the text, keep the markdown and say so. Do not call create_pdf again.
+
+When the task does not ask for a PDF, the saved wiki file remains the result.
