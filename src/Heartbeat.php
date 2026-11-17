@@ -465,15 +465,17 @@ class Heartbeat
             $board->move((int)$task['id'], $fields, false);
             return;
         }
-        $line = 'Task ' . (int)$task['id'] . ' settled to done';
+        $saved = $board->move((int)$task['id'], [
+            'status' => 'done',
+            'result' => $result,
+        ], false);
+        $line = (string)($saved['status'] ?? '') === 'done'
+            ? 'Task ' . (int)$task['id'] . ' settled to done'
+            : 'Task ' . (int)$task['id'] . ' settled · steps still open';
         if ($failed || $noted) {
             $line .= ' · result noted';
         }
         $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'orchestrator', 'process', $line);
-        $board->move((int)$task['id'], [
-            'status' => 'done',
-            'result' => $result,
-        ], false);
     }
 
     private function traceJob(array $job, string $line): void

@@ -327,7 +327,7 @@ class Api
             return;
         }
         $this->db->insertSubtask($taskId, $title, $this->subtaskStatus((string)($body['status'] ?? 'in_progress')));
-        $this->json(['task' => $this->db->task($taskId)], 201);
+        $this->json(['task' => $this->db->syncTaskFromSteps($this->db->task($taskId))], 201);
     }
 
     private function updateSubtask(int $id): void
@@ -351,7 +351,7 @@ class Api
             $fields['status'] = $this->subtaskStatus((string)$body['status']);
         }
         $this->db->updateSubtask($id, $fields);
-        $this->json(['task' => $this->db->task((int)$existing['task_id'])]);
+        $this->json(['task' => $this->db->syncTaskFromSteps($this->db->task((int)$existing['task_id']))]);
     }
 
     private function deleteSubtask(int $id): void
@@ -361,7 +361,7 @@ class Api
             $this->json(['error' => 'Step not found.'], 404);
             return;
         }
-        $this->json(['task' => $this->db->task((int)$existing['task_id'])]);
+        $this->json(['task' => $this->db->syncTaskFromSteps($this->db->task((int)$existing['task_id']))]);
     }
 
     private function subtaskStatus(string $status): string

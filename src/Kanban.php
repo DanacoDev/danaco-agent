@@ -46,7 +46,7 @@ class Kanban
             $this->addSteps((int)$task['id'], $steps, false);
             $task = $this->db->task((int)$task['id']) ?? $task;
         }
-        return $task;
+        return $this->db->syncTaskFromSteps($task);
     }
 
     public function recordResult(int $id, int $projectId, string $result): array
@@ -138,7 +138,7 @@ class Kanban
             $this->addSteps($id, $steps, !$hasSteps);
             $saved = $this->db->task($id) ?? $saved;
         }
-        return $saved;
+        return $saved ? $this->db->syncTaskFromSteps($saved) : $saved;
     }
 
     private function agentReleasesHold(array $args, array $existing, ?string $schedule, string $recurrence, string $status): bool

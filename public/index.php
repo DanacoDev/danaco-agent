@@ -297,16 +297,10 @@ header('X-Danaco: 1');
                   <button class="task-drag" type="button" aria-label="Drag to reorder" @pointerdown="onTaskPointerDown(task, $event)" @pointermove="onTaskPointerMove" @pointerup="onTaskPointerUp" @pointercancel="onTaskPointerUp">
                     <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
                   </button>
-                  <h3 class="task-title">{{ task.title }}</h3>
+                  <button class="task-title" type="button" :aria-expanded="expandedTasks[task.id] ? 'true' : 'false'" @click="toggleSteps(task)">{{ task.title }}</button>
                   <span class="task-meta">{{ agentLabel(task.assigned_agent) }}</span>
                   <span class="task-when">{{ taskWhen(task) }} · {{ repeatLabel(task.recurrence_interval) }}</span>
-                  <label v-if="!taskRepeats(task)" class="status-pill" :class="'is-' + taskStatus(task)">
-                    <select :value="taskStatus(task)" aria-label="Status" @change="setTaskStatus(task, $event.target.value)">
-                      <option value="in_progress">In progress</option>
-                      <option value="done">Done</option>
-                    </select>
-                  </label>
-                  <span v-else class="status-pill is-in_progress">In progress</span>
+                  <span class="status-pill" :class="'is-' + taskStatus(task)">{{ taskStatus(task)==='done' ? 'Done' : 'In progress' }}</span>
                   <span class="task-tools">
                     <button v-if="taskStatus(task)==='done' && !taskRepeats(task)" class="task-edit" type="button" aria-label="Archive task" @click="archiveTask(task)">
                       <svg class="ico" aria-hidden="true"><use href="#i-archive"></use></svg>
@@ -324,7 +318,7 @@ header('X-Danaco: 1');
                   <span class="task-tag">#{{ task.id }}</span>
                 </div>
                 <p v-if="task.result" class="task-result">{{ task.result }}</p>
-                <ul v-if="(task.subtasks || []).length" class="subtasks">
+                <ul v-if="expandedTasks[task.id] && (task.subtasks || []).length" class="subtasks">
                   <li v-for="sub in task.subtasks" :key="sub.id" class="subtask" :class="{ 'is-done': subtaskStatus(sub) === 'done' }">
                     <button class="subtask-check" type="button" :aria-pressed="subtaskStatus(sub) === 'done'" aria-label="Mark step done" @click="setSubtaskStatus(task, sub, subtaskStatus(sub) === 'done' ? 'in_progress' : 'done')"></button>
                     <input class="subtask-title" :value="sub.title" aria-label="Step" @change="saveSubtaskTitle(task, sub, $event.target.value)">

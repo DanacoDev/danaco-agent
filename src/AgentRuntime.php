@@ -1120,7 +1120,7 @@ class AgentRuntime
                 $messages[] = ['role' => 'user', 'content' => "TOOL RESULT {$tool['name']}:\n{$result}"];
                 if ($this->kanbanFollowsDelegate($agent, (string)($tool['name'] ?? ''), $result)) {
                     $this->db->loop($agent, 'steer', 'tasklist after delegate', $projectId);
-                    $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the task list and read the result. Set a finished run-once task to done. Leave a repeating task in progress. Do not archive it. A subagent cannot update a task. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has tasks. Do not explain these steps in place of listing the tasks and updating them.'];
+                    $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the task list and read the result. Do not set a task to done. A run-once task becomes done when every step is crossed off. Leave a repeating task in progress. Do not archive it. A subagent cannot update a task. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has tasks. Do not explain these steps in place of listing the tasks and updating them.'];
                 }
             }
             if ($cutOff) {

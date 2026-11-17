@@ -520,7 +520,41 @@ SQL);
         } else {
             $rows = $this->pdo->query('SELECT * FROM tasks ORDER BY position ASC, id ASC')->fetchAll();
         }
-        return $this->attachSubtasks(array_map([$this, 'castTask'], $rows));
+        $tasks = $this->attachSubtasks(array_map([$this, 'castTask'], $rows));
+        foreach ($tasks as $index => $task) {
+            $tasks[$index] = $this->syncTaskFromSteps($task);
+        }
+        return $tasks;
+    }
+
+    public function syncTaskFromSteps(array $task): array
+    {
+        $status = (string)($task['status'] ?? '');
+        if ($status === 'archived') {
+            return $task;
+        }
+        $recurrence = strtolower(trim((string)($task['recurrence_interval'] ?? 'none')));
+        $repeats = $recurrence !== '' && $recurrence !== 'none';
+        $subs = is_array($task['subtasks'] ?? null) ? $task['subtasks'] : [];
+        $allDone = $subs !== [];
+        foreach ($subs as $sub) {
+            if (!is_array($sub) || (string)($sub['status'] ?? '') !== 'done') {
+                $allDone = false;
+                break;
+            }
+        }
+        if ($repeats || !$allDone) {
+            $want = ($repeats || $status === 'done') ? 'in_progress' : $status;
+        } else {
+            $want = 'done';
+        }
+        if ($want !== 'in_progress' && $want !== 'done') {
+            $want = 'in_progress';
+        }
+        if ($status === $want) {
+            return $task;
+        }
+        return $this->updateTask((int)$task['id'], ['status' => $want]) ?? $task;
     }
 
     public function task(int $id): ?array
@@ -691,7 +725,10 @@ SQL);
         $rows = $stmt->fetchAll();
         $tasks = array_map([$this, 'castTask'], $rows);
         return array_values(array_filter($tasks, function (array $task): bool {
-            return !$this->heartbeatPaused((int)($task['project_id'] ?? 0));
+            if ($this->heartbeatPaused((int)($task['project_id'] ?? 0))) {
+                return false;
+            }
+            return !$this->runOnceAlreadyFinished($task);
         }));
     }
 
@@ -897,6 +934,23 @@ SQL);
         $stmt = $this->pdo->prepare("SELECT * FROM jobs WHERE status IN ('running', 'error') AND attempts < ? AND updated_at <= datetime('now', ?) ORDER BY id");
         $stmt->execute([$maxAttempts, '-' . $staleSeconds . ' seconds']);
         return $stmt->fetchAll();
+    }
+
+    private function runOnceAlreadyFinished(array $task): bool
+    {
+        $recurrence = strtolower(trim((string)($task['recurrence_interval'] ?? 'none')));
+        if ($recurrence !== '' && $recurrence !== 'none') {
+            return false;
+        }
+        $when = trim((string)($task['schedule_time'] ?? ''));
+        if ($when !== '') {
+            $at = strtotime($when);
+            if ($at === false || $at > time()) {
+                return false;
+            }
+            return $this->taskRanSince((int)$task['id'], $when);
+        }
+        return $this->taskRanSince((int)$task['id'], null);
     }
 
     public function taskRanSince(int $taskId, ?string $scheduleTime): bool

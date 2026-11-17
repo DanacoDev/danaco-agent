@@ -192,6 +192,7 @@
           tasks: [],
           taskDraft: '',
           openTask: null,
+          expandedTasks: {},
           openArchive: null,
           dragTaskId: null,
           dragTaskOrder: '',
@@ -1976,6 +1977,9 @@
             this.taskError = error.message || 'Could not add the task.';
           }
         },
+        toggleSteps(task) {
+          this.expandedTasks[task.id] = !this.expandedTasks[task.id];
+        },
         toggleTask(task) {
           if (this.openTask === task.id) {
             this.openTask = null;
@@ -2042,6 +2046,7 @@
           const title = String(this.subtaskDrafts[task.id] || '').trim();
           if (!title) return;
           const saved = await this.api('/api/tasks/' + task.id + '/subtasks', { method: 'POST', body: { title: title } });
+          this.expandedTasks[task.id] = true;
           this.replaceTask(saved.task);
           this.subtaskDrafts[task.id] = '';
         },
