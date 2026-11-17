@@ -127,7 +127,6 @@ class Orchestrator
         }
         $history = ContextWindow::stripLookups($history);
         $total = $this->contextTotal();
-        $system = $this->systemPrompt($project);
         $pendingKey = 'context_compress_pending_' . max(0, $projectId);
         $pending = $this->db->getSetting($pendingKey, '0') === '1';
         $manual = $activate || ($writeSummary && $pending);
@@ -144,13 +143,17 @@ class Orchestrator
                 $live[] = $message;
             }
         }
+        $system = $this->systemPrompt($project, $this->skills->usedNames($live));
         $measureSystem = $system;
         if (trim($summary) !== '') {
-            $measureSystem .= "\n\nEarlier messages were summarized below. Treat that summary as the record of them. Do not invent details that are not in the summary or the later messages. The same summary is saved in the wiki.\n\n" . $summary;
+            $measureSystem .= $this->summaryNotice() . "\n\n" . $summary;
         }
         $split = ContextWindow::split($measureSystem, $live, $total, $manual);
         if ($cutOff) {
             $keep = !empty($split['compressed']) ? $split['kept'] : $live;
+            if ($this->skills->usedNames($keep) !== $this->skills->usedNames($live)) {
+                $system = $this->systemPrompt($project, $this->skills->usedNames($keep));
+            }
             $messages = [['role' => 'system', 'content' => $system]];
             foreach ($keep as $message) {
                 $messages[] = [
@@ -184,6 +187,9 @@ class Orchestrator
                 }
             }
             if ($fresh) {
+                if ($this->skills->usedNames($kept) !== $this->skills->usedNames($live)) {
+                    $system = $this->systemPrompt($project, $this->skills->usedNames($kept));
+                }
                 if ($emit) {
                     $emit(['type' => 'context', 'used' => $split['used'], 'total' => $split['total']]);
                 }
@@ -229,9 +235,9 @@ class Orchestrator
         $pending = $this->db->getSetting($pendingKey, '0') === '1';
         $last = $messages[count($messages) - 1] ?? null;
         if (is_array($last) && $this->toolWasCutOff((string)($last['content'] ?? ''))) {
-            return $messages;
+            return $this->refreshSystem($messages, $project);
         }
-        $system = (string)($messages[0]['content'] ?? '');
+        $previous = (string)($messages[0]['content'] ?? '');
         $rest = array_slice($messages, 1);
         $plain = 0;
         foreach ($rest as $message) {
@@ -242,6 +248,8 @@ class Orchestrator
         foreach ($rest as $message) {
             $stripped += strlen((string)($message['content'] ?? ''));
         }
+        $bare = $this->systemPrompt($project, $this->skills->usedNames($rest));
+        $system = $this->withSummaryNotice($bare, $previous);
         $messages = array_merge([['role' => 'system', 'content' => $system]], $rest);
         $total = $this->contextTotal();
         $split = ContextWindow::split($system, $rest, $total, $pending);
@@ -250,13 +258,19 @@ class Orchestrator
                 $this->db->setSetting($pendingKey, '0');
                 $emit(['type' => 'phase', 'phase' => '', 'settled' => true]);
             }
-            if ($stripped < $plain) {
+            if ($stripped < $plain || $system !== $previous) {
                 $emit(['type' => 'context', 'used' => ContextWindow::measure($system, $rest), 'total' => $total]);
             }
             return $messages;
         }
+        $kept = $split['kept'];
+        if ($this->skills->usedNames($kept) !== $this->skills->usedNames($rest)) {
+            $bare = $this->systemPrompt($project, $this->skills->usedNames($kept));
+            $system = $this->withSummaryNotice($bare, $previous);
+            $messages[0]['content'] = $system;
+        }
         $folder = is_array($project) ? (string)$project['folder_name'] : null;
-        $packed = $this->finishCompression($projectId, $folder, $system, $split['dropped'], $split['kept'], $this->memory->readContextSummary($folder), $total, $shouldStop, $emit);
+        $packed = $this->finishCompression($projectId, $folder, $bare, $split['dropped'], $kept, $this->memory->readContextSummary($folder), $total, $shouldStop, $emit);
         if ($packed === null) {
             if ($pending) {
                 $this->db->setSetting($pendingKey, '0');
@@ -277,8 +291,10 @@ class Orchestrator
     private function repackForFailsafe(array $messages, ?array $project, callable $emit, ?callable $shouldStop): array
     {
         $before = count($messages);
-        $system = (string)($messages[0]['content'] ?? '');
+        $previous = (string)($messages[0]['content'] ?? '');
         $rest = ContextWindow::stripLookups(array_slice($messages, 1));
+        $bare = $this->systemPrompt($project, $this->skills->usedNames($rest));
+        $system = $this->withSummaryNotice($bare, $previous);
         $messages = array_merge([['role' => 'system', 'content' => $system]], $rest);
         $total = $this->contextTotal();
         $split = ContextWindow::fit($system, $rest, $total);
@@ -286,9 +302,14 @@ class Orchestrator
             $emit(['type' => 'context', 'used' => $split['used'], 'total' => $split['total']]);
             return $messages;
         }
+        $kept = $split['kept'];
+        if ($this->skills->usedNames($kept) !== $this->skills->usedNames($rest)) {
+            $bare = $this->systemPrompt($project, $this->skills->usedNames($kept));
+            $messages[0]['content'] = $this->withSummaryNotice($bare, $previous);
+        }
         $folder = is_array($project) ? (string)$project['folder_name'] : null;
         $projectId = is_array($project) ? (int)($project['id'] ?? 0) : 0;
-        $packed = $this->finishCompression($projectId, $folder, $system, $split['dropped'], $split['kept'], $this->memory->readContextSummary($folder), $total, $shouldStop, $emit);
+        $packed = $this->finishCompression($projectId, $folder, $bare, $split['dropped'], $kept, $this->memory->readContextSummary($folder), $total, $shouldStop, $emit);
         if ($packed === null) {
             $emit(['type' => 'context', 'used' => $split['used'], 'total' => $split['total']]);
             return $messages;
@@ -575,7 +596,31 @@ TXT;
         return "Projects that already exist. This is a short index, not the full description of each project:\n" . clip_text($text, 4000);
     }
 
-    private function systemPrompt(?array $project): string
+    private function refreshSystem(array $messages, ?array $project): array
+    {
+        if ($messages === []) {
+            return $messages;
+        }
+        $previous = (string)($messages[0]['content'] ?? '');
+        $bare = $this->systemPrompt($project, $this->skills->usedNames(array_slice($messages, 1)));
+        $messages[0]['content'] = $this->withSummaryNotice($bare, $previous);
+        return $messages;
+    }
+
+    private function summaryNotice(): string
+    {
+        return "\n\nEarlier messages were summarized below. Treat that summary as the record of them. Do not invent details that are not in the summary or the later messages. The same summary is saved in the wiki.";
+    }
+
+    private function withSummaryNotice(string $system, string $previous): string
+    {
+        if (!str_contains($previous, 'Earlier messages were summarized below.')) {
+            return $system;
+        }
+        return $system . $this->summaryNotice();
+    }
+
+    private function systemPrompt(?array $project, array $expand = []): string
     {
         if ($project === null) {
             $context = <<<TXT
@@ -649,13 +694,13 @@ Never invent another call format. These do nothing:
 : wiki/NOTES.md
 filesystem
 read {"path":"..."}
-<task_breakdown>...</task_breakdown>
+<tasklist>...</tasklist>
 <delegate><agent>writer</agent></delegate>
 Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> block runs it.
 Do not print a tool call in the reply. Do not write read {"path":"..."} or a tool name followed by a JSON object. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_memory with action write first, then answer. A project file is written by a subagent with filesystem action write.
 
-{$pdfNote}These are the skills at your disposal. Read each for further instructions
+{$pdfNote}These are the skills at your disposal. Each line is the description and the arguments. After a skill is called, its instructions are added here and stay while that call is still in this chat.
 TXT;
         $projectId = $project ? (int)$project['id'] : 0;
         $omit = ['create_pdf', 'run_command', 'run_python'];
@@ -669,7 +714,7 @@ TXT;
             'web_search' => $this->researchToolLine('web_search'),
             'fetch_url' => $this->researchToolLine('fetch_url'),
             'browse_url' => $this->researchToolLine('browse_url'),
-        ]);
+        ], $expand);
         $lines = [];
         $sawEmail = false;
         foreach ((new CapabilityTools($this->db))->descriptions($projectId) as $line) {
@@ -1030,6 +1075,16 @@ TXT;
                 }
             },
             'tasklist' => function (array $args) use ($projectId, &$createdTaskIds): string {
+                return $this->kanban($projectId, $args, $createdTaskIds);
+            },
+            'task_breakdown' => function (array $args) use ($projectId, &$createdTaskIds): string {
+                $args['action'] = 'create';
+                if (!array_key_exists('tasks', $args)) {
+                    $title = trim((string)($args['title'] ?? ''));
+                    if ($title !== '') {
+                        $args['tasks'] = [['title' => $title, 'agent' => $args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator']];
+                    }
+                }
                 return $this->kanban($projectId, $args, $createdTaskIds);
             },
             'kanban' => function (array $args) use ($projectId, &$createdTaskIds): string {
@@ -1408,6 +1463,10 @@ TXT;
                 return $board->listing($projectId);
             }
             if ($action === 'create') {
+                $batch = $this->taskBatch($args);
+                if ($batch !== null) {
+                    return $this->createNowTasks($projectId, $batch, $createdTaskIds, $board);
+                }
                 $task = $board->create($projectId, $args, false);
                 if ($createdTaskIds !== null) {
                     $createdTaskIds[] = (int)$task['id'];
@@ -1438,6 +1497,91 @@ TXT;
             return $e->getMessage();
         }
         return 'Unknown tasklist action. Use list, create, update, or delete.';
+    }
+
+    private function taskBatch(array $args): ?array
+    {
+        if (!array_key_exists('tasks', $args)) {
+            return null;
+        }
+        $tasks = $args['tasks'];
+        if (is_string($tasks)) {
+            $decoded = json_decode($tasks, true);
+            $tasks = is_array($decoded) ? $decoded : [];
+        }
+        if (!is_array($tasks)) {
+            return [];
+        }
+        if (array_key_exists('title', $tasks) && !array_is_list($tasks)) {
+            return [$tasks];
+        }
+        return $tasks;
+    }
+
+    private function createNowTasks(int $projectId, array $tasks, ?array &$createdTaskIds, Kanban $board): string
+    {
+        if ($tasks === []) {
+            return 'Pass tasks. Each task has a title and an agent.';
+        }
+        $cards = [];
+        foreach ($tasks as $task) {
+            if (is_string($task)) {
+                $title = trim($task);
+                $agent = 'orchestrator';
+            } elseif (is_array($task)) {
+                $title = trim((string)($task['title'] ?? ''));
+                $agent = strtolower(trim((string)($task['agent'] ?? $task['assigned_agent'] ?? 'orchestrator')));
+            } else {
+                continue;
+            }
+            if ($title === '') {
+                continue;
+            }
+            if ($agent === 'human' || $agent === 'user') {
+                return 'Cards are not personal todos. Assign orchestrator for planning with the user, or the subagent who will produce the result.';
+            }
+            if (strlen($title) > 200) {
+                $title = substr($title, 0, 200);
+            }
+            $cards[] = ['title' => $title, 'agent' => $agent];
+            if (count($cards) >= 40) {
+                break;
+            }
+        }
+        if ($cards === []) {
+            return 'Pass tasks with a title and an agent.';
+        }
+        $added = [];
+        $duplicates = [];
+        foreach ($cards as $card) {
+            try {
+                $saved = $board->create($projectId, [
+                    'title' => $card['title'],
+                    'steps' => [$card['title']],
+                    'agent' => $card['agent'],
+                    'status' => 'in_progress',
+                ], false);
+            } catch (InvalidArgumentException $e) {
+                $message = $e->getMessage();
+                if (str_starts_with($message, 'Error: Task #')) {
+                    $duplicates[] = $message;
+                    continue;
+                }
+                return $message;
+            }
+            if ($createdTaskIds !== null) {
+                $createdTaskIds[] = (int)$saved['id'];
+            }
+            $added[] = '#' . $saved['id'] . ' ' . $saved['title'];
+        }
+        $lines = [];
+        if ($added !== []) {
+            $lines[] = 'Added ' . count($added) . ' ' . (count($added) === 1 ? 'task' : 'tasks') . ' in in_progress: ' . implode('; ', $added) . '.';
+        }
+        if ($duplicates !== []) {
+            $lines[] = 'These tasks are already on the task list and were not added. Use those tasks. ' . implode(' ', $duplicates);
+        }
+        return $lines === [] ? 'Pass tasks with a title and an agent.' : implode("\n", $lines);
     }
 
     private function kanbanCardId(int $projectId, array $args): int

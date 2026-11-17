@@ -33,16 +33,17 @@ class SubagentRunner
         $this->capabilities->missingPython = [];
         $this->runTrace = [];
         $stored = false;
+        $user = $this->withPriorRun($projectId, $agent, "project: {$projectFolder}\n\n{$instruction}");
         $messages = [
-            ['role' => 'system', 'content' => $this->systemPrompt($agent, $projectFolder, $projectId)],
-            ['role' => 'user', 'content' => $this->withPriorRun($projectId, $agent, "project: {$projectFolder}\n\n{$instruction}")],
+            ['role' => 'system', 'content' => $this->systemPrompt($agent, $projectFolder, $projectId, $this->skills->usedNames([['content' => $user]]))],
+            ['role' => 'user', 'content' => $user],
         ];
         $watch = function () use ($shouldStop): bool {
             $this->db->setSetting('subagent_lock', (string)time());
             return $shouldStop && $shouldStop();
         };
         try {
-            $result = $this->runtime->run($agent, $messages, $this->traced($this->tools($agent, $projectFolder, $projectId, $emit, $watch)), $emit, $this->runtime->maxTurns(), $projectId, $watch, false, $scheduled);
+            $result = $this->runtime->run($agent, $messages, $this->traced($this->tools($agent, $projectFolder, $projectId, $emit, $watch)), $emit, $this->runtime->maxTurns(), $projectId, $watch, false, $scheduled, fn(array $running): array => $this->refreshSystem($running, $agent, $projectFolder, $projectId));
             $excerpt = trim(preg_replace('/\s+/', ' ', $result) ?? '');
             $this->db->loop($agent, 'process', 'Context released · ' . $excerpt);
             $result = $this->finishSubagent($result);
@@ -86,16 +87,22 @@ class SubagentRunner
         $tools = [];
         $prompt = Prompts::CONSULTANT;
         if ($projectFolder !== '') {
-            $prompt = $this->systemPrompt('consultant', $projectFolder, $projectId);
             $tools = $this->tools('consultant', $projectFolder, $projectId, $emit, $watch);
         }
         $user = $projectFolder !== '' ? "project: {$projectFolder}\n\n{$instruction}" : $instruction;
+        $user = $this->withPriorRun($projectId, 'consultant', $user);
+        if ($projectFolder !== '') {
+            $prompt = $this->systemPrompt('consultant', $projectFolder, $projectId, $this->skills->usedNames([['content' => $user]]));
+        }
         $messages = [
             ['role' => 'system', 'content' => $prompt],
-            ['role' => 'user', 'content' => $this->withPriorRun($projectId, 'consultant', $user)],
+            ['role' => 'user', 'content' => $user],
         ];
+        $refresh = $projectFolder !== ''
+            ? fn(array $running): array => $this->refreshSystem($running, 'consultant', $projectFolder, $projectId)
+            : null;
         try {
-            $result = $this->finishSubagent($this->runtime->run('consultant', $messages, $this->traced($tools), $emit, $this->runtime->maxTurns(), $projectId > 0 ? $projectId : null, $watch, true, $scheduled));
+            $result = $this->finishSubagent($this->runtime->run('consultant', $messages, $this->traced($tools), $emit, $this->runtime->maxTurns(), $projectId > 0 ? $projectId : null, $watch, true, $scheduled, $refresh));
             $this->storeRun($projectId, 'consultant', $result);
             $stored = true;
             return $result;
@@ -157,9 +164,18 @@ Those skills cover any file in the project, including the wiki. {$scope} A new o
 TXT;
     }
 
-    private function systemPrompt(string $agent, string $projectFolder, int $projectId): string
+    private function refreshSystem(array $messages, string $agent, string $projectFolder, int $projectId): array
     {
-        $omit = ['delegate', 'task_breakdown'];
+        if ($messages === [] || ($messages[0]['role'] ?? '') !== 'system') {
+            return $messages;
+        }
+        $messages[0]['content'] = $this->systemPrompt($agent, $projectFolder, $projectId, $this->skills->usedNames(array_slice($messages, 1)));
+        return $messages;
+    }
+
+    private function systemPrompt(string $agent, string $projectFolder, int $projectId, array $expand = []): string
+    {
+        $omit = ['delegate'];
         if ($agent !== 'coder') {
             $omit[] = 'write_skill';
             $omit[] = 'test_skill';
@@ -170,7 +186,7 @@ TXT;
         if ($projectId <= 0 || !$this->db->ftpAccounts($projectId)) {
             $omit[] = 'ftp';
         }
-        $catalog = $this->skills->promptCatalog($omit);
+        $catalog = $this->skills->promptCatalog($omit, [], $expand);
         $extra = [];
         foreach ($this->capabilities->descriptions($projectId) as $line) {
             if (!preg_match('/^- (send_email|ftp|mcp):/', $line, $match) || in_array($match[1], $omit, true)) {
@@ -196,7 +212,7 @@ TXT;
         }
         $rules = <<<TXT
 {$identity}
-Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task. You cannot create, update, or delete a task, and you do not call task_breakdown. When the instruction names a task, add a short result to it with the tasklist tool before you finish. The main agent checks that work and then updates the task. If the task includes a previous run, that record is what you already found, wrote, or returned. Continue from it. Do not start that work over. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
+Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task. You cannot create, update, or delete a task. When the instruction names a task, add a short result to it with the tasklist tool before you finish. The main agent checks that work and then updates the task. If the task includes a previous run, that record is what you already found, wrote, or returned. Continue from it. Do not start that work over. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
 
 Do not install software or dependencies. If something is missing, say what it is and stop. The main agent asks the user and installs it.
 
@@ -218,13 +234,13 @@ Never invent another call format. These do nothing:
 : delete
 : wiki/NOTES.md
 filesystem
-<task_breakdown>...</task_breakdown>
+<tasklist>...</tasklist>
 <delegate><agent>writer</agent></delegate>
 Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> block runs it.
 Do not print a tool call in the reply. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_memory with action write, or filesystem with action write, first, then answer.
 
-These are the skills at your disposal. Read each for further instructions
+These are the skills at your disposal. Each line is the description and the arguments. After a skill is called, its instructions are added here and stay while that call is still in this chat.
 TXT;
         if ($this->db->fullSystemControl()) {
             $rules .= "\nFull system control is on. You may use sudo, and a path that starts with / can read or change any file on this computer. Prefer {$projectFolder}/ unless the task needs something outside it. Python still runs through run_python and stays inside the project.\n";
@@ -416,6 +432,9 @@ TXT;
             'tasklist' => function (array $args) use ($projectId): string {
                 return $this->kanbanResult($projectId, $args);
             },
+            'task_breakdown' => function (): string {
+                return 'Only the main agent can add tasks. Add a result to the task you were given with tasklist action result.';
+            },
             'kanban' => function (array $args) use ($projectId): string {
                 return $this->kanbanResult($projectId, $args);
             },
@@ -478,12 +497,6 @@ TXT;
                         return 'SQLite table drops are approved by the user through the main agent. Stop. Report the database filename and the table name. The main agent calls sqlite_helper with action drop. Do not retry, do not use sqlite3, run_command, or run_python, and do not tell the user to run a command.';
                     }
                     return $handler($args);
-                };
-                continue;
-            }
-            if ($name === 'task_breakdown') {
-                $tools[$name] = function (): string {
-                    return 'Only the main agent can add tasks. Add a result to the task you were given.';
                 };
                 continue;
             }

@@ -14,7 +14,7 @@ class SkillEngine
         'wiki_memory', 'list_vault', 'read_vault', 'restore_file', 'tasklist', 'delegate',
         'web_search', 'fetch_url', 'browse_url', 'run_command', 'run_python', 'send_email',
         'ftp', 'mcp', 'remember', 'write_skill', 'test_skill', 'sqlite_helper', 'save_note',
-        'code_verifier', 'research_pipeline', 'task_breakdown', 'download_large',
+        'code_verifier', 'research_pipeline', 'download_large',
         'write_article', 'humanizer', 'make_graphic',
     ];
 
@@ -70,16 +70,7 @@ class SkillEngine
     public function offered(string $name): bool
     {
         $this->sync();
-        $name = $this->storedName($name);
-        if ($name === 'search') {
-            $name = 'web_search';
-        } elseif ($name === 'create_task' || $name === 'list_tasks' || $name === 'kanban') {
-            $name = 'tasklist';
-        } elseif (in_array($name, ['wiki_search', 'wiki_read', 'wiki_write', 'wiki_reindex'], true)) {
-            $name = 'wiki_memory';
-        } elseif (in_array($name, ['list_files', 'read_file', 'write_file', 'delete_file', 'move_file'], true)) {
-            $name = 'filesystem';
-        }
+        $name = $this->aliasName($name);
         $skill = $this->db->skillByName($name);
         if (!$skill) {
             return true;
@@ -90,9 +81,10 @@ class SkillEngine
         return true;
     }
 
-    public function promptCatalog(array $omit = [], array $brief = []): string
+    public function promptCatalog(array $omit = [], array $brief = [], array $expand = []): string
     {
         $this->sync();
+        $open = array_fill_keys($expand, true);
         $blocks = [];
         foreach ($this->db->skills() as $skill) {
             $name = (string)$skill['name'];
@@ -103,14 +95,54 @@ class SkillEngine
                 $blocks[] = $brief[$name];
                 continue;
             }
-            if ((string)$skill['created_by'] === 'system') {
+            $line = '- ' . $name . ': ' . $this->oneLine((string)$skill['description']);
+            if (isset($open[$name])) {
                 $body = trim($this->body($skill));
-                $blocks[] = '- ' . $name . ': ' . $this->oneLine((string)$skill['description']) . ($body !== '' ? "\n" . $body : '');
-            } else {
-                $blocks[] = '- ' . $name . ': ' . $this->oneLine((string)$skill['description']);
+                if ($body !== '') {
+                    $line .= "\n" . $body;
+                }
             }
+            $blocks[] = $line;
         }
         return $blocks ? implode("\n\n", $blocks) : '- none';
+    }
+
+    public function usedNames(array $messages): array
+    {
+        $this->sync();
+        $found = [];
+        foreach ($messages as $message) {
+            if (!is_array($message)) {
+                continue;
+            }
+            $content = (string)($message['content'] ?? '');
+            if ($content === '') {
+                continue;
+            }
+            if (preg_match_all('/TOOL RESULT ([A-Za-z0-9._-]+):/', $content, $matches)) {
+                foreach ($matches[1] as $name) {
+                    $this->noteUsed($found, (string)$name);
+                }
+            }
+            if (preg_match_all('/<<tool>>\s*(.*?)\s*<<end>>/s', $content, $blocks)) {
+                foreach ($blocks[1] as $json) {
+                    $call = json_decode($json, true);
+                    if (is_array($call) && is_string($call['name'] ?? null)) {
+                        $this->noteUsed($found, $call['name']);
+                    }
+                }
+            }
+            if (preg_match('/(?:^|\n)Tool results:\n(.*)\z/s', $content, $section)) {
+                if (preg_match_all('/^([a-z0-9][a-z0-9._-]*)(?: \([^)\n]*\))?:/m', $section[1], $heads)) {
+                    foreach ($heads[1] as $name) {
+                        $this->noteUsed($found, (string)$name);
+                    }
+                }
+            }
+        }
+        $names = array_keys($found);
+        sort($names);
+        return $names;
     }
 
     public function summariesForPrompt(): string
@@ -536,6 +568,33 @@ class SkillEngine
             return false;
         }
         return (bool)preg_match('/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/', $name);
+    }
+
+    private function noteUsed(array &$found, string $name): void
+    {
+        $name = $this->aliasName($name);
+        if ($name === '' || !$this->db->skillByName($name)) {
+            return;
+        }
+        $found[$name] = true;
+    }
+
+    private function aliasName(string $name): string
+    {
+        $name = $this->storedName($name);
+        if ($name === 'search') {
+            return 'web_search';
+        }
+        if ($name === 'create_task' || $name === 'list_tasks' || $name === 'kanban' || $name === 'task_breakdown') {
+            return 'tasklist';
+        }
+        if (in_array($name, ['wiki_search', 'wiki_read', 'wiki_write', 'wiki_reindex'], true)) {
+            return 'wiki_memory';
+        }
+        if (in_array($name, ['list_files', 'read_file', 'write_file', 'delete_file', 'move_file'], true)) {
+            return 'filesystem';
+        }
+        return $name;
     }
 
     private function storedName(string $name): string
