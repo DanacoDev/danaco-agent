@@ -51,7 +51,7 @@ class ChatTurn
         if ($answer === '') {
             $answer = trim($this->streamed);
         }
-        return $answer;
+        return trim(strip_tool_result_leak($answer));
     }
 
     public static function encodeDetail(array $detail): ?string

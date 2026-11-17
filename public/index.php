@@ -323,7 +323,7 @@ header('X-Danaco: 1');
                     </button>
                   </li>
                 </ul>
-                <p v-if="task.result && (taskStatus(task) !== 'in_progress' || expandedTasks[task.id])" class="task-result is-full">Results: {{ task.result }}</p>
+                <p v-if="expandedTasks[task.id] && task.result" class="task-result is-full"><span class="task-result-label">Results:</span><span class="task-result-line">{{ task.result }}</span></p>
                 <form v-if="openTask === task.id" class="subtask-add" @submit.prevent="addSubtask(task)">
                   <input v-model="subtaskDrafts[task.id]" placeholder="Add step" aria-label="Add step">
                   <button class="btn" type="submit">Add</button>

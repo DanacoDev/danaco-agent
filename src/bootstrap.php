@@ -105,6 +105,12 @@ function clip_text(string $text, int $max = 12000): string
     return substr($text, 0, $max) . "\n…[truncated]";
 }
 
+function strip_tool_result_leak(string $text): string
+{
+    $filter = new ToolResultLeakFilter();
+    return $filter->push($text) . $filter->finish();
+}
+
 function strip_chat_tags(string $text): string
 {
     $clean = preg_replace('/<\/?chat\b[^>]*>/i', '', $text);

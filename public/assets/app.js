@@ -30,6 +30,36 @@
     return String(src || '').replace(/<\/?chat\b[^>]*>/gi, '');
   }
 
+  function stripToolResultLeak(src) {
+    const text = String(src || '');
+    const lines = text.split('\n');
+    const out = [];
+    let dropping = false;
+    const partial = text.length > 0 && !text.endsWith('\n');
+    const last = partial ? lines.length - 1 : lines.length;
+    for (let i = 0; i < last; i++) {
+      const line = lines[i];
+      const trim = line.replace(/^[ \t]+/, '');
+      if (dropping) {
+        if (trim === '') dropping = false;
+        continue;
+      }
+      if (/^TOOL RESULT \S+:/i.test(trim)) {
+        dropping = true;
+        continue;
+      }
+      out.push(line);
+    }
+    if (partial) {
+      const line = lines[lines.length - 1];
+      const trim = line.replace(/^[ \t]+/, '');
+      const header = 'TOOL RESULT ';
+      const prefix = trim === '' || /^TOOL RESULT(?:\s+\S*)?$/i.test(trim) || (trim.length < header.length && header.slice(0, trim.length).toUpperCase() === trim.toUpperCase());
+      if (!dropping && !prefix && !/^TOOL RESULT \S+:/i.test(trim)) out.push(line);
+    }
+    return out.join('\n');
+  }
+
   function stripLeakedThink(src) {
     let text = String(src || '');
     text = text.replace(/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*?<\/(?:think|thinking|reasoning|thought)>/gi, '');
@@ -1661,7 +1691,7 @@
         },
         shownContent(msg) {
           let value = String((msg && msg.content) || '');
-          if (msg && msg.role === 'assistant') value = stripChatTags(value);
+          if (msg && msg.role === 'assistant') value = stripToolResultLeak(stripChatTags(value));
           if (!msg || !msg.failed) return value;
           if (value.includes('\n\nError: ')) return value;
           return this.errorText(value);
@@ -1780,7 +1810,7 @@
             this.clearSlowTimer();
             if (this.live && this.liveAgent !== data.agent) this.flushLive();
             this.liveAgent = data.agent || this.liveAgent;
-            this.live = stripChatTags(this.live + (data.text || ''));
+            this.live = stripToolResultLeak(stripChatTags(this.live + (data.text || '')));
             if (data.text) this.answerStarted = true;
             this.holdReply();
             this.scrollChat();

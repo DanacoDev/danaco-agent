@@ -700,7 +700,7 @@ Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> 
 Do not print a tool call in the reply. Do not write read {"path":"..."} or a tool name followed by a JSON object. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_memory with action write first, then answer. A project file is written by a subagent with filesystem action write.
 
-{$pdfNote}These are the skills at your disposal. Each line is the description and the arguments. After a skill is called, its instructions are added here and stay while that call is still in this chat.
+{$pdfNote}These are the skills at your disposal. delegate and tasklist are written out in full. Each other line is the description and the arguments. After another skill is called, its instructions are added here and stay while that call is still in this chat.
 TXT;
         $projectId = $project ? (int)$project['id'] : 0;
         $omit = ['create_pdf', 'run_command', 'run_python'];
@@ -710,6 +710,7 @@ TXT;
         if ($projectId <= 0 || !$this->db->ftpAccounts($projectId)) {
             $omit[] = 'ftp';
         }
+        $expand = array_values(array_unique(array_merge(['delegate', 'tasklist'], $expand)));
         $catalog = $this->skills->promptCatalog($omit, [
             'web_search' => $this->researchToolLine('web_search'),
             'fetch_url' => $this->researchToolLine('fetch_url'),
@@ -763,7 +764,7 @@ TXT;
     {
         $content = (string)($row['content'] ?? '');
         if (($row['role'] ?? '') === 'assistant') {
-            $content = strip_tool_markers(strip_chat_tags($content));
+            $content = strip_tool_result_leak(strip_tool_markers(strip_chat_tags($content)));
         }
         $content = clip_text($content, 8000);
         if (($row['role'] ?? '') !== 'user' || str_starts_with($content, 'Scheduled task:')) {

@@ -59,7 +59,7 @@ class Kanban
         if ($result === '') {
             throw new InvalidArgumentException('A result is required.');
         }
-        $saved = $this->db->updateTask($id, ['result' => clip_text($result, 2000)]);
+        $saved = $this->db->updateTask($id, ['result' => $this->oneLineResult($result)]);
         if (!$saved) {
             throw new RuntimeException('Task not found.');
         }
@@ -87,7 +87,7 @@ class Kanban
             $fields['description'] = '';
         }
         if (array_key_exists('result', $args)) {
-            $fields['result'] = clip_text(trim((string)$args['result']), 2000);
+            $fields['result'] = $this->oneLineResult((string)$args['result']);
         }
         if (array_key_exists('agent', $args) || array_key_exists('assigned_agent', $args)) {
             $fields['assigned_agent'] = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
@@ -139,6 +139,48 @@ class Kanban
             $saved = $this->db->task($id) ?? $saved;
         }
         return $saved ? $this->db->syncTaskFromSteps($saved) : $saved;
+    }
+
+    public function oneLineResult(string $text): string
+    {
+        $text = trim($text);
+        if ($text === '') {
+            return '';
+        }
+        $lines = preg_split('/\R/u', $text) ?: [];
+        $kept = [];
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '' || $line === '---') {
+                continue;
+            }
+            if (preg_match('/^(TOOL RESULT|Results:)/i', $line)) {
+                continue;
+            }
+            if (preg_match('/^#\d+\s+\[/', $line)) {
+                continue;
+            }
+            if (preg_match('/^-\s+\[(done|in_progress)\]/i', $line)) {
+                continue;
+            }
+            if (preg_match('/^(Let me|I need to|I\'ll |I will |You\'re right|However,|Is there anything|Since it\'s already)/i', $line)) {
+                continue;
+            }
+            if (str_ends_with($line, '?')) {
+                continue;
+            }
+            $kept[] = $line;
+        }
+        $pick = $kept ? $kept[array_key_last($kept)] : $text;
+        $pick = trim((string)preg_replace('/\s+/u', ' ', $pick));
+        if (strlen($pick) > 180) {
+            if (preg_match('/^.{20,160}?[.!](?=\s|$)/u', $pick, $found)) {
+                $pick = $found[0];
+            } else {
+                $pick = rtrim(substr($pick, 0, 177)) . '…';
+            }
+        }
+        return $pick;
     }
 
     private function agentReleasesHold(array $args, array $existing, ?string $schedule, string $recurrence, string $status): bool

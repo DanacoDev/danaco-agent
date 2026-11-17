@@ -710,18 +710,21 @@ class AgentRuntime
             $markers = new OutputLineFilter();
             $noise = new ReplyNoiseFilter($this->toolNames());
             $echo = new ToolEchoFilter($this->toolNames());
+            $leak = new ToolResultLeakFilter();
             $turnText = '';
             $guard = new RepeatLineGuard();
             $thinkingGuard = new RepeatLineGuard();
-            $flushEcho = function () use ($echo, $emit, $agent, &$visible): void {
-                $text = $echo->finish();
+            $showLeak = function (string $text) use ($leak, $emit, $agent, &$visible): void {
                 if ($text === '') {
                     return;
                 }
                 $visible .= $text;
                 $emit(['type' => 'token', 'agent' => $agent, 'text' => $text]);
             };
-            $show = function (string $text) use ($guard, $echo, $emit, $agent, &$visible, &$turnText): void {
+            $flushEcho = function () use ($echo, $leak, $showLeak): void {
+                $showLeak($leak->push($echo->finish()) . $leak->finish());
+            };
+            $show = function (string $text) use ($guard, $echo, $leak, $showLeak, &$turnText): void {
                 $text = $guard->push($text);
                 if ($text === '') {
                     return;
@@ -731,8 +734,7 @@ class AgentRuntime
                 if ($text === '') {
                     return;
                 }
-                $visible .= $text;
-                $emit(['type' => 'token', 'agent' => $agent, 'text' => $text]);
+                $showLeak($leak->push($text));
             };
             $toolNoted = false;
             $thinkBuf = '';
@@ -807,8 +809,8 @@ class AgentRuntime
                 $present($this->releaseMarker($markers, $parser));
                 $finishNoise();
                 $flushThinking(true);
-                $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
                 $flushEcho();
+                $this->traceFilters($agent, $projectId, $markers, $noise, $guard, $leak);
                 $this->db->setAgentStatus($agent, 'idle');
                 throw $e;
             } catch (OutputRepeated $e) {
@@ -816,8 +818,8 @@ class AgentRuntime
                 $flushThinking(true);
                 $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
                 $repeatGuard = $thinkingGuard->tripped ? $thinkingGuard : $guard;
-                $this->traceFilters($agent, $projectId, $markers, $noise, $repeatGuard);
                 $flushEcho();
+                $this->traceFilters($agent, $projectId, $markers, $noise, $repeatGuard, $leak);
                 if ($turnText !== '') {
                     $this->db->logAgent($agent, $projectId, 'thinking', $turnText);
                 }
@@ -829,8 +831,8 @@ class AgentRuntime
                 $flushThinking(true);
                 $emit(['type' => 'cpu', 'cpu' => true]);
                 $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
-                $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
                 $flushEcho();
+                $this->traceFilters($agent, $projectId, $markers, $noise, $guard, $leak);
                 if ($fallbackTries >= 1) {
                     $this->db->loop($agent, 'stop', 'context fallback · ' . $e->getMessage(), $projectId);
                     $this->db->setAgentStatus($agent, 'error');
@@ -852,7 +854,8 @@ class AgentRuntime
             } catch (LlmException $e) {
                 $flushThinking(true);
                 $this->flushRecoveries($emit, $projectId, $agent, $scheduled);
-                $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
+                $showLeak($leak->finish());
+                $this->traceFilters($agent, $projectId, $markers, $noise, $guard, $leak);
                 $this->db->loop($agent, 'stop', $e->getMessage(), $projectId);
                 $this->db->setAgentStatus($agent, 'error');
                 $notice = agent_error($agent, $e->getMessage());
@@ -872,14 +875,11 @@ class AgentRuntime
                 $turnText .= $rest;
             }
             $rest = ($rest === '' ? '' : $echo->push($rest)) . $echo->finish();
-            if ($rest !== '') {
-                $visible .= $rest;
-                $emit(['type' => 'token', 'agent' => $agent, 'text' => $rest]);
-            }
+            $showLeak($leak->push($rest) . $leak->finish());
             if ($turnText !== '') {
                 $this->db->logAgent($agent, $projectId, 'thinking', $turnText);
             }
-            $this->traceFilters($agent, $projectId, $markers, $noise, $guard);
+            $this->traceFilters($agent, $projectId, $markers, $noise, $guard, $leak);
             $this->traceOutcome($agent, $projectId, $turnText, $tail, $cutOff);
             if ($guard->tripped) {
                 if (!$this->steerAfterRepeat($repeatTries, $messages, $guard->singleCopy($turnText), $guard->repeated, $visible, $emit, $agent, $skipCompact)) {
@@ -910,7 +910,7 @@ class AgentRuntime
                         $this->db->loop($agent, 'stop', 'narration · retry limit', $projectId);
                         $this->db->setAgentStatus($agent, 'completed');
                         $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
-                        return trim($this->narrationResult($messages));
+                        return trim($this->narrationResult());
                     }
                     $why = $emptyFences ? 'empty fences' : ($proseTools ? 'prose tool' : 'cutoff');
                     $this->db->loop($agent, 'stop', $why . ' · retry limit', $projectId);
@@ -957,7 +957,7 @@ class AgentRuntime
                         $replayBody = 'The previous reply was not a tool call.';
                     }
                 }
-                $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($replayBody)];
+                $messages[] = ['role' => 'assistant', 'content' => $this->modelSaw(strip_chat_tags($replayBody))];
                 if ($cutOff) {
                     $prompt = 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.';
                 } elseif ($emptyFences) {
@@ -1012,7 +1012,7 @@ class AgentRuntime
                         $this->db->loop($agent, 'stop', 'called-a-tool · retry limit', $projectId);
                         $this->db->setAgentStatus($agent, 'completed');
                         $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
-                        return trim($this->narrationResult($messages));
+                        return trim($this->narrationResult());
                     }
                     $calledTries++;
                     $skipCompact = true;
@@ -1043,7 +1043,7 @@ class AgentRuntime
                     if ($replay === '') {
                         $replay = 'The previous reply was empty.';
                     }
-                    $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($replay)];
+                    $messages[] = ['role' => 'assistant', 'content' => $this->modelSaw(strip_chat_tags($replay))];
                     $messages[] = ['role' => 'user', 'content' => $this->finishSteer($scheduled)];
                     continue;
                 }
@@ -1058,7 +1058,7 @@ class AgentRuntime
             if ($called === '' || $this->onlyCalledATool($called)) {
                 $called = $this->calledTools($tail['tools']);
             }
-            $messages[] = ['role' => 'assistant', 'content' => $called];
+            $messages[] = ['role' => 'assistant', 'content' => $this->modelSaw($called)];
             $delegated = false;
             $savedThisTurn = '';
             foreach ($tail['tools'] as $tool) {
@@ -1450,7 +1450,7 @@ class AgentRuntime
         $this->db->loop($agent, 'steer', 'repeat-line · try ' . $tries . '/3' . ($shown !== '' ? ' · ' . $shown : ''));
         $skipCompact = true;
         if ($kept !== '') {
-            $messages[] = ['role' => 'assistant', 'content' => strip_chat_tags($kept)];
+            $messages[] = ['role' => 'assistant', 'content' => $this->modelSaw(strip_chat_tags($kept))];
         }
         $cue = 'You wrote the same line more than five times in a row. Stop repeating it. Continue the task from the last useful step. If a tool still needs to run, call it now.';
         if ($line !== '') {
@@ -1650,31 +1650,21 @@ class AgentRuntime
 
     private function finishVisible(string $visible): string
     {
-        return trim($this->stripLeakedThink($this->withoutCalledATool($visible)));
+        return trim(strip_tool_result_leak($this->stripLeakedThink($this->withoutCalledATool($visible))));
     }
 
-    private function narrationResult(array $messages): string
+    private function narrationResult(): string
     {
-        $found = [];
-        foreach ($messages as $message) {
-            if (!is_array($message) || ($message['role'] ?? '') !== 'user') {
-                continue;
-            }
-            $content = (string)($message['content'] ?? '');
-            if (!str_starts_with($content, 'TOOL RESULT ')) {
-                continue;
-            }
-            $found[] = $content;
+        return 'Stopped after repeated narration.';
+    }
+
+    private function modelSaw(string $text): string
+    {
+        $clean = trim(strip_tool_result_leak($text));
+        if ($clean === '') {
+            return 'The previous reply repeated a tool result.';
         }
-        $line = 'Stopped after repeated narration.';
-        if ($found === []) {
-            return $line;
-        }
-        $chunks = [];
-        foreach (array_slice($found, -6) as $content) {
-            $chunks[] = clip_text($content, 1200);
-        }
-        return implode("\n\n", $chunks) . "\n\n" . $line;
+        return $clean;
     }
 
     private function stripLeakedThink(string $text): string
@@ -1702,14 +1692,17 @@ class AgentRuntime
         $this->llm->recoveries = [];
     }
 
-    private function traceFilters(string $agent, ?int $projectId, OutputLineFilter $markers, ReplyNoiseFilter $noise, RepeatLineGuard $guard): void
+    private function traceFilters(string $agent, ?int $projectId, OutputLineFilter $markers, ReplyNoiseFilter $noise, RepeatLineGuard $guard, ToolResultLeakFilter $leak): void
     {
-        if ($markers->dropped === 0 && $noise->asideChars === 0 && !$guard->tripped) {
+        if ($markers->dropped === 0 && $noise->asideChars === 0 && !$guard->tripped && $leak->dropped === 0) {
             return;
         }
         $parts = [];
         if ($markers->dropped > 0) {
             $parts[] = 'output markers ' . $markers->dropped;
+        }
+        if ($leak->dropped > 0) {
+            $parts[] = 'tool result ' . $leak->dropped . ' chars';
         }
         if ($noise->asideChars > 0) {
             $parts[] = 'noise ' . $noise->asideChars . ' chars';

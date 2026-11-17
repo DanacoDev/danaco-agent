@@ -382,6 +382,8 @@ button.task-title { display: block; padding: 0; background: transparent; border:
 .task-result.is-full {
   display: block; -webkit-line-clamp: unset; overflow: visible; white-space: pre-wrap;
 }
+.task-result-label { display: block; color: #fff; }
+.task-result-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .task-archive { width: 100%; margin-top: 16px; }
 .task-archive > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .task-archive h3 { margin: 0; font-size: 1rem; }

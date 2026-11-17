@@ -235,7 +235,23 @@ class Api
     private function tasks(): void
     {
         $projectId = (int)($_GET['project_id'] ?? 0);
-        $this->json(['tasks' => $this->db->tasks($projectId > 0 ? $projectId : null)]);
+        $tasks = $this->db->tasks($projectId > 0 ? $projectId : null);
+        $board = new Kanban($this->db);
+        foreach ($tasks as $index => $task) {
+            $raw = trim((string)($task['result'] ?? ''));
+            if ($raw === '') {
+                continue;
+            }
+            $line = $board->oneLineResult($raw);
+            if ($line === '' || $line === $raw) {
+                continue;
+            }
+            $saved = $this->db->updateTask((int)$task['id'], ['result' => $line]);
+            if ($saved) {
+                $tasks[$index] = $saved;
+            }
+        }
+        $this->json(['tasks' => $tasks]);
     }
 
     private function createTask(): void
@@ -419,7 +435,7 @@ class Api
                     continue;
                 }
                 if ($role === 'assistant') {
-                    $row['content'] = trim(strip_tool_markers(strip_chat_tags((string)($row['content'] ?? ''))));
+                    $row['content'] = trim(strip_tool_result_leak(strip_tool_markers(strip_chat_tags((string)($row['content'] ?? '')))));
                 }
                 $row['detail'] = isset($recent[$id]) ? $this->trimThinking($row['detail'] ?? null) : $this->leanDetail($row['detail'] ?? null);
                 $out[] = $row;
@@ -709,7 +725,7 @@ class Api
                 $this->db->finishJob($jobId);
                 $this->sse('done', ['message' => $saved]);
             } catch (ChatStopped $e) {
-                $text = trim($turn->streamed);
+                $text = trim(strip_tool_result_leak($turn->streamed));
                 $followup = $this->db->takeChatFollowup($projectId, $jobId);
                 $runStop = $this->db->runStopRequested($projectId);
                 $closed = !$this->db->jobIsRunning($jobId);
@@ -758,7 +774,7 @@ class Api
                 $line .= $retry === 1 ? ' · give up' : ' · heartbeat may retry';
                 $this->db->loop('orchestrator', 'process', $line);
                 $error = error_text($reason);
-                $text = trim(strip_tool_markers($turn->streamed));
+                $text = trim(strip_tool_result_leak(strip_tool_markers($turn->streamed)));
                 $text = $text !== '' ? $text . "\n\n" . $error : $error;
                 $save($text, true);
                 $this->db->markChatAnswerSaved($jobId);
@@ -782,7 +798,7 @@ class Api
         if ($type === 'token' && (microtime(true) - $lastDraft) < 2) {
             return;
         }
-        $text = trim($turn->streamed);
+        $text = trim(strip_tool_result_leak($turn->streamed));
         $detail = ChatTurn::encodeDetail($turn->detail);
         if ($text === '' && $detail === null) {
             return;
