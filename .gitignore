@@ -10,6 +10,7 @@ data/model-warm.json
 data/*.pid
 data/danaco.link
 data/service.mode
+data/ollama.env
 data/.backups/
 data/.trashcan/
 data/projects/

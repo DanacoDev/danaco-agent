@@ -4,6 +4,7 @@ class ToolStreamParser
 {
     private const OPENERS = ['<<tool>>', '<tool>>', '<<tool>', '<tool>', '[[tool]]', '[tool]]', '[[tool]', '[tool]', '<|tool|>'];
     private const CLOSERS = ['<<end>>', '<end>>', '<<end>', '<end>', '[[end]]', '[end]]', '[[end]', '[end]', '[[/tool]]', '[/tool]]', '[[/tool]', '[/tool]', '<</tool>>', '</tool>>', '<</tool>', '</tool>', '<|end|>'];
+    private const ALIASES = ['read', 'write', 'move', 'copy', 'delete', 'list', 'update', 'create', 'result'];
 
     private string $pending = '';
     private bool $inTool = false;
@@ -89,6 +90,39 @@ class ToolStreamParser
                 $open = $this->findToolMarker($this->pending, true, $holdLonger);
                 $close = $this->findToolMarker($this->pending, false, $holdLonger);
                 $braceAt = strpos($this->pending, '{');
+                $named = $this->locateNamedCall($this->pending, $holdLonger);
+                if ($named !== null && $named['kind'] === 'hold' && empty($named['confirmed'])) {
+                    $markerHold = max($this->suffixHold($this->pending, self::OPENERS), $this->suffixHold($this->pending, self::CLOSERS), $this->fencePrefixHold($this->pending), $this->genericMarkerHold($this->pending));
+                    if ($named['at'] >= strlen($this->pending) - $markerHold) {
+                        $named = null;
+                    }
+                }
+                if ($named !== null && !$this->markerBefore((int)$named['at'], $drop, $open, $close)) {
+                    if ($named['kind'] === 'hold' && ($holdLonger || !empty($named['confirmed']))) {
+                        $emitted .= substr($this->pending, 0, $named['at']);
+                        $this->pending = substr($this->pending, $named['at']);
+                        $this->holdingTool = !empty($named['confirmed']);
+                        break;
+                    }
+                    if ($named['kind'] === 'call' || $named['kind'] === 'reject') {
+                        $before = substr($this->pending, 0, $named['at']);
+                        $start = $this->fenceStart($before);
+                        if (trim(substr($before, 0, $start)) === '') {
+                            $start = 0;
+                        }
+                        $emitted .= substr($this->pending, 0, $start);
+                        if ($named['kind'] === 'call') {
+                            $this->tools[] = $named['call'];
+                        } else {
+                            $this->rejected = true;
+                        }
+                        $this->pending = substr($this->pending, $named['end']);
+                        $this->holdingTool = false;
+                        $this->closerHold = true;
+                        continue;
+                    }
+                }
+                $this->holdingTool = false;
                 if ($drop !== null && ($open === null || $drop['at'] <= $open['at']) && ($close === null || $drop['at'] <= $close['at']) && ($braceAt === false || $drop['at'] <= $braceAt)) {
                     $emitted .= substr($this->pending, 0, $drop['at']);
                     $this->pending = substr($this->pending, $drop['at'] + strlen($drop['marker']));
@@ -580,15 +614,256 @@ class ToolStreamParser
                 break;
             }
         }
+        $args = $this->objectArgs($decoded);
         if ($known === null) {
-            return null;
-        }
-        $args = $this->toolArgs($decoded);
-        $hasArgKey = isset($decoded['args']) || isset($decoded['arguments']) || isset($decoded['parameters']);
-        if ($args === [] && !$hasArgKey) {
-            $args = $decoded;
+            return $this->aliasCall(strtolower($name[1]), $args);
         }
         return ['name' => $known, 'args' => $args];
+    }
+
+    private function locateNamedCall(string $text, bool $holdLonger): ?array
+    {
+        $search = 0;
+        $length = strlen($text);
+        while ($search < $length) {
+            $brace = strpos($text, '{', $search);
+            if ($brace === false) {
+                break;
+            }
+            $name = $this->nameBeforeBrace($text, $brace);
+            if ($name === null) {
+                $end = $this->scanJsonObject($text, $brace);
+                if ($end === null) {
+                    break;
+                }
+                $search = $end;
+                continue;
+            }
+            $end = $this->scanJsonObject($text, $brace);
+            if ($end === null) {
+                return ['kind' => 'hold', 'at' => $name['at'], 'confirmed' => true];
+            }
+            $decoded = json_decode(substr($text, $brace, $end - $brace), true);
+            if (!is_array($decoded)) {
+                $search = $end;
+                continue;
+            }
+            $call = $this->callFromName($name['kind'], $name['name'], $decoded);
+            if ($call === null) {
+                return ['kind' => 'reject', 'at' => $name['at'], 'end' => $end];
+            }
+            return ['kind' => 'call', 'at' => $name['at'], 'end' => $end, 'call' => $call];
+        }
+        if (!$holdLonger) {
+            return null;
+        }
+        $holdAt = $this->namedCallPrefixAt($text);
+        if ($holdAt === null) {
+            return null;
+        }
+        return ['kind' => 'hold', 'at' => $holdAt, 'confirmed' => false];
+    }
+
+    private function markerBefore(int $at, ?array $drop, ?array $open, ?array $close): bool
+    {
+        foreach ([$drop, $open, $close] as $marker) {
+            if ($marker !== null && $marker['at'] <= $at) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function nameBeforeBrace(string $text, int $braceAt): ?array
+    {
+        $i = $braceAt - 1;
+        while ($i >= 0 && ($text[$i] === ' ' || $text[$i] === "\t")) {
+            $i--;
+        }
+        if ($i < 0) {
+            return null;
+        }
+        $end = $i + 1;
+        while ($i >= 0 && preg_match('/[A-Za-z0-9_-]/', $text[$i])) {
+            $i--;
+        }
+        $start = $i + 1;
+        if ($start >= $end || $end - $start > 64) {
+            return null;
+        }
+        if ($start > 0 && preg_match('/[A-Za-z0-9_]/', $text[$start - 1])) {
+            return null;
+        }
+        $match = $this->matchCallName(substr($text, $start, $end - $start));
+        if ($match === null) {
+            return null;
+        }
+        $match['at'] = $start;
+        return $match;
+    }
+
+    private function matchCallName(string $word): ?array
+    {
+        foreach ($this->toolNames as $known) {
+            if (strcasecmp((string)$known, $word) === 0) {
+                return ['kind' => 'tool', 'name' => (string)$known];
+            }
+        }
+        foreach (self::ALIASES as $alias) {
+            if (strcasecmp($alias, $word) === 0) {
+                return ['kind' => 'alias', 'name' => $alias];
+            }
+        }
+        return null;
+    }
+
+    private function namedCallPrefixAt(string $text): ?int
+    {
+        $length = strlen($text);
+        $found = null;
+        for ($i = 0; $i < $length; $i++) {
+            if ($i > 0 && preg_match('/[A-Za-z0-9_]/', $text[$i - 1])) {
+                continue;
+            }
+            if ($this->unclosedBraceBefore($text, $i)) {
+                continue;
+            }
+            if ($this->couldBeCallPrefix(substr($text, $i))) {
+                $found = $i;
+            }
+        }
+        return $found;
+    }
+
+    private function unclosedBraceBefore(string $text, int $at): bool
+    {
+        $prefix = substr($text, 0, $at);
+        $brace = strrpos($prefix, '{');
+        if ($brace === false) {
+            return false;
+        }
+        $end = $this->scanJsonObject($text, $brace);
+        return $end === null || $end > $at;
+    }
+
+    private function couldBeCallPrefix(string $rest): bool
+    {
+        if ($rest === '' || preg_match('/^([A-Za-z][A-Za-z0-9_-]{0,64})(.*)$/s', $rest, $match) !== 1) {
+            return false;
+        }
+        $word = $match[1];
+        $after = $match[2];
+        if ($this->matchCallName($word) !== null) {
+            if ($after === '' || preg_match('/^[ \t]+$/', $after) === 1) {
+                return true;
+            }
+            return preg_match('/^[ \t]*\{/', $after) === 1;
+        }
+        if ($after !== '') {
+            return false;
+        }
+        return $this->isCallNamePrefix($word);
+    }
+
+    private function isCallNamePrefix(string $word): bool
+    {
+        if ($word === '' || preg_match('/^[A-Za-z][A-Za-z0-9_-]*$/', $word) !== 1) {
+            return false;
+        }
+        foreach (array_merge($this->toolNames, self::ALIASES) as $name) {
+            $name = (string)$name;
+            if (strlen($word) < strlen($name) && strncasecmp($name, $word, strlen($word)) === 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function callFromName(string $kind, string $name, array $decoded): ?array
+    {
+        $args = $this->objectArgs($decoded);
+        if ($kind === 'tool') {
+            return ['name' => $name, 'args' => $args];
+        }
+        return $this->aliasCall($name, $args);
+    }
+
+    private function aliasCall(string $alias, array $args): ?array
+    {
+        if ($alias === 'read' || $alias === 'write') {
+            if (!$this->filledKey($args, 'path')) {
+                return null;
+            }
+            return $this->withAction('filesystem', $alias, $args);
+        }
+        if ($alias === 'move' || $alias === 'copy') {
+            if (!$this->filledKey($args, 'from') || !$this->filledKey($args, 'to')) {
+                return null;
+            }
+            return $this->withAction('filesystem', $alias, $args);
+        }
+        if ($alias === 'delete') {
+            $path = $this->filledKey($args, 'path');
+            $id = $this->filledKey($args, 'id');
+            if ($path && !$id) {
+                return $this->withAction('filesystem', 'delete', $args);
+            }
+            if ($id && !$path) {
+                return $this->withAction('tasklist', 'delete', $args);
+            }
+            return null;
+        }
+        if ($alias === 'list') {
+            if ($this->filledKey($args, 'path')) {
+                return $this->withAction('filesystem', 'list', $args);
+            }
+            return $this->withAction('tasklist', 'list', $args);
+        }
+        if ($alias === 'update') {
+            if (!$this->filledKey($args, 'id')) {
+                return null;
+            }
+            return $this->withAction('tasklist', 'update', $args);
+        }
+        if ($alias === 'create') {
+            if (!$this->filledKey($args, 'title') && !$this->filledKey($args, 'tasks')) {
+                return null;
+            }
+            return $this->withAction('tasklist', 'create', $args);
+        }
+        if ($alias === 'result') {
+            if (!$this->filledKey($args, 'id')) {
+                return null;
+            }
+            return $this->withAction('tasklist', 'result', $args);
+        }
+        return null;
+    }
+
+    private function withAction(string $tool, string $action, array $args): array
+    {
+        $existing = $args['action'] ?? null;
+        if (!is_string($existing) || trim($existing) === '') {
+            $args['action'] = $action;
+        }
+        return ['name' => $tool, 'args' => $args];
+    }
+
+    private function filledKey(array $args, string $key): bool
+    {
+        if (!array_key_exists($key, $args)) {
+            return false;
+        }
+        $value = $args[$key];
+        return $value !== null && $value !== '' && $value !== [];
+    }
+
+    private function objectArgs(array $decoded): array
+    {
+        if (isset($decoded['args']) || isset($decoded['arguments']) || isset($decoded['parameters'])) {
+            return $this->toolArgs($decoded);
+        }
+        return $decoded;
     }
 
     private function invokeNameFrom(string $marker): string

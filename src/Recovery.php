@@ -144,7 +144,7 @@ class Recovery
             return false;
         }
         $log = app_config()['data_dir'] . '/ollama.log';
-        Process::run(['/bin/sh', '-c', 'nohup ollama serve >> ' . escapeshellarg($log) . ' 2>&1 &'], null, null, 5);
+        Process::run(['/bin/sh', '-c', 'nohup ollama serve >> ' . escapeshellarg($log) . ' 2>&1 &'], null, null, 5, $this->ollamaServeEnv());
         $base = $this->ollamaBase();
         for ($i = 0; $i < 16; $i++) {
             if ($this->ping($base . '/api/tags')) {
@@ -153,6 +153,39 @@ class Recovery
             usleep(500000);
         }
         return false;
+    }
+
+    private function ollamaServeEnv(): ?array
+    {
+        $file = app_config()['data_dir'] . '/ollama.env';
+        if (!is_file($file)) {
+            return null;
+        }
+        $env = getenv();
+        if (!is_array($env)) {
+            $env = [];
+            foreach ($_SERVER as $key => $value) {
+                if (is_string($key) && is_string($value)) {
+                    $env[$key] = $value;
+                }
+            }
+        }
+        $lines = file($file, FILE_IGNORE_NEW_LINES);
+        if (!is_array($lines)) {
+            return $env === [] ? null : $env;
+        }
+        foreach ($lines as $line) {
+            $line = trim((string)$line);
+            if ($line === '' || !str_contains($line, '=')) {
+                continue;
+            }
+            $key = strstr($line, '=', true);
+            if (!is_string($key) || $key === '') {
+                continue;
+            }
+            $env[$key] = substr($line, strlen($key) + 1);
+        }
+        return $env;
     }
 
     private function unloadModels(): int

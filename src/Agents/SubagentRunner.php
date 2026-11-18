@@ -240,7 +240,7 @@ filesystem
 <tasklist>...</tasklist>
 <delegate><agent>writer</agent></delegate>
 Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> block runs it.
-Do not print a tool call in the reply. Draft XML such as <delegate> is thinking, not something the user should read.
+Do not print a tool call in the reply. Do not write a tool name followed by a JSON object. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_memory with action write, or filesystem with action write, first, then answer.
 
 These are the skills at your disposal. Each line is the description and the arguments. After a skill is called, its instructions are added here and stay while that call is still in this chat.
