@@ -1001,6 +1001,22 @@ class AgentRuntime
             $retryOpen = 0;
             if (!$tail['tools']) {
                 if ($this->onlyCalledATool($turnText)) {
+                    $spoken = $this->delegationResultToSpeak($messages);
+                    if ($spoken !== '') {
+                        if ($calledTries >= 1) {
+                            $this->db->loop($agent, 'stop', 'called-a-tool · spoke result', $projectId);
+                            $this->db->setAgentStatus($agent, 'completed');
+                            $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
+                            return $spoken;
+                        }
+                        $calledTries++;
+                        $skipCompact = true;
+                        $visible = $this->withoutCalledATool($visible);
+                        $this->db->loop($agent, 'steer', 'called-a-tool · speak result', $projectId);
+                        $messages[] = ['role' => 'assistant', 'content' => 'The last tool call failed.'];
+                        $messages[] = ['role' => 'user', 'content' => "Tell the user this result and stop. Do not call a tool.\n" . $spoken];
+                        continue;
+                    }
                     $failed = $this->lastToolFailed($messages);
                     if ($failed && $calledTries >= 1) {
                         $this->db->loop($agent, 'stop', 'called-a-tool · failed tool', $projectId);
@@ -1152,7 +1168,13 @@ class AgentRuntime
             'Error:',
             'General chat has no project',
             'Delegation rejected',
+            'Delegation was not started',
+            'Unknown subagent.',
+            'The subagent needs an instruction.',
             'Only one subagent can run at a time',
+            'The Consultant has no API key',
+            'The Consultant is turned off',
+            'The Consultant needs an assignment',
         ] as $prefix) {
             if (str_starts_with($result, $prefix)) {
                 return false;
@@ -1304,7 +1326,7 @@ class AgentRuntime
             'create_pdf', 'run_command', 'run_python', 'py_install', 'tasklist', 'kanban', 'wiki_memory', 'wiki_search', 'wiki_read', 'wiki_write',
             'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'write_skill', 'test_skill', 'remember', 'send_email',
             'web_search', 'fetch_url', 'browse_url', 'ftp', 'mcp', 'download_large', 'task_breakdown',
-            'research_pipeline', 'sqlite_helper', 'code_verifier', 'humanizer', 'write_article', 'make_graphic', 'save_note',
+            'research_pipeline', 'sqlite_helper', 'code_verifier', 'humanizer', 'grammar_check', 'write_article', 'make_graphic', 'save_note',
             'news_fetcher', 'atr_stop_loss',
         ];
     }
@@ -1575,6 +1597,7 @@ class AgentRuntime
             'The scheduled task is not finished',
             'Do not write "Called a tool."',
             'The last tool failed.',
+            'Tell the user this result and stop.',
         ] as $prefix) {
             if (str_starts_with($content, $prefix)) {
                 return true;
@@ -1593,6 +1616,24 @@ class AgentRuntime
 
     private function lastToolFailed(array $messages): bool
     {
+        $body = $this->lastToolBody($messages);
+        return str_starts_with($body, 'Task not found')
+            || str_starts_with($body, 'Error:')
+            || str_starts_with($body, 'Unknown');
+    }
+
+    private function delegationResultToSpeak(array $messages): string
+    {
+        $body = $this->lastToolBody($messages);
+        $marker = "Tell the user this and stop:\n";
+        if (!str_starts_with($body, 'Delegation was not started.') || !str_contains($body, $marker)) {
+            return '';
+        }
+        return trim(substr($body, strpos($body, $marker) + strlen($marker)));
+    }
+
+    private function lastToolBody(array $messages): string
+    {
         for ($i = count($messages) - 1; $i >= 0; $i--) {
             $message = $messages[$i];
             if (!is_array($message) || ($message['role'] ?? '') !== 'user') {
@@ -1602,16 +1643,13 @@ class AgentRuntime
             if (!str_starts_with($content, 'TOOL RESULT ')) {
                 continue;
             }
-            $body = $content;
             $break = strpos($content, "\n");
-            if ($break !== false) {
-                $body = ltrim(substr($content, $break + 1));
+            if ($break === false) {
+                return '';
             }
-            return str_starts_with($body, 'Task not found')
-                || str_starts_with($body, 'Error:')
-                || str_starts_with($body, 'Unknown');
+            return ltrim(substr($content, $break + 1));
         }
-        return false;
+        return '';
     }
 
     private function onlyCalledATool(string $text): bool

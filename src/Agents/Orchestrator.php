@@ -1009,6 +1009,11 @@ TXT;
                     return 'Delegation rejected. The project tag must be project: ' . $folder;
                 }
                 if (!in_array($agent, ['researcher', 'writer', 'coder', 'analyst', 'marketer'], true)) {
+                    $reported = trim((string)($args['result'] ?? ''));
+                    if ($reported !== '') {
+                        $this->db->loop('orchestrator', 'process', 'Delegate rejected · result is not a delegation');
+                        return "Delegation was not started. delegate needs agent and instruction. id and result do not start a subagent. Do not call delegate again. Tell the user this and stop:\n" . $reported;
+                    }
                     $this->db->loop('orchestrator', 'process', 'Delegate rejected · unknown agent');
                     return 'Unknown subagent.';
                 }

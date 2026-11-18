@@ -186,6 +186,9 @@ TXT;
         if ($projectId <= 0 || !$this->db->ftpAccounts($projectId)) {
             $omit[] = 'ftp';
         }
+        if ($agent === 'writer') {
+            $expand[] = 'create_pdf';
+        }
         $catalog = $this->skills->promptCatalog($omit, [], $expand);
         $extra = [];
         foreach ($this->capabilities->descriptions($projectId) as $line) {

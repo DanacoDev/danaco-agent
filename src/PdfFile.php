@@ -40,6 +40,9 @@ class PdfFile
         if (strlen($text) > 200000) {
             throw new RuntimeException('That PDF text is too long.');
         }
+        if (preg_match('/(?:^|\n)\s*<\s*h[1-6]\b/i', $text) || preg_match('/<\s*(?:h[1-6]|span|font|div|p)\b[^>]*style\s*=/i', $text)) {
+            throw new RuntimeException('That text contains an HTML tag, so the tag would be printed. A large purple title is {size:18}{color:purple}# Scarface (1983). Bold is **word**. Italic is *word*. One purple phrase is {color:purple}word{/color}. Put {size:18} or {color:purple} at the start of a line to change that whole line.');
+        }
         $relative = ltrim(str_replace('\\', '/', trim($path)), '/');
         if (!preg_match('/^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,40}\/)*[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.pdf$/', $relative) || str_contains($relative, '..')) {
             throw new RuntimeException('Name a .pdf file inside the project.');
@@ -104,6 +107,7 @@ class PdfFile
             $contentId = $pageId + 1;
             $kids[] = $pageId . ' 0 R';
             $commands = ['BT', '50 790 Td'];
+            $fill = '0.000 0.000 0.000';
             foreach ($pageLines as $line) {
                 if ((int)$line['gap'] > 0) {
                     $commands[] = (int)$line['gap'] . ' TL';
@@ -112,7 +116,13 @@ class PdfFile
                 }
                 $commands[] = (int)$line['lead'] . ' TL';
                 foreach ($line['parts'] as $part) {
-                    $commands[] = '/' . $part['font'] . ' ' . (int)$line['size'] . ' Tf';
+                    $next = $part['color'] ?? '0.000 0.000 0.000';
+                    if ($next !== $fill) {
+                        $commands[] = $next . ' rg';
+                        $fill = $next;
+                    }
+                    $point = (int)($part['size'] ?? $line['size']);
+                    $commands[] = '/' . $part['font'] . ' ' . $point . ' Tf';
                     $commands[] = '(' . self::escape($part['text']) . ') Tj';
                 }
                 $commands[] = 'T*';
@@ -148,20 +158,34 @@ class PdfFile
         $text = str_replace(["\r\n", "\r"], "\n", $text);
         $runs = [];
         foreach (explode("\n", $text) as $line) {
-            if (preg_match('/^```/', trim($line)) || preg_match('/^([-*_])\1{2,}\s*$/', trim($line))) {
+            $pieces = self::pieces($line);
+            $plain = self::pieceText($pieces);
+            if (preg_match('/^```/', trim($plain)) || preg_match('/^([-*_])\1{2,}\s*$/', trim($plain))) {
                 $runs[] = self::blankRun();
                 continue;
+            }
+            $leadSpace = strlen($plain) - strlen(ltrim($plain));
+            if ($leadSpace > 0) {
+                self::eatPrefix($pieces, $leadSpace);
+                $plain = ltrim($plain);
             }
             $size = 10;
             $lead = 13;
             $gap = 0;
             $heading = false;
-            if (preg_match('/^(#{1,3})(?:[ \t]+|(?=\S))(.*)$/', $line, $match)) {
+            if (preg_match('/^(#{1,3})(?:[ \t]+|(?=\S))(.*)$/', $plain, $match)) {
                 $level = strlen($match[1]);
-                $line = trim((string)preg_replace('/[ \t]+#+\s*$/', '', $match[2]));
+                $rawBody = (string)$match[2];
+                $clean = rtrim((string)preg_replace('/[ \t]+#+\s*$/', '', $rawBody));
+                self::eatPrefix($pieces, strlen($plain) - strlen($rawBody));
+                self::eatSuffix($pieces, strlen($rawBody) - strlen($clean));
                 $heading = true;
                 $gap = 4;
-                if ($level === 1) {
+                $custom = self::uniformSize($pieces);
+                if ($custom !== null) {
+                    $size = $custom;
+                    $lead = $custom + 4;
+                } elseif ($level === 1) {
                     $size = 13;
                     $lead = 17;
                 } elseif ($level === 2) {
@@ -171,19 +195,36 @@ class PdfFile
                     $size = 11;
                     $lead = 14;
                 }
-            } elseif (preg_match('/^[*+-]\s+(.*)$/', $line, $match)) {
-                $line = '• ' . $match[1];
-            }
-            $line = (string)preg_replace('/^>\s?/', '', $line);
-            $spans = self::spans($line);
-            if ($heading) {
-                $plain = '';
-                foreach ($spans as $span) {
-                    $plain .= $span['text'];
+            } else {
+                $custom = self::uniformSize($pieces);
+                if ($custom !== null) {
+                    $size = $custom;
+                    $lead = $custom + 4;
                 }
-                $spans = [['font' => 'F2', 'text' => $plain]];
+                if (preg_match('/^[*+-]\s+(.*)$/', $plain, $match)) {
+                    self::eatPrefix($pieces, strlen($plain) - strlen($match[1]));
+                    self::prependPiece($pieces, '• ');
+                } elseif (preg_match('/^>\s?/', $plain, $match)) {
+                    self::eatPrefix($pieces, strlen($match[0]));
+                }
             }
-            $width = max(40, (int)floor(960 / $size));
+            $spans = self::spansFrom($pieces, $size);
+            if ($heading) {
+                foreach ($spans as &$span) {
+                    $span['font'] = 'F2';
+                }
+                unset($span);
+            }
+            $max = $size;
+            foreach ($spans as $span) {
+                if (isset($span['size'])) {
+                    $max = max($max, (int)$span['size']);
+                }
+            }
+            if ($max > $size) {
+                $lead = max($lead, $max + 4);
+            }
+            $width = max(40, (int)floor(960 / $max));
             $wrapped = self::wrapSpans($spans, $width);
             foreach ($wrapped as $index => $parts) {
                 $runs[] = [
@@ -197,29 +238,116 @@ class PdfFile
         return $runs;
     }
 
-    private static function spans(string $line): array
+    private static function pieces(string $line): array
+    {
+        $pieces = [];
+        $color = null;
+        $size = null;
+        $buf = '';
+        $offset = 0;
+        $length = strlen($line);
+        $flush = function () use (&$pieces, &$buf, &$color, &$size): void {
+            if ($buf === '') {
+                return;
+            }
+            $pieces[] = ['text' => $buf, 'color' => $color, 'size' => $size];
+            $buf = '';
+        };
+        while ($offset < $length) {
+            $next = strpos($line, '{', $offset);
+            if ($next === false) {
+                $buf .= substr($line, $offset);
+                break;
+            }
+            if ($next > $offset) {
+                $buf .= substr($line, $offset, $next - $offset);
+                $offset = $next;
+            }
+            if (preg_match('/\G\{size:\s*(\d{1,2})(?:pt)?\s*\}/A', $line, $match, 0, $offset)) {
+                $point = self::pointSize($match[1]);
+                if ($point !== null) {
+                    $flush();
+                    $size = $point;
+                    $offset += strlen($match[0]);
+                    continue;
+                }
+            }
+            if (preg_match('/\G\{color:\s*([^{}]+?)\s*\}/A', $line, $match, 0, $offset)) {
+                $rgb = self::colorRgb($match[1]);
+                if ($rgb !== null) {
+                    $flush();
+                    $color = $rgb;
+                    $offset += strlen($match[0]);
+                    continue;
+                }
+            }
+            if (preg_match('/\G\{\/(color|size)\}/A', $line, $match, 0, $offset)) {
+                $flush();
+                if ($match[1] === 'color') {
+                    $color = null;
+                } else {
+                    $size = null;
+                }
+                $offset += strlen($match[0]);
+                continue;
+            }
+            $buf .= '{';
+            $offset++;
+        }
+        $flush();
+        if ($pieces === []) {
+            $pieces[] = ['text' => '', 'color' => null, 'size' => null];
+        }
+        return $pieces;
+    }
+
+    private static function spansFrom(array $pieces, int $lineSize): array
+    {
+        $spans = [];
+        foreach ($pieces as $piece) {
+            if ($piece['text'] === '') {
+                continue;
+            }
+            foreach (self::markdownSpans($piece['text']) as $span) {
+                if ($piece['color'] !== null) {
+                    $span['color'] = $piece['color'];
+                }
+                if ($piece['size'] !== null && $piece['size'] !== $lineSize) {
+                    $span['size'] = $piece['size'];
+                }
+                $spans[] = $span;
+            }
+        }
+        if ($spans === []) {
+            $spans[] = ['font' => 'F1', 'text' => ''];
+        }
+        return $spans;
+    }
+
+    private static function markdownSpans(string $line): array
     {
         $spans = [];
         $pattern = '/`([^`]*)`|!\[([^\]]*)\]\([^)]*\)|\[([^\]]+)\]\([^)]*\)|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*\n]+)\*|_([^_\n]+)_/u';
         $offset = 0;
         $length = strlen($line);
+        $fonts = [1 => 'F1', 2 => 'F1', 3 => 'F1', 4 => 'F2', 5 => 'F2', 6 => 'F3', 7 => 'F3'];
         while ($offset < $length && preg_match($pattern, $line, $match, PREG_OFFSET_CAPTURE, $offset)) {
             $start = $match[0][1];
             if ($start > $offset) {
                 $spans[] = ['font' => 'F1', 'text' => substr($line, $offset, $start - $offset)];
             }
             $text = '';
-            $italic = false;
-            foreach ([1 => false, 2 => false, 3 => false, 4 => true, 5 => true, 6 => true, 7 => true] as $group => $isItalic) {
+            $font = 'F1';
+            foreach ($fonts as $group => $groupFont) {
                 if (($match[$group][1] ?? -1) < 0) {
                     continue;
                 }
                 $text = $match[$group][0];
-                $italic = $isItalic;
+                $font = $groupFont;
                 break;
             }
             if ($text !== '') {
-                $spans[] = ['font' => $italic ? 'F3' : 'F1', 'text' => $text];
+                $spans[] = ['font' => $font, 'text' => $text];
             }
             $offset = $start + strlen($match[0][0]);
         }
@@ -230,6 +358,146 @@ class PdfFile
             $spans[] = ['font' => 'F1', 'text' => ''];
         }
         return $spans;
+    }
+
+    private static function pieceText(array $pieces): string
+    {
+        $text = '';
+        foreach ($pieces as $piece) {
+            $text .= $piece['text'];
+        }
+        return $text;
+    }
+
+    private static function eatPrefix(array &$pieces, int $bytes): void
+    {
+        $left = $bytes;
+        foreach ($pieces as &$piece) {
+            if ($left <= 0) {
+                break;
+            }
+            $len = strlen($piece['text']);
+            if ($len <= $left) {
+                $left -= $len;
+                $piece['text'] = '';
+                continue;
+            }
+            $piece['text'] = substr($piece['text'], $left);
+            $left = 0;
+        }
+        unset($piece);
+    }
+
+    private static function eatSuffix(array &$pieces, int $bytes): void
+    {
+        if ($bytes <= 0) {
+            return;
+        }
+        for ($i = count($pieces) - 1; $i >= 0 && $bytes > 0; $i--) {
+            $len = strlen($pieces[$i]['text']);
+            if ($len <= $bytes) {
+                $bytes -= $len;
+                $pieces[$i]['text'] = '';
+                continue;
+            }
+            $pieces[$i]['text'] = substr($pieces[$i]['text'], 0, $len - $bytes);
+            $bytes = 0;
+        }
+    }
+
+    private static function prependPiece(array &$pieces, string $prefix): void
+    {
+        foreach ($pieces as &$piece) {
+            $piece['text'] = $prefix . $piece['text'];
+            unset($piece);
+            return;
+        }
+        $pieces[] = ['text' => $prefix, 'color' => null, 'size' => null];
+    }
+
+    private static function uniformSize(array $pieces): ?int
+    {
+        $size = null;
+        $saw = false;
+        foreach ($pieces as $piece) {
+            if ($piece['text'] === '') {
+                continue;
+            }
+            if (!$saw) {
+                $size = $piece['size'];
+                $saw = true;
+                continue;
+            }
+            if ($piece['size'] !== $size) {
+                return null;
+            }
+        }
+        return $saw ? $size : null;
+    }
+
+    private static function pointSize(string $value): ?int
+    {
+        $n = (int)$value;
+        if ($n < 8 || $n > 36) {
+            return null;
+        }
+        return $n;
+    }
+
+    private static function colorRgb(string $value): ?string
+    {
+        $value = strtolower(trim($value));
+        $value = preg_replace('/\s+/', '', $value) ?? $value;
+        $named = [
+            'black' => [0, 0, 0],
+            'white' => [1, 1, 1],
+            'red' => [0.75, 0.1, 0.1],
+            'green' => [0.1, 0.45, 0.2],
+            'blue' => [0.1, 0.25, 0.75],
+            'purple' => [0.502, 0, 0.502],
+            'violet' => [0.502, 0, 0.502],
+            'orange' => [0.9, 0.4, 0],
+            'yellow' => [0.8, 0.65, 0],
+            'gray' => [0.4, 0.4, 0.4],
+            'grey' => [0.4, 0.4, 0.4],
+            'teal' => [0.06, 0.43, 0.34],
+            'navy' => [0, 0.15, 0.4],
+            'brown' => [0.4, 0.25, 0.1],
+            'pink' => [0.85, 0.3, 0.5],
+            'gold' => [0.72, 0.55, 0.05],
+        ];
+        if (isset($named[$value])) {
+            return self::rgb($named[$value]);
+        }
+        if (preg_match('/^#?([0-9a-f]{3}|[0-9a-f]{6})$/', $value, $match)) {
+            $hex = $match[1];
+            if (strlen($hex) === 3) {
+                $hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2];
+            }
+            return self::rgb([
+                hexdec(substr($hex, 0, 2)) / 255,
+                hexdec(substr($hex, 2, 2)) / 255,
+                hexdec(substr($hex, 4, 2)) / 255,
+            ]);
+        }
+        return null;
+    }
+
+    private static function rgb(array $channels): string
+    {
+        return sprintf('%.3f %.3f %.3f', $channels[0], $channels[1], $channels[2]);
+    }
+
+    private static function styled(string $font, string $text, array $from): array
+    {
+        $part = ['font' => $font, 'text' => $text];
+        if (isset($from['color'])) {
+            $part['color'] = $from['color'];
+        }
+        if (isset($from['size'])) {
+            $part['size'] = $from['size'];
+        }
+        return $part;
     }
 
     private static function wrapSpans(array $spans, int $width): array
@@ -271,7 +539,7 @@ class PdfFile
                         if ($used > 0) {
                             $emit();
                         }
-                        $line[] = ['font' => $span['font'], 'text' => substr($encoded, 0, $width)];
+                        $line[] = self::styled($span['font'], substr($encoded, 0, $width), $span);
                         $used = $width;
                         $emit();
                         $encoded = substr($encoded, $width);
@@ -281,10 +549,15 @@ class PdfFile
                     }
                     $len = strlen($encoded);
                 }
-                if ($line !== [] && $line[count($line) - 1]['font'] === $span['font']) {
+                $last = $line === [] ? null : $line[count($line) - 1];
+                $same = $last !== null
+                    && $last['font'] === $span['font']
+                    && ($last['color'] ?? null) === ($span['color'] ?? null)
+                    && ($last['size'] ?? null) === ($span['size'] ?? null);
+                if ($same) {
                     $line[count($line) - 1]['text'] .= $encoded;
                 } else {
-                    $line[] = ['font' => $span['font'], 'text' => $encoded];
+                    $line[] = self::styled($span['font'], $encoded, $span);
                 }
                 $used += $len;
             }
