@@ -229,6 +229,7 @@
           taskEdit: {},
           subtaskDrafts: {},
           finishedOpen: false,
+          archiveOpen: false,
           taskError: '',
           taskLoading: false,
           agentNames: ['orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer', 'human'],
@@ -1916,6 +1917,10 @@
         subtaskStatus(sub) {
           return sub && sub.status === 'done' ? 'done' : 'in_progress';
         },
+        stepsDone(task) {
+          const steps = task && Array.isArray(task.subtasks) ? task.subtasks : [];
+          return steps.length > 0 && steps.every((sub) => this.subtaskStatus(sub) === 'done');
+        },
         openTasks() {
           return this.tasks.filter((task) => {
             const status = this.taskStatus(task);
@@ -3293,6 +3298,7 @@
             this.dropped = false;
             return;
           }
+          if (node.type === 'dir') node.open = !node.open;
           this.$emit('open', node);
         },
         onMenu(node, event) {

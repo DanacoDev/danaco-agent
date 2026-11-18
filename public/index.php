@@ -77,7 +77,7 @@ header('X-Danaco: 1');
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#eef1f6">
+<meta name="theme-color" content="#dcdfe3">
 <meta name="robots" content="noindex">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -108,6 +108,7 @@ header('X-Danaco: 1');
   <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="7" r="1.35" fill="currentColor"/><circle cx="15" cy="7" r="1.35" fill="currentColor"/><circle cx="9" cy="12" r="1.35" fill="currentColor"/><circle cx="15" cy="12" r="1.35" fill="currentColor"/><circle cx="9" cy="17" r="1.35" fill="currentColor"/><circle cx="15" cy="17" r="1.35" fill="currentColor"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 4v10M8 10l4 4 4-4M5 19h14"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6-6 6"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path fill="#000" stroke="#000" stroke-linejoin="round" stroke-width="1" d="M12 3.2 2.2 20.8h19.6z"/><path fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" d="M12 9v5.2"/><circle cx="12" cy="16.9" r="0.95" fill="#fff" stroke="none"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.2v13.6l12-6.8z"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4.5 5.5h5.5v13H4.5z"/><circle cx="8" cy="12" r="0.8" fill="currentColor" stroke="none"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12.5 12H20M16.8 8.8 20 12l-3.2 3.2"/></symbol>
@@ -298,7 +299,7 @@ header('X-Danaco: 1');
                     <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
                   </button>
                   <span class="task-tag">#{{ task.id }}</span>
-                  <button class="task-title" type="button" :aria-expanded="expandedTasks[task.id] ? 'true' : 'false'" @click="toggleSteps(task)">{{ task.title }}</button>
+                  <button class="task-title" type="button" :class="{ 'is-finished': stepsDone(task) }" :aria-expanded="expandedTasks[task.id] ? 'true' : 'false'" @click="toggleSteps(task)">{{ task.title }}</button>
                   <span class="task-meta">{{ agentLabel(task.assigned_agent) }}</span>
                   <span class="task-when">{{ taskWhen(task) }} · {{ repeatLabel(task.recurrence_interval) }}</span>
                   <span class="task-tools">
@@ -365,13 +366,18 @@ header('X-Danaco: 1');
             </div>
             <section class="task-archive">
               <header>
-                <h3>Archive</h3>
+                <h3>
+                  <button class="archive-toggle" type="button" :aria-expanded="archiveOpen ? 'true' : 'false'" @click="archiveOpen = !archiveOpen">
+                    <svg class="ico archive-arrow" :class="{ 'is-open': archiveOpen }" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                    Archive
+                  </button>
+                </h3>
                 <div class="archive-actions">
                   <button v-if="archivedTasks().length" class="btn btn-ghost" type="button" @click="clearArchivedTasks">Clear all</button>
-                  <button v-if="archivedTasks().length > 4" class="btn btn-ghost" type="button" @click="finishedOpen = !finishedOpen">{{ finishedOpen ? 'Show less' : 'Show all' }}</button>
+                  <button v-if="archiveOpen && archivedTasks().length > 4" class="btn btn-ghost" type="button" @click="finishedOpen = !finishedOpen">{{ finishedOpen ? 'Show less' : 'Show all' }}</button>
                 </div>
               </header>
-              <div v-if="archivedVisible().length" class="task-list">
+              <div v-if="archiveOpen && archivedVisible().length" class="task-list">
                 <article v-for="task in archivedVisible()" :key="'done'+task.id" class="task-card is-archive" @click="toggleArchive(task)">
                   <header class="task-row">
                     <h3 class="task-title">{{ task.title }}</h3>
@@ -388,7 +394,7 @@ header('X-Danaco: 1');
                   <p v-if="openArchive === task.id && task.result" class="task-result is-full">{{ task.result }}</p>
                 </article>
               </div>
-              <p v-else class="empty">No archived tasks yet.</p>
+              <p v-else-if="archiveOpen" class="empty">No archived tasks yet.</p>
             </section>
           </section>
 
