@@ -77,11 +77,11 @@ header('X-Danaco: 1');
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#1a2233">
+<meta name="theme-color" content="#eef1f6">
 <meta name="robots" content="noindex">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Agent Danaco">
 <title>Agent Danaco</title>
 <link rel="manifest" href="/manifest.webmanifest">
@@ -297,11 +297,10 @@ header('X-Danaco: 1');
                   <button class="task-drag" type="button" aria-label="Drag to reorder" @pointerdown="onTaskPointerDown(task, $event)" @pointermove="onTaskPointerMove" @pointerup="onTaskPointerUp" @pointercancel="onTaskPointerUp">
                     <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
                   </button>
+                  <span class="task-tag">#{{ task.id }}</span>
                   <button class="task-title" type="button" :aria-expanded="expandedTasks[task.id] ? 'true' : 'false'" @click="toggleSteps(task)">{{ task.title }}</button>
                   <span class="task-meta">{{ agentLabel(task.assigned_agent) }}</span>
                   <span class="task-when">{{ taskWhen(task) }} · {{ repeatLabel(task.recurrence_interval) }}</span>
-                  <span class="status-pill" :class="'is-' + taskStatus(task)">{{ taskStatus(task)==='done' ? 'Done' : 'In progress' }}</span>
-                  <span class="task-tag">#{{ task.id }}</span>
                   <span class="task-tools">
                     <button v-if="taskStatus(task)==='done' && !taskRepeats(task)" class="task-edit" type="button" aria-label="Archive task" @click="archiveTask(task)">
                       <svg class="ico" aria-hidden="true"><use href="#i-archive"></use></svg>
