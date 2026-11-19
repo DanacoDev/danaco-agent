@@ -231,6 +231,7 @@
           taskEdit: {},
           subtaskEdit: { title: '', description: '', assigned_agent: 'orchestrator' },
           subtaskDrafts: {},
+          subtaskAgents: {},
           finishedOpen: false,
           archiveOpen: false,
           taskError: '',
@@ -1943,14 +1944,6 @@
           if (this.stepsDone(task) && result) return 'finished';
           return 'active';
         },
-        taskStateLabel(task) {
-          return ({
-            pending: 'Pending',
-            active: 'Active',
-            scheduled: 'Scheduled',
-            finished: 'Finished'
-          })[this.taskState(task)] || 'Active';
-        },
         taskFiltersOn() {
           const filter = this.taskFilter;
           return !!(filter.state || filter.agent || filter.when);
@@ -2108,6 +2101,7 @@
           }
           this.openTask = task.id;
           this.taskError = '';
+          if (!this.subtaskAgents[task.id]) this.subtaskAgents[task.id] = task.assigned_agent || 'orchestrator';
           const stamp = String(task.schedule_time || '').replace(' ', 'T').slice(0, 16);
           this.taskEdit = {
             title: task.title,
@@ -2167,10 +2161,18 @@
         async addSubtask(task) {
           const title = String(this.subtaskDrafts[task.id] || '').trim();
           if (!title) return;
-          const saved = await this.api('/api/tasks/' + task.id + '/subtasks', { method: 'POST', body: { title: title } });
-          this.expandedTasks[task.id] = true;
-          this.replaceTask(saved.task);
-          this.subtaskDrafts[task.id] = '';
+          const agent = this.subtaskAgents[task.id] || task.assigned_agent || 'orchestrator';
+          this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+          try {
+            const saved = await this.api('/api/tasks/' + task.id + '/subtasks', { method: 'POST', body: { title: title, assigned_agent: agent } });
+            this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+            this.expandedTasks[task.id] = true;
+            this.replaceTask(saved.task);
+            this.subtaskDrafts[task.id] = '';
+          } catch (error) {
+            this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+            this.taskError = error.message || 'Could not add the step.';
+          }
         },
         async setSubtaskStatus(task, sub, status) {
           const saved = await this.api('/api/subtasks/' + sub.id, { method: 'PATCH', body: { status: status } });

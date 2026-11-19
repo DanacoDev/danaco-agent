@@ -342,7 +342,15 @@ class Api
             $this->json(['error' => 'Step title is required.'], 422);
             return;
         }
-        $this->db->insertSubtask($taskId, $title, $this->subtaskStatus((string)($body['status'] ?? 'in_progress')));
+        $agent = strtolower(trim((string)($body['assigned_agent'] ?? '')));
+        if ($agent !== '') {
+            $allowed = ['orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer', 'consultant', 'human'];
+            if (!in_array($agent, $allowed, true)) {
+                $this->json(['error' => 'Choose who this step is assigned to.'], 422);
+                return;
+            }
+        }
+        $this->db->insertSubtask($taskId, $title, $this->subtaskStatus((string)($body['status'] ?? 'in_progress')), $agent);
         $this->json(['task' => $this->db->syncTaskFromSteps($this->db->task($taskId))], 201);
     }
 

@@ -302,7 +302,7 @@ header('X-Danaco: 1');
             </form>
             <p v-if="addingTask && taskError" class="form-error">{{ taskError }}</p>
             <div class="task-list">
-              <article v-for="task in shownTasks()" :key="task.id" class="task-card" :class="{ 'is-dragging': dragTaskId === task.id }" :data-task-id="task.id">
+              <article v-for="task in shownTasks()" :key="task.id" class="task-card" :class="['is-' + taskState(task), { 'is-dragging': dragTaskId === task.id }]" :data-task-id="task.id">
                 <header class="task-row">
                   <button class="task-drag" type="button" aria-label="Drag to reorder" @pointerdown="onTaskPointerDown(task, $event)" @pointermove="onTaskPointerMove" @pointerup="onTaskPointerUp" @pointercancel="onTaskPointerUp">
                     <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
@@ -311,7 +311,6 @@ header('X-Danaco: 1');
                     <button class="task-title" type="button" :class="{ 'is-finished': stepsDone(task) }" :aria-expanded="expandedTasks[task.id] ? 'true' : 'false'" @click="toggleSteps(task)">{{ task.title }}</button>
                     <span class="task-tag">#{{ task.id }}</span>
                   </span>
-                  <span class="task-when">{{ taskStateLabel(task) }}</span>
                   <span class="task-tools">
                     <button v-if="taskStatus(task)==='done' && !taskRepeats(task)" class="task-edit" type="button" aria-label="Archive task" @click="archiveTask(task)">
                       <svg class="ico" aria-hidden="true"><use href="#i-archive"></use></svg>
@@ -358,6 +357,10 @@ header('X-Danaco: 1');
                 <p v-if="expandedTasks[task.id] && task.result" class="task-result is-full"><span class="task-result-label">Results:</span><span class="task-result-line">{{ task.result }}</span></p>
                 <form v-if="openTask === task.id" class="subtask-add" @submit.prevent="addSubtask(task)">
                   <input v-model="subtaskDrafts[task.id]" placeholder="Add step" aria-label="Add step">
+                  <select v-model="subtaskAgents[task.id]" aria-label="Assigned to">
+                    <option v-if="subtaskAgents[task.id] && !agentNames.includes(subtaskAgents[task.id])" :value="subtaskAgents[task.id]">{{ agentLabel(subtaskAgents[task.id]) }}</option>
+                    <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
+                  </select>
                   <button class="btn" type="submit">Add</button>
                 </form>
                 <form v-if="openTask === task.id" @submit.prevent="saveTask(task)">
