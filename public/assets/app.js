@@ -252,7 +252,7 @@
           archiveOpen: false,
           taskError: '',
           subtaskError: '',
-          taskFilter: { state: '', agent: '', when: '' },
+          taskFilter: { state: '' },
           taskLoading: false,
           agentNames: ['human', 'orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer'],
           tree: [],
@@ -2045,32 +2045,14 @@
           if (this.stepsDone(task) && result) return 'finished';
           return 'active';
         },
-        taskFiltersOn() {
-          const filter = this.taskFilter;
-          return !!(filter.state || filter.agent || filter.when);
-        },
-        clearTaskFilters() {
-          this.taskFilter.state = '';
-          this.taskFilter.agent = '';
-          this.taskFilter.when = '';
+        taskStatusIndex() {
+          const order = ['', 'pending', 'active', 'scheduled', 'finished'];
+          const index = order.indexOf(this.taskFilter.state);
+          return index < 0 ? 0 : index;
         },
         taskMatchesFilter(task) {
-          const filter = this.taskFilter;
-          if (filter.state && this.taskState(task) !== filter.state) return false;
-          if (filter.agent) {
-            const steps = Array.isArray(task.subtasks) ? task.subtasks : [];
-            const names = steps.length
-              ? steps.map((sub) => sub.assigned_agent || task.assigned_agent)
-              : [task.assigned_agent];
-            if (!names.includes(filter.agent)) return false;
-          }
-          if (filter.when === 'never') {
-            if (!(Number(task.held) === 1 && !task.schedule_time)) return false;
-          } else if (filter.when === 'at') {
-            if (!task.schedule_time) return false;
-          } else if (filter.when === 'immediately') {
-            if (task.schedule_time || (Number(task.held) === 1 && !task.schedule_time)) return false;
-          }
+          const state = this.taskFilter.state;
+          if (state && this.taskState(task) !== state) return false;
           return true;
         },
         shownTasks() {
@@ -2401,6 +2383,16 @@
         fileIdentity(node) {
           return (node.scope || '') + '\n' + (node.folder || '') + '\n' + (node.path || '');
         },
+        markTreeOpen(node) {
+          const id = this.fileIdentity(node);
+          const walk = (nodes) => {
+            (nodes || []).forEach((item) => {
+              if (this.fileIdentity(item) === id) item.open = true;
+              if (item.children) walk(item.children);
+            });
+          };
+          walk(this.tree);
+        },
         async loadTree() {
           const generation = (this.treeLoad || 0) + 1;
           this.treeLoad = generation;
@@ -2615,10 +2607,40 @@
           return rel === node.path || rel.startsWith(node.path + '/');
         },
         openTreeMenu(payload) {
-          if (!payload || !payload.node || !payload.node.path) return;
+          if (!payload || !payload.node) return;
+          const node = payload.node;
+          const canCreate = node.type === 'dir';
+          const canDelete = !!node.path;
+          if (!canCreate && !canDelete) return;
+          const height = 12 + (canCreate ? 34 : 0) + (canDelete ? 34 : 0);
           const x = Math.max(8, Math.min(payload.x, window.innerWidth - 168));
-          const y = Math.max(8, Math.min(payload.y, window.innerHeight - 48));
-          this.treeMenu = { x: x, y: y, node: payload.node };
+          const y = Math.max(8, Math.min(payload.y, window.innerHeight - height));
+          this.treeMenu = { x: x, y: y, node: node };
+        },
+        async createSubfolder(node) {
+          this.treeMenu = null;
+          if (!node || node.type !== 'dir') return;
+          const where = node.name || 'this folder';
+          const raw = window.prompt('New subfolder in "' + where + '"');
+          if (raw === null) return;
+          const name = String(raw).trim();
+          if (!name) return;
+          this.treeError = '';
+          this.markTreeOpen(node);
+          try {
+            await this.api('/api/workspace/mkdir', {
+              method: 'POST',
+              body: {
+                scope: node.scope || 'project',
+                folder: node.folder || '',
+                path: node.path || '',
+                name: name
+              }
+            });
+            await this.loadTree();
+          } catch (error) {
+            this.treeError = error.message;
+          }
         },
         async deleteTreeNode(node) {
           this.treeMenu = null;
@@ -3614,7 +3636,7 @@
         onMenu(node, event) {
           event.preventDefault();
           event.stopPropagation();
-          if (!node.path) return;
+          if (node.type !== 'dir' && !node.path) return;
           this.$emit('menu', {
             x: event.clientX,
             y: event.clientY,

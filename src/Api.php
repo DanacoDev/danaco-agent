@@ -53,6 +53,7 @@ class Api
         $router->add('POST', '#^/api/workspace/structured$#', $this->guard(fn() => $this->saveStructuredFile()));
         $router->add('POST', '#^/api/workspace/delete$#', $this->guard(fn() => $this->deleteWorkspaceFile()));
         $router->add('POST', '#^/api/workspace/move$#', $this->guard(fn() => $this->moveWorkspaceFile()));
+        $router->add('POST', '#^/api/workspace/mkdir$#', $this->guard(fn() => $this->mkdirWorkspace()));
         $router->add('POST', '#^/api/workspace/search$#', $this->guard(fn() => $this->workspaceSearch()));
         $router->add('POST', '#^/api/workspace/upload$#', function (array $args = []) {
             $this->requireAuth();
@@ -1338,6 +1339,23 @@ class Api
                 (string)($body['dest_scope'] ?? ''),
                 (string)($body['dest_folder'] ?? ''),
                 (string)($body['dest_path'] ?? '')
+            );
+        } catch (Throwable $e) {
+            $this->json(['error' => $e->getMessage()], 422);
+            return;
+        }
+        $this->json($file);
+    }
+
+    private function mkdirWorkspace(): void
+    {
+        $body = $this->input();
+        try {
+            $file = app_services()['safety']->mkdirWorkspace(
+                (string)($body['scope'] ?? ''),
+                (string)($body['folder'] ?? ''),
+                (string)($body['path'] ?? ''),
+                (string)($body['name'] ?? '')
             );
         } catch (Throwable $e) {
             $this->json(['error' => $e->getMessage()], 422);

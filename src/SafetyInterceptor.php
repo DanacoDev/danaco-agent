@@ -414,6 +414,46 @@ class SafetyInterceptor
         ];
     }
 
+    public function mkdirWorkspace(string $scope, string $folder, string $path, string $name): array
+    {
+        $name = trim($name);
+        if ($name === '' || $name === '.' || $name === '..' || str_contains($name, '/') || str_contains($name, '\\') || preg_match('/[\x00-\x1F\x7F]/', $name)) {
+            throw new RuntimeException('Enter a folder name without slashes.');
+        }
+        if (str_starts_with($name, '.')) {
+            throw new RuntimeException('Folder names cannot start with a dot.');
+        }
+        if (strlen($name) > 80) {
+            throw new RuntimeException('That folder name is too long.');
+        }
+        if ($scope !== 'project' && $scope !== 'wiki') {
+            throw new RuntimeException('Unknown file location.');
+        }
+        $parent = $this->locateWorkspace($scope, $folder, $path);
+        $parentReal = realpath($parent['file']);
+        if ($parentReal === false || !is_dir($parentReal) || is_link($parent['file'])) {
+            throw new RuntimeException('Choose a folder.');
+        }
+        $relative = $parent['relative'] === '' ? $name : $parent['relative'] . '/' . $name;
+        if ($scope === 'wiki') {
+            $this->rejectToolNotes($relative);
+        }
+        $this->assertAgentPathAllowed($relative);
+        $target = $this->resolveInside($parent['root'], $relative, true);
+        if (file_exists($target)) {
+            throw new RuntimeException('Something already exists at that path.');
+        }
+        if (!mkdir($target, 0775) && !is_dir($target)) {
+            throw new RuntimeException('Could not create that folder.');
+        }
+        return [
+            'scope' => $scope,
+            'folder' => $folder,
+            'path' => $relative,
+            'name' => $name,
+        ];
+    }
+
     public function searchWorkspace(string $query, array $projects): array
     {
         $query = trim($query);

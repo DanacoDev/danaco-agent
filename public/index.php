@@ -290,12 +290,20 @@ header('X-Danaco: 1');
           </section>
 
           <section v-else-if="tab==='tasks'" class="view tasks-view">
-            <div class="view-head">
-              <h2>Tasks</h2>
-              <button class="btn btn-gold" type="button" @click="startAddTask">Add task</button>
-            </div>
             <div class="task-stage">
               <div class="task-main">
+            <div class="view-head tasks-head">
+              <h2>Tasks</h2>
+              <div class="task-status" role="radiogroup" aria-label="Status">
+                <span class="task-status-thumb" :style="{ transform: 'translateX(' + taskStatusIndex() * 100 + '%)' }"></span>
+                <button type="button" role="radio" :aria-checked="taskFilter.state === '' ? 'true' : 'false'" :class="{ 'is-on': !taskFilter.state }" @click="taskFilter.state = ''">All</button>
+                <button type="button" role="radio" :aria-checked="taskFilter.state === 'pending' ? 'true' : 'false'" :class="{ 'is-on': taskFilter.state === 'pending' }" @click="taskFilter.state = 'pending'">Pending</button>
+                <button type="button" role="radio" :aria-checked="taskFilter.state === 'active' ? 'true' : 'false'" :class="{ 'is-on': taskFilter.state === 'active' }" @click="taskFilter.state = 'active'">Active</button>
+                <button type="button" role="radio" :aria-checked="taskFilter.state === 'scheduled' ? 'true' : 'false'" :class="{ 'is-on': taskFilter.state === 'scheduled' }" @click="taskFilter.state = 'scheduled'">Scheduled</button>
+                <button type="button" role="radio" :aria-checked="taskFilter.state === 'finished' ? 'true' : 'false'" :class="{ 'is-on': taskFilter.state === 'finished' }" @click="taskFilter.state = 'finished'">Finished</button>
+              </div>
+              <button class="btn btn-gold" type="button" @click="startAddTask">Add task</button>
+            </div>
             <form v-if="addingTask" class="task-add" @submit.prevent="addTask">
               <input ref="taskTitle" v-model="taskDraft" placeholder="Task title" aria-label="Task title">
               <button class="btn btn-gold" type="submit">Add</button>
@@ -409,35 +417,6 @@ header('X-Danaco: 1');
               <p v-else-if="!shownTasks().length" class="empty">No tasks match these filters.</p>
             </div>
               </div>
-              <aside class="task-filter">
-                <div class="task-filter-head">
-                  <h3>Filter</h3>
-                  <button v-if="taskFiltersOn()" class="btn btn-ghost" type="button" @click="clearTaskFilters">Clear</button>
-                </div>
-                <label class="field">Status
-                  <select v-model="taskFilter.state">
-                    <option value="">All</option>
-                    <option value="pending">Pending</option>
-                    <option value="active">Active</option>
-                    <option value="scheduled">Scheduled</option>
-                    <option value="finished">Finished</option>
-                  </select>
-                </label>
-                <label class="field">Assigned to
-                  <select v-model="taskFilter.agent">
-                    <option value="">All</option>
-                    <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
-                  </select>
-                </label>
-                <label class="field">Time
-                  <select v-model="taskFilter.when">
-                    <option value="">All</option>
-                    <option value="immediately">immediately</option>
-                    <option value="at">at a time</option>
-                    <option value="never">Never (inactivated)</option>
-                  </select>
-                </label>
-              </aside>
             </div>
             <section class="task-archive">
               <header>
@@ -478,17 +457,17 @@ header('X-Danaco: 1');
           <section v-else-if="tab==='workspace'" class="view workspace-view" :class="{ 'is-vault': vaultOpen }">
             <div class="view-head">
               <h2>Files</h2>
+              <form class="wiki-tools workspace-search" @submit.prevent="searchWorkspace">
+                <div class="search-field">
+                  <input v-model="wikiQuery" :aria-label="vaultOpen ? 'Search backups' : 'Search files'" :placeholder="vaultOpen ? 'Search backups' : 'Search filename or content'">
+                  <button v-if="wikiQuery" class="search-clear" type="button" aria-label="Clear search" @click="clearWorkspaceSearch">
+                    <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>
+                  </button>
+                </div>
+                <button class="btn" type="submit">Search</button>
+              </form>
               <button class="btn btn-ghost" type="button" @click="toggleVault">{{ vaultOpen ? 'Hide backups' : 'Show backups' }}</button>
             </div>
-            <form class="wiki-tools workspace-search" @submit.prevent="searchWorkspace">
-              <div class="search-field">
-                <input v-model="wikiQuery" :aria-label="vaultOpen ? 'Search backups' : 'Search files'" :placeholder="vaultOpen ? 'Search backups' : 'Search filename or content'">
-                <button v-if="wikiQuery" class="search-clear" type="button" aria-label="Clear search" @click="clearWorkspaceSearch">
-                  <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>
-                </button>
-              </div>
-              <button class="btn" type="submit">Search</button>
-            </form>
             <div v-if="!vaultOpen" class="split">
               <div class="panel" @scroll="treeMenu = null">
                 <p v-if="treeError" class="form-error">{{ treeError }}</p>
@@ -497,12 +476,11 @@ header('X-Danaco: 1');
               </div>
               <div class="panel file-pane" :class="{ 'is-editing': (fileEditing || structuredKind) && !showingSearch, 'is-pdf': fileKind==='pdf' && !fileEditing && !showingSearch }">
                 <template v-if="showingSearch">
-                  <h3 class="file-title">Search</h3>
+                  <h3 class="file-title">Search results</h3>
                   <p v-if="wikiResult" class="empty">{{ wikiResult }}</p>
                   <ul v-else class="search-hits">
                     <li v-for="hit in searchHits" :key="hit.scope + hit.folder + hit.path">
-                      <button type="button" class="tree-btn file" @click="openFile(hit)"><svg class="tree-ico" aria-hidden="true"><use href="#i-file"></use></svg><span class="tree-name"><strong>{{ hit.name }}</strong> <span class="hint">{{ hit.place }}</span></span></button>
-                      <p v-if="hit.snippet" class="hint">{{ hit.snippet }}</p>
+                      <button type="button" class="tree-btn file" @click="openFile(hit)"><svg class="tree-ico" aria-hidden="true"><use href="#i-file"></use></svg><span class="tree-name">{{ hit.path || hit.name }}</span></button>
                     </li>
                   </ul>
                 </template>
@@ -1183,7 +1161,8 @@ header('X-Danaco: 1');
   </div>
 
   <div v-if="treeMenu" class="tree-menu" :style="{ left: treeMenu.x + 'px', top: treeMenu.y + 'px' }" @mousedown.stop @click.stop @contextmenu.prevent>
-    <button type="button" class="tree-menu-btn" @click="deleteTreeNode(treeMenu.node)">Delete</button>
+    <button v-if="treeMenu.node.type==='dir'" type="button" class="tree-menu-btn is-neutral" @click="createSubfolder(treeMenu.node)">New subfolder</button>
+    <button v-if="treeMenu.node.path" type="button" class="tree-menu-btn" @click="deleteTreeNode(treeMenu.node)">Delete</button>
   </div>
 
   <div v-if="authed && termsNeeded" class="modal-back">
