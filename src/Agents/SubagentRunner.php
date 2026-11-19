@@ -44,6 +44,7 @@ class SubagentRunner
         };
         try {
             $result = $this->runtime->run($agent, $messages, $this->traced($this->tools($agent, $projectFolder, $projectId, $emit, $watch)), $emit, $this->runtime->maxTurns(), $projectId, $watch, false, $scheduled, fn(array $running): array => $this->refreshSystem($running, $agent, $projectFolder, $projectId));
+            $this->settleWrittenTask($projectId, $instruction);
             $excerpt = trim(preg_replace('/\s+/', ' ', $result) ?? '');
             $this->db->loop($agent, 'process', 'Context released · ' . $excerpt);
             $result = $this->finishSubagent($result);
@@ -302,6 +303,60 @@ TXT;
         return $result;
     }
 
+    private function resultClosesSteps(array $args): bool
+    {
+        $done = $args['done'] ?? false;
+        if ($done === true || $done === 1) {
+            return true;
+        }
+        return in_array(strtolower(trim((string)$done)), ['1', 'true', 'yes', 'all'], true);
+    }
+
+    private function settleWrittenTask(int $projectId, string $instruction): void
+    {
+        if ($projectId <= 0 || !preg_match('/This is task #(\d+)/', $instruction, $found)) {
+            return;
+        }
+        $id = (int)$found[1];
+        $task = $this->db->task($id);
+        if (!$task || (int)$task['project_id'] !== $projectId) {
+            return;
+        }
+        $board = new Kanban($this->db);
+        if ($board->column($task) === 'done') {
+            return;
+        }
+        $pdf = '';
+        $markdown = '';
+        $reported = false;
+        foreach ($this->runTrace as $row) {
+            $name = (string)($row['name'] ?? '');
+            $text = (string)($row['text'] ?? '');
+            if ($name === 'tasklist' && str_starts_with($text, 'Added a result')) {
+                $reported = true;
+            }
+            if ($name === 'create_pdf' && preg_match('/Wrote\s+(\S+\.pdf)/', $text, $path)) {
+                $pdf = $path[1];
+            }
+            if ($name === 'filesystem' && preg_match('/Wrote\s+(\S+\.md)/', $text, $path)) {
+                $markdown = $path[1];
+            }
+        }
+        $wantsPdf = preg_match('/\bpdf\b/i', $instruction) === 1
+            && preg_match('/\bno pdf\b|\bwithout a pdf\b|\bdo not (?:make|create) a pdf\b|\bdon\'t (?:make|create) a pdf\b/i', $instruction) !== 1;
+        $path = $pdf !== '' ? $pdf : (!$wantsPdf ? $markdown : '');
+        if ($path === '') {
+            return;
+        }
+        try {
+            if (!$reported) {
+                $board->recordResult($id, $projectId, 'Wrote ' . $path);
+            }
+            $board->crossOffSteps($id, true);
+        } catch (Throwable $e) {
+        }
+    }
+
     private function kanbanResult(int $projectId, array $args): string
     {
         $board = new Kanban($this->db);
@@ -315,12 +370,19 @@ TXT;
         if ($action === 'result') {
             try {
                 $task = $board->recordResult($projectId > 0 ? (int)($args['id'] ?? 0) : 0, $projectId, (string)($args['result'] ?? ''));
+                if ($this->resultClosesSteps($args)) {
+                    $task = $board->crossOffSteps((int)$task['id'], true);
+                }
             } catch (InvalidArgumentException $e) {
                 return $e->getMessage();
             } catch (RuntimeException $e) {
                 return $e->getMessage();
             }
-            return 'Added a result to task #' . $task['id'] . ': ' . $task['title'] . '. The main agent checks this and updates the task.';
+            $status = $board->column($task);
+            $tail = $status === 'done'
+                ? ' Task is done. Do not delegate it again.'
+                : ' The main agent checks this and updates the task.';
+            return 'Added a result to task #' . $task['id'] . ': ' . $task['title'] . '.' . $tail;
         }
         return 'Only the main agent can update a task. You can list the task list, or add a result with action result, id, and result.';
     }

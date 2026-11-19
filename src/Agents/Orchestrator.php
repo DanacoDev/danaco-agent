@@ -985,11 +985,11 @@ TXT;
                     }
                     $runInstruction = $instruction;
                     if (preg_match('/Task #(\d+)/', $note, $card)) {
-                        $runInstruction .= "\n\nThis is task #" . $card[1] . ". When you finish, add a short result to that task with the tasklist tool. Do not update or delete the task.";
+                        $runInstruction .= "\n\nThis is task #" . $card[1] . ". When the file is checked, add that path with tasklist action result and done true. That crosses off the steps. Do not update anything else and do not delete the task.";
                     }
                     $emit(['type' => 'delegation', 'agent' => 'consultant', 'project' => $shownProject !== '' ? $shownProject : 'general', 'text' => $instruction]);
                     try {
-                        return $this->subagents->consult($folder, $runInstruction, $emit, $projectId, $shouldStop, $scheduled) . $note;
+                        return $this->subagents->consult($folder, $runInstruction, $emit, $projectId, $shouldStop, $scheduled) . $this->freshTaskNote($note);
                     } catch (ChatStopped $e) {
                         throw $e;
                     } catch (Throwable $e) {
@@ -1031,7 +1031,7 @@ TXT;
                 }
                 $runInstruction = $instruction;
                 if (preg_match('/Task #(\d+)/', $note, $card)) {
-                    $runInstruction .= "\n\nThis is task #" . $card[1] . ". When you finish, add a short result to that task with the tasklist tool. Do not update or delete the task.";
+                    $runInstruction .= "\n\nThis is task #" . $card[1] . ". When the file is checked, add that path with tasklist action result and done true. That crosses off the steps. Do not update anything else and do not delete the task.";
                 }
                 $emit(['type' => 'delegation', 'agent' => $agent, 'project' => $shownProject, 'text' => $instruction]);
                 $jobId = $this->db->startJob('subagent', $projectId > 0 ? $projectId : null, [
@@ -1051,7 +1051,7 @@ TXT;
                         $result = $this->subagents->run($agent, $folder, $runInstruction, $emit, $projectId, $watch, $scheduled);
                         $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' finished');
                         $this->db->finishJob($jobId);
-                        return $result . $note;
+                        return $result . $this->freshTaskNote($note);
                     } catch (ChatStopped $e) {
                         $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' stopped');
                         $this->db->finishJob($jobId);
@@ -1443,6 +1443,51 @@ TXT;
         return "\nCreated task #" . $saved['id'] . ' in in_progress.';
     }
 
+    private function pieceSteps(string $title, array $steps): ?array
+    {
+        if (!preg_match('/\b(?:pdf|story|poem|article)\b/i', $title)) {
+            return null;
+        }
+        $onlyTitle = count($steps) === 1;
+        if ($onlyTitle) {
+            $one = $steps[0];
+            $text = trim((string)(is_array($one) ? ($one['title'] ?? $one['step'] ?? $one['text'] ?? '') : $one));
+            $onlyTitle = strcasecmp($text, $title) === 0 || $text === '';
+        }
+        if (!$onlyTitle && $steps !== []) {
+            return null;
+        }
+        $noPdf = preg_match('/\bno pdf\b|\bonly output\b|\bin the chat\b|\bdo not (?:make|create) a pdf\b|\bdon\'t (?:make|create) a pdf\b/i', $title) === 1;
+        $plan = ['Write the piece and save it as markdown in wiki/'];
+        if (!$noPdf && preg_match('/\bpdf\b/i', $title) === 1) {
+            $plan[] = 'Create the PDF in docs/';
+            $plan[] = 'Read the PDF and check it';
+        }
+        $plan[] = 'Report the file path and cross off the steps';
+        return $plan;
+    }
+
+    private function freshTaskNote(string $note): string
+    {
+        if (!preg_match('/Task #(\d+)/', $note, $found)) {
+            return $note;
+        }
+        $task = $this->db->task((int)$found[1]);
+        if (!$task) {
+            return $note;
+        }
+        $board = new Kanban($this->db);
+        if ($board->column($task) !== 'done') {
+            return $note;
+        }
+        $path = trim((string)($task['result'] ?? ''));
+        $line = 'Task #' . $task['id'] . ' is done.';
+        if ($path !== '') {
+            $line .= ' ' . $path;
+        }
+        return "\n" . $line . ' Do not delegate it again.';
+    }
+
     private function taskHasStep(array $task): bool
     {
         if (trim((string)($task['description'] ?? '')) !== '') {
@@ -1548,7 +1593,20 @@ TXT;
             if (strlen($title) > 200) {
                 $title = substr($title, 0, 200);
             }
-            $cards[] = ['title' => $title, 'agent' => $agent];
+            $steps = [$title];
+            if (is_array($task)) {
+                $given = $task['steps'] ?? $task['subtasks'] ?? null;
+                if (is_array($given) && $given !== []) {
+                    $steps = $given;
+                }
+            }
+            if ($agent === 'writer') {
+                $plan = $this->pieceSteps($title, $steps);
+                if ($plan !== null) {
+                    $steps = $plan;
+                }
+            }
+            $cards[] = ['title' => $title, 'agent' => $agent, 'steps' => $steps];
             if (count($cards) >= 40) {
                 break;
             }
@@ -1562,7 +1620,7 @@ TXT;
             try {
                 $saved = $board->create($projectId, [
                     'title' => $card['title'],
-                    'steps' => [$card['title']],
+                    'steps' => $card['steps'],
                     'agent' => $card['agent'],
                     'status' => 'in_progress',
                 ], false);

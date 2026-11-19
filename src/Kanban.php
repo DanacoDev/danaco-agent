@@ -49,6 +49,41 @@ class Kanban
         return $this->db->syncTaskFromSteps($task);
     }
 
+    public function crossOffSteps(int $taskId, bool $all = true, array $only = []): array
+    {
+        $task = $this->db->task($taskId);
+        if (!$task) {
+            throw new RuntimeException('Task not found.');
+        }
+        $wanted = [];
+        foreach ($only as $title) {
+            $title = trim((string)$title);
+            if ($title !== '') {
+                $wanted[] = $title;
+            }
+        }
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                continue;
+            }
+            $title = trim((string)($sub['title'] ?? ''));
+            $match = $all || $wanted === [];
+            if (!$match) {
+                foreach ($wanted as $want) {
+                    if (strcasecmp($title, $want) === 0) {
+                        $match = true;
+                        break;
+                    }
+                }
+            }
+            if ($match) {
+                $this->db->updateSubtask((int)$sub['id'], ['status' => 'done']);
+            }
+        }
+        $fresh = $this->db->task($taskId);
+        return $fresh ? $this->db->syncTaskFromSteps($fresh) : $task;
+    }
+
     public function recordResult(int $id, int $projectId, string $result): array
     {
         $existing = $this->db->task($id);

@@ -357,7 +357,7 @@ header('X-Danaco: 1');
                     </form>
                   </li>
                 </ul>
-                <p v-if="expandedTasks[task.id] && task.result" class="task-result is-full"><span class="task-result-label">{{ taskFailed(task) ? 'Error:' : 'Results:' }}</span><span class="task-result-line">{{ task.result }}</span></p>
+                <p v-if="openTask !== task.id && expandedTasks[task.id] && task.result" class="task-result is-full"><span class="task-result-label">{{ taskFailed(task) ? 'Error:' : 'Results:' }}</span><span class="task-result-line">{{ task.result }}</span></p>
                 <form v-if="openTask === task.id" class="subtask-add" @submit.prevent="addSubtask(task)">
                   <div class="subtask-add-row">
                     <input v-model="subtaskDrafts[task.id]" placeholder="Add step title" aria-label="Add step title">
@@ -367,7 +367,7 @@ header('X-Danaco: 1');
                     </select>
                     <button class="btn" type="submit">Add</button>
                   </div>
-                  <textarea v-model="subtaskDetails[task.id]" rows="3" placeholder="Detailed description" aria-label="Step description"></textarea>
+                  <textarea v-model="subtaskDetails[task.id]" rows="3" placeholder="Detailed step instructions" aria-label="Step description"></textarea>
                 </form>
                 <form v-if="openTask === task.id" :id="'task-edit-' + task.id" @submit.prevent="saveTask(task)">
                   <div class="task-fields">
