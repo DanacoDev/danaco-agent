@@ -30,6 +30,10 @@ class Heartbeat
                 $this->traceJob($job, 'Skipped job ' . $id . ' · subagent lock held');
                 continue;
             }
+            if ((string)$job['kind'] === 'chat' && $this->db->lockFresh('subagent_lock', 900)) {
+                $this->traceJob($job, 'Skipped job ' . $id . ' · subagent still working');
+                continue;
+            }
             if ((string)$job['kind'] === 'task' && $this->closeFinishedOccurrence($job)) {
                 continue;
             }
@@ -86,6 +90,14 @@ class Heartbeat
                 } else {
                     if ($age !== null) {
                         $this->db->clearRunStop($stopProject);
+                    }
+                    if ($this->db->lockFresh('subagent_lock', 900)) {
+                        $projectId = $stuckProject;
+                        $out[$name] = [
+                            'status' => $status,
+                            'project_id' => $projectId,
+                        ];
+                        continue;
                     }
                     $this->db->setAgentStatus($name, 'stuck');
                     $this->db->logAgent($name, $stuckProject, 'error', $note);

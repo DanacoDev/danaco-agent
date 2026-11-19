@@ -206,9 +206,9 @@ header('X-Danaco: 1');
                   <span class="context-tip">
                     <strong>Context limit</strong>
                     <span>{{ contextTip() }}</span>
-                    <a href="#" @click.prevent="compressContext">{{ compressing || compressArmed ? 'Compressing context' : 'Activate context compression' }}</a>
-                    <a href="#" @click.prevent="clearContext">Clear chat and start fresh</a>
-                    <a :href="'/api/context/download?project_id=' + (projectId || 0)">Download full context</a>
+                    <a href="#" @click.prevent="compressContext">{{ compressing || compressArmed ? 'Compressing context' : 'Run context compression' }}</a>
+                    <a href="#" @click.prevent="clearContext">Clear chat</a>
+                    <a :href="'/api/context/download?project_id=' + (projectId || 0)">Download context</a>
                     <span v-if="compressError" class="form-error">{{ compressError }}</span>
                     <span v-if="compressNote" class="hint">{{ compressNote }}</span>
                   </span>

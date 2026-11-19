@@ -72,9 +72,21 @@
     return text;
   }
 
+  function citeHref(path, folder) {
+    const kind = fileKindOf(path);
+    if (!['pdf', 'image', 'markdown', 'html', 'text'].includes(kind)) return '';
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(String(folder || ''))) return '';
+    const rel = String(path || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+    if (!rel || rel.indexOf('..') !== -1) return '';
+    return '/preview/project/' + encodeURIComponent(folder) + '/' + rel;
+  }
+
   function citeHtml(path, folder) {
     const button = downloadButton('data-download="' + path + '"');
-    const name = '<span class="file-cite-name">' + path + '</span>';
+    const href = citeHref(path, folder);
+    const name = href
+      ? '<a class="file-cite-name" href="' + href + '" target="_blank" rel="noopener">' + path + '</a>'
+      : '<span class="file-cite-name">' + path + '</span>';
     if (fileKindOf(path) === 'image' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(String(folder || ''))) {
       const src = '/api/workspace/raw?scope=project&amp;folder=' + encodeURIComponent(folder) + '&amp;path=' + encodeURIComponent(path);
       return '<div class="file-cite file-cite-image">' + button + '<img class="file-cite-shot" alt="" src="' + src + '">' + name + '</div>';

@@ -348,52 +348,65 @@ TXT;
         if ($text === '' || str_starts_with($text, 'Error')) {
             return;
         }
-        $kind = '';
-        if ($name === 'filesystem' && preg_match('/^Wrote\s+\S+\.md\b/', $text) === 1) {
-            $kind = 'write';
-        } elseif ($name === 'create_pdf' && preg_match('/^Wrote\s+\S+\.pdf\b/', $text) === 1) {
-            $kind = 'pdf';
-        } elseif ($name === 'read_pdf' && !str_starts_with($text, 'No text could be read')) {
-            $kind = 'check';
-        } elseif ($name === 'tasklist' && str_starts_with($text, 'Added a result')) {
-            $kind = 'report';
-        }
-        if ($kind === '') {
-            return;
-        }
-        $line = '';
-        if ($kind === 'write' && preg_match('/^Wrote\s+(\S+\.md)\b/', $text, $path) === 1) {
-            $line = 'Wrote ' . $path[1];
-        } elseif ($kind === 'pdf' && preg_match('/^Wrote\s+(\S+\.pdf)\b/', $text, $path) === 1) {
-            $line = 'Wrote ' . $path[1];
-        } elseif ($kind === 'check') {
-            $line = 'Checked the PDF.';
-        }
         try {
             $task = $this->db->task($this->stepTaskId);
             if (!$task) {
                 return;
             }
-            $title = '';
-            foreach ($task['subtasks'] ?? [] as $sub) {
-                if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
-                    continue;
-                }
-                $label = trim((string)($sub['title'] ?? ''));
-                if ($label !== '' && $this->stepKind($label) === $kind) {
-                    $title = $label;
-                    break;
-                }
-            }
-            if ($title === '') {
+            $current = $this->currentOpenStep($task);
+            if (!$current || !$this->stepToolMatches((string)$current['title'], $name, $text)) {
                 return;
             }
-            if ($kind === 'report') {
+            $title = trim((string)$current['title']);
+            $line = '';
+            if (preg_match('/^Wrote\s+(\S+\.(?:md|pdf))\b/', $text, $path) === 1) {
+                $line = 'Wrote ' . $path[1];
+            } elseif ($name === 'grammar_check') {
+                $line = 'Checked spelling and grammar.';
+            } elseif ($name === 'read_pdf') {
+                $line = 'Checked the PDF.';
+            } elseif ($name === 'tasklist') {
                 $line = trim((string)($task['result'] ?? ''));
             }
             (new Kanban($this->db))->crossOffSteps($this->stepTaskId, false, [$title], $line);
         } catch (Throwable $e) {
         }
+    }
+
+    private function currentOpenStep(array $task): ?array
+    {
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                continue;
+            }
+            if (trim((string)($sub['title'] ?? '')) === '') {
+                continue;
+            }
+            return $sub;
+        }
+        return null;
+    }
+
+    private function stepToolMatches(string $title, string $name, string $text): bool
+    {
+        $kind = $this->stepKind($title);
+        $lower = strtolower($title);
+        if ($name === 'filesystem' && preg_match('/^Wrote\s+\S+\.md\b/', $text) === 1) {
+            return $kind === 'write';
+        }
+        if ($name === 'create_pdf' && preg_match('/^Wrote\s+\S+\.pdf\b/', $text) === 1) {
+            return $kind === 'pdf' || ($kind === 'report' && preg_match('/\bpdf\b/', $lower) === 1);
+        }
+        if ($name === 'read_pdf' && !str_starts_with($text, 'No text could be read')) {
+            return $kind === 'check';
+        }
+        if ($name === 'grammar_check') {
+            return preg_match('/\b(typo|typos|grammar|spelling|stavning)\b/', $lower) === 1;
+        }
+        if ($name === 'tasklist' && str_starts_with($text, 'Added a result')) {
+            return $kind === 'report';
+        }
+        return false;
     }
 
     private function settleWrittenTask(int $projectId, string $instruction): void
@@ -470,20 +483,14 @@ TXT;
         if ($action === 'result') {
             try {
                 $reported = (string)($args['result'] ?? '');
-                $task = $board->recordResult($projectId > 0 ? (int)($args['id'] ?? 0) : 0, $projectId, $reported);
-                $report = '';
-                foreach ($task['subtasks'] ?? [] as $sub) {
-                    if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
-                        continue;
-                    }
-                    $label = trim((string)($sub['title'] ?? ''));
-                    if ($label !== '' && $this->stepKind($label) === 'report') {
-                        $report = $label;
-                        break;
-                    }
+                $id = (int)($args['id'] ?? 0);
+                if ($id <= 0) {
+                    $id = $this->stepTaskId;
                 }
-                if ($report !== '') {
-                    $task = $board->crossOffSteps((int)$task['id'], false, [$report], $reported);
+                $task = $board->recordResult($id, $projectId, $reported);
+                $current = $this->currentOpenStep($task);
+                if ($current && $this->stepKind((string)$current['title']) === 'report') {
+                    $task = $board->crossOffSteps((int)$task['id'], false, [trim((string)$current['title'])], $reported);
                 }
             } catch (InvalidArgumentException $e) {
                 return $e->getMessage();
@@ -491,9 +498,14 @@ TXT;
                 return $e->getMessage();
             }
             $status = $board->column($task);
-            $tail = $status === 'done'
-                ? ' Task is done. Do not delegate it again.'
-                : ' The main agent checks this and updates the task.';
+            $open = $this->currentOpenStep($task);
+            if ($status === 'done') {
+                $tail = ' Task is done. Do not delegate it again.';
+            } elseif ($open) {
+                $tail = ' The task is not done. The open step is: ' . trim((string)$open['title']) . '. Do not tell the user the task is finished.';
+            } else {
+                $tail = ' The main agent checks this and updates the task.';
+            }
             return 'Added a result to task #' . $task['id'] . ': ' . $task['title'] . '.' . $tail;
         }
         return 'Only the main agent can update a task. You can list the task list, or add a result with action result, id, and result.';

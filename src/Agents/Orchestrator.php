@@ -988,10 +988,7 @@ TXT;
                         $this->db->loop('orchestrator', 'process', 'Delegate waiting · human step');
                         return $wait;
                     }
-                    $runInstruction = $instruction;
-                    if (preg_match('/Task #(\d+)/', $note, $card)) {
-                        $runInstruction .= "\n\nThis is task #" . $card[1] . ". Each step is crossed off when that step finishes. When the file is checked, add that path with tasklist action result. That crosses off the report step only. Do not pass done. Do not update anything else and do not delete the task.";
-                    }
+                    $runInstruction = $this->currentStepInstruction($note, $instruction);
                     $emit(['type' => 'delegation', 'agent' => 'consultant', 'project' => $shownProject !== '' ? $shownProject : 'general', 'text' => $instruction]);
                     try {
                         return $this->subagents->consult($folder, $runInstruction, $emit, $projectId, $shouldStop, $scheduled) . $this->freshTaskNote($note);
@@ -1039,10 +1036,7 @@ TXT;
                     $this->db->loop('orchestrator', 'process', 'Delegate waiting · human step');
                     return $wait;
                 }
-                $runInstruction = $instruction;
-                if (preg_match('/Task #(\d+)/', $note, $card)) {
-                    $runInstruction .= "\n\nThis is task #" . $card[1] . ". Each step is crossed off when that step finishes. When the file is checked, add that path with tasklist action result. That crosses off the report step only. Do not pass done. Do not update anything else and do not delete the task.";
-                }
+                $runInstruction = $this->currentStepInstruction($note, $instruction);
                 $emit(['type' => 'delegation', 'agent' => $agent, 'project' => $shownProject, 'text' => $instruction]);
                 $jobId = $this->db->startJob('subagent', $projectId > 0 ? $projectId : null, [
                     'agent' => $agent,
@@ -1511,6 +1505,42 @@ TXT;
         return '';
     }
 
+    private function currentStepInstruction(string $note, string $fallback): string
+    {
+        if (!preg_match('/Task #(\d+)/', $note, $card)) {
+            return $fallback;
+        }
+        $task = $this->db->task((int)$card[1]);
+        if (!$task) {
+            return $fallback;
+        }
+        $current = null;
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                continue;
+            }
+            if (trim((string)($sub['title'] ?? '')) === '') {
+                continue;
+            }
+            $current = $sub;
+            break;
+        }
+        if (!$current) {
+            return $fallback;
+        }
+        $title = trim((string)$current['title']);
+        $detail = trim((string)($current['description'] ?? ''));
+        $text = 'This is task #' . $task['id'] . ". Do only this step. Stop when it is finished. Do not start the next step.\n\n" . $title;
+        if ($detail !== '') {
+            $text .= "\n" . $detail;
+        }
+        $prior = trim((string)($task['result'] ?? ''));
+        if ($prior !== '') {
+            $text .= "\n\nEarlier result: " . $prior;
+        }
+        return $text . "\n\nWhen this step is finished, add one line with tasklist action result and id " . $task['id'] . '. That crosses off this step only. If an earlier step is still open, the task is not done. Do not say the task is complete.';
+    }
+
     private function freshTaskNote(string $note): string
     {
         if (!preg_match('/Task #(\d+)/', $note, $found)) {
@@ -1523,7 +1553,27 @@ TXT;
         $board = new Kanban($this->db);
         if ($board->column($task) !== 'done') {
             $wait = $this->humanStepWait($note);
-            return $wait !== '' ? "\n" . $wait : $note;
+            if ($wait !== '') {
+                return "\n" . $wait;
+            }
+            $open = [];
+            foreach ($task['subtasks'] ?? [] as $sub) {
+                if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                    continue;
+                }
+                $title = trim((string)($sub['title'] ?? ''));
+                if ($title !== '') {
+                    $open[] = $title;
+                }
+            }
+            if ($open === []) {
+                return $note;
+            }
+            $line = "\nTask #" . $task['id'] . ' is not done. Open steps:';
+            foreach ($open as $title) {
+                $line .= "\n- " . $title;
+            }
+            return $line . "\nDo not tell the user the task is finished. Delegate only the first open step.";
         }
         $path = trim((string)($task['result'] ?? ''));
         $line = 'Task #' . $task['id'] . ' is done.';
