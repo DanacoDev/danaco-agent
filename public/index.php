@@ -363,9 +363,11 @@ header('X-Danaco: 1');
               </form>
             </article>
             <div class="task-list">
-              <article v-for="task in shownTasks()" :key="task.id" class="task-card" :class="['is-' + taskState(task), { 'is-dragging': dragTaskId === task.id, 'is-failed': taskFailed(task) }]" :data-task-id="task.id">
+              <template v-for="task in shownTasks()" :key="task.id">
+              <div v-if="dragTaskId === task.id && dragCard" class="task-placeholder" :style="{ height: dragCard.height + 'px' }" :data-task-id="task.id"></div>
+              <article class="task-card" :class="['is-' + taskState(task), { 'is-dragging': dragTaskId === task.id, 'is-failed': taskFailed(task) }]" :data-task-id="task.id" :style="taskDragStyle(task)">
                 <header v-if="openTask !== task.id" class="task-row">
-                  <button class="task-drag" type="button" aria-label="Drag to reorder" @pointerdown="onTaskPointerDown(task, $event)" @pointermove="onTaskPointerMove" @pointerup="onTaskPointerUp" @pointercancel="onTaskPointerUp">
+                  <button class="task-drag" type="button" aria-label="Drag to reorder" @pointerdown="onTaskPointerDown(task, $event)">
                     <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
                   </button>
                   <span class="task-name">
@@ -465,6 +467,7 @@ header('X-Danaco: 1');
                   </div>
                 </form>
               </article>
+              </template>
               <p v-if="!openTasks().length" class="empty">No tasks yet.</p>
               <p v-else-if="!shownTasks().length" class="empty">No tasks match these filters.</p>
             </div>

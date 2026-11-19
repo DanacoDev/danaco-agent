@@ -244,6 +244,7 @@
           openArchive: null,
           dragTaskId: null,
           dragTaskOrder: '',
+          dragCard: null,
           taskEdit: {},
           subtaskEdit: { title: '', description: '', assigned_agent: 'orchestrator' },
           subtaskDrafts: {},
@@ -2084,28 +2085,64 @@
           });
           merged.forEach((task, index) => { task.position = index; });
         },
+        taskDragStyle(task) {
+          if (this.dragTaskId !== task.id || !this.dragCard) return null;
+          const card = this.dragCard;
+          return {
+            left: card.x + 'px',
+            top: card.y + 'px',
+            width: card.width + 'px',
+            height: card.height + 'px'
+          };
+        },
         onTaskPointerDown(task, event) {
           if (event.pointerType === 'mouse' && event.button !== 0) return;
+          const card = event.currentTarget.closest('[data-task-id]');
+          if (!card) return;
+          const rect = card.getBoundingClientRect();
           this.dragTaskId = task.id;
           this.dragTaskOrder = this.openTasks().map((item) => item.id).join(',');
-          event.currentTarget.setPointerCapture(event.pointerId);
+          this.dragCard = {
+            width: rect.width,
+            height: rect.height,
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+            x: rect.left,
+            y: rect.top
+          };
+          if (!this._taskDragMove) {
+            this._taskDragMove = (ev) => this.onTaskPointerMove(ev);
+            this._taskDragStop = () => this.onTaskPointerUp();
+          }
+          window.addEventListener('pointermove', this._taskDragMove);
+          window.addEventListener('pointerup', this._taskDragStop);
+          window.addEventListener('pointercancel', this._taskDragStop);
+          document.documentElement.classList.add('is-task-drag');
           event.preventDefault();
         },
         onTaskPointerMove(event) {
-          if (!this.dragTaskId) return;
+          if (!this.dragTaskId || !this.dragCard) return;
+          this.dragCard.x = event.clientX - this.dragCard.offsetX;
+          this.dragCard.y = event.clientY - this.dragCard.offsetY;
           const el = document.elementFromPoint(event.clientX, event.clientY);
           const card = el && el.closest('[data-task-id]');
           if (!card) return;
           const overId = Number(card.getAttribute('data-task-id'));
+          if (!overId || overId === this.dragTaskId) return;
           const rect = card.getBoundingClientRect();
           this.moveOpenTask(this.dragTaskId, overId, event.clientY > rect.top + rect.height / 2);
         },
         async onTaskPointerUp() {
+          window.removeEventListener('pointermove', this._taskDragMove);
+          window.removeEventListener('pointerup', this._taskDragStop);
+          window.removeEventListener('pointercancel', this._taskDragStop);
+          document.documentElement.classList.remove('is-task-drag');
           if (!this.dragTaskId) return;
           const order = this.openTasks().map((item) => item.id);
           const changed = order.join(',') !== this.dragTaskOrder;
           this.dragTaskId = null;
           this.dragTaskOrder = '';
+          this.dragCard = null;
           if (!changed || !this.projectId) return;
           try {
             await this.api('/api/tasks/reorder', { method: 'POST', body: { project_id: this.projectId, ids: order } });

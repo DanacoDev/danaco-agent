@@ -398,7 +398,14 @@ button.task-title.is-finished { color: var(--muted); text-decoration: line-throu
 }
 .task-card .task-drag:active, .task-card.is-dragging .task-drag { cursor: grabbing; }
 .task-card .task-drag .ico { width: 16px; height: 16px; }
-.task-card.is-dragging { opacity: 0.55; }
+.task-card.is-dragging {
+  position: fixed; z-index: 40; margin: 0; opacity: 1; pointer-events: none;
+  box-shadow: 0 16px 36px rgba(26, 29, 36, 0.2);
+}
+.task-placeholder {
+  border: 1px dashed #c5cad3; border-radius: 12px; background: rgba(255, 255, 255, 0.45);
+}
+html.is-task-drag, html.is-task-drag * { cursor: grabbing !important; }
 .status-pill { flex: 0 0 auto; display: inline-flex; align-items: center; border-radius: 8px; color: #fff; font-size: 0.75rem; font-weight: 650; line-height: 1; }
 .status-pill.is-in_progress { background: #3b6fd8; }
 .status-pill.is-done { background: #2ea44f; }
