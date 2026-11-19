@@ -234,6 +234,10 @@
           tasks: [],
           taskDraft: '',
           addingTask: false,
+          newSteps: [],
+          newStepTitle: '',
+          newStepDetail: '',
+          newStepAgent: 'orchestrator',
           openTask: null,
           openSubtask: null,
           expandedTasks: {},
@@ -2144,8 +2148,14 @@
           }
         },
         startAddTask() {
+          this.openTask = null;
           this.addingTask = true;
           this.taskError = '';
+          this.taskEdit = { title: '', when: 'never', schedule_time: '', recurrence_interval: 'none' };
+          this.newSteps = [];
+          this.newStepTitle = '';
+          this.newStepDetail = '';
+          this.newStepAgent = 'orchestrator';
           this.$nextTick(() => {
             if (this.$refs.taskTitle) this.$refs.taskTitle.focus();
           });
@@ -2154,12 +2164,37 @@
           this.addingTask = false;
           this.taskDraft = '';
           this.taskError = '';
+          this.taskEdit = {};
+          this.newSteps = [];
+          this.newStepTitle = '';
+          this.newStepDetail = '';
+        },
+        stageNewStep() {
+          const title = String(this.newStepTitle || '').trim();
+          if (!title) return;
+          this.newSteps.push({
+            title: title,
+            description: String(this.newStepDetail || '').trim(),
+            assigned_agent: this.newStepAgent || 'orchestrator'
+          });
+          this.newStepTitle = '';
+          this.newStepDetail = '';
+        },
+        removeNewStep(index) {
+          this.newSteps.splice(index, 1);
         },
         async addTask() {
           this.taskError = '';
-          const title = this.taskDraft.trim();
+          const title = String(this.taskEdit.title || '').trim();
           if (!title) {
             this.taskError = 'Task title is required.';
+            return;
+          }
+          const never = this.taskEdit.when === 'never';
+          const scheduled = this.taskEdit.when === 'at';
+          const stamp = scheduled ? this.taskScheduleStamp(this.taskEdit.schedule_time) : '';
+          if (scheduled && !stamp) {
+            this.taskError = 'Choose a time, or set the task to run immediately.';
             return;
           }
           let projectId = this.projectId;
@@ -2167,13 +2202,23 @@
             this.taskError = this.projects.length ? 'Choose a project for this task.' : 'Create a project first.';
             return;
           }
+          const body = {
+            project_id: projectId,
+            title: title,
+            status: 'in_progress',
+            schedule_time: never ? 'never' : (stamp || null),
+            recurrence_interval: this.taskEdit.recurrence_interval || 'none'
+          };
+          if (this.newSteps.length) {
+            body.steps = this.newSteps.map((step) => ({
+              title: step.title,
+              description: step.description || '',
+              assigned_agent: step.assigned_agent || 'orchestrator'
+            }));
+          }
           try {
-            await this.api('/api/tasks', {
-              method: 'POST',
-              body: { project_id: projectId, title: title, status: 'in_progress' }
-            });
-            this.taskDraft = '';
-            this.addingTask = false;
+            await this.api('/api/tasks', { method: 'POST', body: body });
+            this.cancelAddTask();
             await this.reloadTasks();
           } catch (error) {
             this.taskError = error.message || 'Could not add the task.';
@@ -2187,6 +2232,7 @@
             this.openTask = null;
             return;
           }
+          if (this.addingTask) this.cancelAddTask();
           this.openTask = task.id;
           this.expandedTasks[task.id] = true;
           this.taskError = '';

@@ -12,6 +12,10 @@ Linux only. Ubuntu is recommended.
 
 *or run manually from source*
 
+```bash
+git clone https://github.com/DanacoDev/danaco-agent danaco-agent && cd danaco-agent && bash install.sh
+```
+
 ## Intended purpose
 
 Agent Danaco is a self-hosted software framework for language-model-assisted project work (chat, files, tasks, optional tools) on hardware the operator controls. It is not intended for prohibited AI practices or for high-risk AI system use cases under Annex III of the EU AI Act. The organisation that installs and configures it determines the purpose of each deployment and is responsible for lawful use under the laws that apply to them.

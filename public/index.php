@@ -99,6 +99,7 @@ header('X-Danaco: 1');
   <symbol id="i-workspace" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" d="M3 7h7l2 2h9v9H3z"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M3 8.5h6.2l1.6-2h4.4l1.6 2H21v10H3z"/></symbol>
   <symbol id="i-file" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M7 3.5h7.2L19 8.2V20.5H7zM14.2 3.8V8.2H18.5M10 12.5h6M10 16h4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M14.8 14.8 20 20"/></symbol>
   <symbol id="i-agents" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" d="M8 12a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm8 1a2.5 2.5 0 1 0-2.5-2.5A2.5 2.5 0 0 0 16 13zM3 19c.4-2.4 2.4-4 5-4s4.6 1.6 5 4M14 19c.3-1.6 1.5-2.8 3.2-3 1.6.2 2.8 1.4 3.3 3"/></symbol>
   <symbol id="i-skills" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" d="M12 3l2.2 5.5L20 11l-5.8 2.5L12 19l-2.2-5.5L4 11l5.8-2.5z"/></symbol>
   <symbol id="i-setup" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
@@ -304,12 +305,63 @@ header('X-Danaco: 1');
               </div>
               <button class="btn btn-gold" type="button" @click="startAddTask">Add task</button>
             </div>
-            <form v-if="addingTask" class="task-add" @submit.prevent="addTask">
-              <input ref="taskTitle" v-model="taskDraft" placeholder="Task title" aria-label="Task title">
-              <button class="btn btn-gold" type="submit">Add</button>
-              <button class="btn" type="button" @click="cancelAddTask">Cancel</button>
-            </form>
-            <p v-if="addingTask && taskError" class="form-error">{{ taskError }}</p>
+            <article v-if="addingTask" class="task-card">
+              <label class="field task-title-field">
+                <input ref="taskTitle" v-model="taskEdit.title" placeholder="Title" aria-label="Title" form="task-add-form">
+              </label>
+              <ul v-if="newSteps.length" class="subtasks">
+                <li v-for="(sub, index) in newSteps" :key="index" class="subtask">
+                  <div class="subtask-row">
+                    <span class="subtask-title">{{ sub.title }}</span>
+                    <span class="task-meta">{{ agentLabel(sub.assigned_agent) }}</span>
+                    <button class="task-edit" type="button" aria-label="Remove step" @click="removeNewStep(index)">
+                      <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
+                    </button>
+                  </div>
+                  <p v-if="sub.description" class="subtask-detail">{{ sub.description }}</p>
+                </li>
+              </ul>
+              <form class="subtask-add" @submit.prevent="stageNewStep">
+                <div class="subtask-add-row">
+                  <input v-model="newStepTitle" placeholder="Add step title" aria-label="Add step title">
+                  <select v-model="newStepAgent" aria-label="Assigned to">
+                    <option v-if="newStepAgent && !agentNames.includes(newStepAgent)" :value="newStepAgent">{{ agentLabel(newStepAgent) }}</option>
+                    <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
+                  </select>
+                  <button class="btn" type="submit">Add</button>
+                </div>
+                <textarea v-model="newStepDetail" rows="3" placeholder="Detailed step instructions" aria-label="Step description"></textarea>
+              </form>
+              <form id="task-add-form" @submit.prevent="addTask">
+                <div class="task-fields">
+                  <label class="field">Time
+                    <select v-model="taskEdit.when">
+                      <option value="immediately">immediately</option>
+                      <option value="at">at a time</option>
+                      <option value="never">Never (inactivated)</option>
+                    </select>
+                  </label>
+                  <label class="field">Repeat
+                    <select v-model="taskEdit.recurrence_interval">
+                      <option value="none">run once</option>
+                      <option value="5min">every 5 min</option>
+                      <option value="15min">every 15 min</option>
+                      <option value="30min">every 30 min</option>
+                      <option value="hourly">hourly</option>
+                      <option value="daily">daily</option>
+                      <option value="weekly">weekly</option>
+                      <option value="monthly">monthly</option>
+                    </select>
+                  </label>
+                </div>
+                <label v-if="taskEdit.when==='at'" class="field">When<input type="datetime-local" v-model="taskEdit.schedule_time"></label>
+                <p v-if="taskError" class="form-error">{{ taskError }}</p>
+                <div class="task-actions">
+                  <button class="btn btn-gold" type="submit">Save task</button>
+                  <button class="btn" type="button" @click="cancelAddTask">Cancel</button>
+                </div>
+              </form>
+            </article>
             <div class="task-list">
               <article v-for="task in shownTasks()" :key="task.id" class="task-card" :class="['is-' + taskState(task), { 'is-dragging': dragTaskId === task.id, 'is-failed': taskFailed(task) }]" :data-task-id="task.id">
                 <header v-if="openTask !== task.id" class="task-row">
@@ -459,12 +511,12 @@ header('X-Danaco: 1');
               <h2>Files</h2>
               <form class="wiki-tools workspace-search" @submit.prevent="searchWorkspace">
                 <div class="search-field">
+                  <svg class="search-ico" aria-hidden="true"><use href="#i-search"></use></svg>
                   <input v-model="wikiQuery" :aria-label="vaultOpen ? 'Search backups' : 'Search files'" :placeholder="vaultOpen ? 'Search backups' : 'Search filename or content'">
                   <button v-if="wikiQuery" class="search-clear" type="button" aria-label="Clear search" @click="clearWorkspaceSearch">
                     <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>
                   </button>
                 </div>
-                <button class="btn" type="submit">Search</button>
               </form>
               <button class="btn btn-ghost" type="button" @click="toggleVault">{{ vaultOpen ? 'Hide backups' : 'Show backups' }}</button>
             </div>
@@ -480,7 +532,7 @@ header('X-Danaco: 1');
                   <p v-if="wikiResult" class="empty">{{ wikiResult }}</p>
                   <ul v-else class="search-hits">
                     <li v-for="hit in searchHits" :key="hit.scope + hit.folder + hit.path">
-                      <button type="button" class="tree-btn file" @click="openFile(hit)"><svg class="tree-ico" aria-hidden="true"><use href="#i-file"></use></svg><span class="tree-name">{{ hit.path || hit.name }}</span></button>
+                      <button type="button" class="tree-btn file" @click="openFile(hit)"><svg class="tree-ico" aria-hidden="true"><use href="#i-file"></use></svg><span class="tree-name">{{ hit.folder ? hit.folder + '/' + (hit.path || hit.name) : (hit.path || hit.name) }}</span></button>
                     </li>
                   </ul>
                 </template>
