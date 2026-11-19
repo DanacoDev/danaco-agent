@@ -223,16 +223,19 @@
           taskDraft: '',
           addingTask: false,
           openTask: null,
+          openSubtask: null,
           expandedTasks: {},
           openArchive: null,
           dragTaskId: null,
           dragTaskOrder: '',
           taskEdit: {},
+          subtaskEdit: { title: '', description: '', assigned_agent: 'orchestrator' },
           subtaskDrafts: {},
           finishedOpen: false,
           archiveOpen: false,
           taskError: '',
-          taskFilter: { state: '', agent: '', when: '', repeat: '' },
+          subtaskError: '',
+          taskFilter: { state: '', agent: '', when: '' },
           taskLoading: false,
           agentNames: ['human', 'orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer'],
           tree: [],
@@ -1950,18 +1953,23 @@
         },
         taskFiltersOn() {
           const filter = this.taskFilter;
-          return !!(filter.state || filter.agent || filter.when || filter.repeat);
+          return !!(filter.state || filter.agent || filter.when);
         },
         clearTaskFilters() {
           this.taskFilter.state = '';
           this.taskFilter.agent = '';
           this.taskFilter.when = '';
-          this.taskFilter.repeat = '';
         },
         taskMatchesFilter(task) {
           const filter = this.taskFilter;
           if (filter.state && this.taskState(task) !== filter.state) return false;
-          if (filter.agent && task.assigned_agent !== filter.agent) return false;
+          if (filter.agent) {
+            const steps = Array.isArray(task.subtasks) ? task.subtasks : [];
+            const names = steps.length
+              ? steps.map((sub) => sub.assigned_agent || task.assigned_agent)
+              : [task.assigned_agent];
+            if (!names.includes(filter.agent)) return false;
+          }
           if (filter.when === 'never') {
             if (!(Number(task.held) === 1 && !task.schedule_time)) return false;
           } else if (filter.when === 'at') {
@@ -1969,7 +1977,6 @@
           } else if (filter.when === 'immediately') {
             if (task.schedule_time || (Number(task.held) === 1 && !task.schedule_time)) return false;
           }
-          if (filter.repeat && (task.recurrence_interval || 'none') !== filter.repeat) return false;
           return true;
         },
         shownTasks() {
@@ -2037,11 +2044,18 @@
         toggleArchive(task) {
           this.openArchive = this.openArchive === task.id ? null : task.id;
         },
+        taskFieldFocused() {
+          const el = document.activeElement;
+          return !!(el && el.closest && el.closest('.tasks-view input, .tasks-view textarea'));
+        },
         async reloadTasks() {
-          if (this.taskLoading) return;
+          if (this.taskLoading || this.taskFieldFocused()) return;
+          const generation = (this.taskReloadGen || 0) + 1;
+          this.taskReloadGen = generation;
           this.taskLoading = true;
           try {
             const data = await this.api('/api/tasks');
+            if (generation !== this.taskReloadGen || this.taskFieldFocused()) return;
             if (Array.isArray(data.tasks)) this.tasks = data.tasks;
           } catch (error) {
           } finally {
@@ -2097,7 +2111,6 @@
           const stamp = String(task.schedule_time || '').replace(' ', 'T').slice(0, 16);
           this.taskEdit = {
             title: task.title,
-            assigned_agent: task.assigned_agent,
             when: Number(task.held) === 1 && !stamp ? 'never' : (stamp ? 'at' : 'immediately'),
             schedule_time: stamp,
             recurrence_interval: task.recurrence_interval || 'none'
@@ -2123,15 +2136,17 @@
           }
           const body = {
             title: this.taskEdit.title,
-            assigned_agent: this.taskEdit.assigned_agent,
             schedule_time: never ? 'never' : (stamp || null),
             recurrence_interval: this.taskEdit.recurrence_interval
           };
+          this.taskReloadGen = (this.taskReloadGen || 0) + 1;
           try {
             const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: body });
+            this.taskReloadGen = (this.taskReloadGen || 0) + 1;
             Object.assign(task, saved.task);
             if (this.taskStatus(saved.task) !== 'done') this.openTask = null;
           } catch (error) {
+            this.taskReloadGen = (this.taskReloadGen || 0) + 1;
             this.taskError = error.message || 'Could not save the task.';
           }
         },
@@ -2161,15 +2176,44 @@
           const saved = await this.api('/api/subtasks/' + sub.id, { method: 'PATCH', body: { status: status } });
           this.replaceTask(saved.task);
         },
-        async saveSubtaskTitle(task, sub, value) {
-          const title = String(value || '').trim();
-          if (!title || title === sub.title) return;
-          const saved = await this.api('/api/subtasks/' + sub.id, { method: 'PATCH', body: { title: title } });
-          this.replaceTask(saved.task);
+        async saveSubtask(task, sub) {
+          this.subtaskError = '';
+          const title = String(this.subtaskEdit.title || '').trim();
+          const description = String(this.subtaskEdit.description || '').trim();
+          const agent = this.subtaskEdit.assigned_agent || task.assigned_agent || 'orchestrator';
+          if (!title) {
+            this.subtaskError = 'Step title is required.';
+            return;
+          }
+          this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+          try {
+            const saved = await this.api('/api/subtasks/' + sub.id, { method: 'PATCH', body: { title: title, description: description, assigned_agent: agent } });
+            this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+            this.replaceTask(saved.task);
+            if (this.openSubtask === sub.id) this.openSubtask = null;
+          } catch (error) {
+            this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+            this.subtaskError = error.message || 'Could not save the step.';
+          }
+        },
+        toggleSubtask(task, sub) {
+          if (this.openSubtask === sub.id) {
+            this.openSubtask = null;
+            this.subtaskError = '';
+            return;
+          }
+          this.openSubtask = sub.id;
+          this.subtaskError = '';
+          this.subtaskEdit = {
+            title: sub.title || '',
+            description: sub.description || '',
+            assigned_agent: sub.assigned_agent || task.assigned_agent || 'orchestrator'
+          };
         },
         async deleteSubtask(task, sub) {
           const saved = await this.api('/api/subtasks/' + sub.id + '/delete', { method: 'POST', body: {} });
           this.replaceTask(saved.task);
+          if (this.openSubtask === sub.id) this.openSubtask = null;
         },
         async deleteTask(task) {
           if (!window.confirm('Delete ' + task.title + '?')) return;

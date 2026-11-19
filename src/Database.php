@@ -151,15 +151,25 @@ CREATE TABLE IF NOT EXISTS subtasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER NOT NULL,
     title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    assigned_agent TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'in_progress',
     position INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_subtasks_task ON subtasks(task_id, position);
 SQL);
+        $subtaskColumns = array_column($this->pdo->query('PRAGMA table_info(subtasks)')->fetchAll(), 'name');
+        if (!in_array('description', $subtaskColumns, true)) {
+            $this->pdo->exec("ALTER TABLE subtasks ADD COLUMN description TEXT NOT NULL DEFAULT ''");
+        }
+        if (!in_array('assigned_agent', $subtaskColumns, true)) {
+            $this->pdo->exec("ALTER TABLE subtasks ADD COLUMN assigned_agent TEXT NOT NULL DEFAULT ''");
+            $this->pdo->exec("UPDATE subtasks SET assigned_agent = (SELECT COALESCE(NULLIF(tasks.assigned_agent, ''), 'orchestrator') FROM tasks WHERE tasks.id = subtasks.task_id) WHERE assigned_agent = ''");
+        }
         if ($this->getSetting('task_steps_v1', '') !== '1') {
-            $rows = $this->pdo->query("SELECT id, description FROM tasks WHERE TRIM(COALESCE(description, '')) != '' AND id NOT IN (SELECT task_id FROM subtasks)")->fetchAll();
-            $insert = $this->pdo->prepare("INSERT INTO subtasks (task_id, title, status, position) VALUES (?, ?, 'in_progress', 1)");
+            $rows = $this->pdo->query("SELECT id, description, assigned_agent FROM tasks WHERE TRIM(COALESCE(description, '')) != '' AND id NOT IN (SELECT task_id FROM subtasks)")->fetchAll();
+            $insert = $this->pdo->prepare("INSERT INTO subtasks (task_id, title, assigned_agent, status, position) VALUES (?, ?, ?, 'in_progress', 1)");
             $clear = $this->pdo->prepare("UPDATE tasks SET description = '' WHERE id = ?");
             foreach ($rows as $row) {
                 $title = trim((string)$row['description']);
@@ -171,7 +181,7 @@ SQL);
                 if ($title === '') {
                     continue;
                 }
-                $insert->execute([(int)$row['id'], $title]);
+                $insert->execute([(int)$row['id'], $title, trim((string)($row['assigned_agent'] ?? '')) ?: 'orchestrator']);
                 $clear->execute([(int)$row['id']]);
             }
             $this->setSetting('task_steps_v1', '1');
@@ -669,20 +679,33 @@ SQL);
         return $row ? $this->castSubtask($row) : null;
     }
 
-    public function insertSubtask(int $taskId, string $title, string $status = 'in_progress'): array
+    public function insertSubtask(int $taskId, string $title, string $status = 'in_progress', string $agent = ''): array
     {
         $status = $status === 'done' ? 'done' : 'in_progress';
+        if ($agent === '') {
+            $parent = $this->pdo->prepare('SELECT assigned_agent FROM tasks WHERE id = ?');
+            $parent->execute([$taskId]);
+            $agent = trim((string)$parent->fetchColumn());
+            if ($agent === '') {
+                $agent = 'orchestrator';
+            }
+        }
         $stmt = $this->pdo->prepare('SELECT COALESCE(MAX(position), 0) + 1 FROM subtasks WHERE task_id = ?');
         $stmt->execute([$taskId]);
         $position = (int)$stmt->fetchColumn();
-        $insert = $this->pdo->prepare('INSERT INTO subtasks (task_id, title, status, position) VALUES (?, ?, ?, ?)');
-        $insert->execute([$taskId, $title, $status, $position]);
+        $insert = $this->pdo->prepare('INSERT INTO subtasks (task_id, title, description, assigned_agent, status, position) VALUES (?, ?, ?, ?, ?, ?)');
+        $insert->execute([$taskId, $title, '', $agent, $status, $position]);
         return $this->subtask((int)$this->pdo->lastInsertId());
+    }
+
+    public function assignSubtasks(int $taskId, string $agent): void
+    {
+        $this->pdo->prepare('UPDATE subtasks SET assigned_agent = ? WHERE task_id = ?')->execute([$agent, $taskId]);
     }
 
     public function updateSubtask(int $id, array $fields): ?array
     {
-        $allowed = ['title', 'status', 'position'];
+        $allowed = ['title', 'description', 'assigned_agent', 'status', 'position'];
         $sets = [];
         $values = [];
         foreach ($allowed as $key) {
@@ -1913,6 +1936,8 @@ SQL);
         $row['task_id'] = (int)$row['task_id'];
         $row['position'] = (int)($row['position'] ?? 0);
         $row['status'] = ($row['status'] ?? '') === 'done' ? 'done' : 'in_progress';
+        $row['description'] = (string)($row['description'] ?? '');
+        $row['assigned_agent'] = (string)($row['assigned_agent'] ?? '');
         return $row;
     }
 

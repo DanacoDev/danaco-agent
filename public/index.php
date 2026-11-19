@@ -307,9 +307,10 @@ header('X-Danaco: 1');
                   <button class="task-drag" type="button" aria-label="Drag to reorder" @pointerdown="onTaskPointerDown(task, $event)" @pointermove="onTaskPointerMove" @pointerup="onTaskPointerUp" @pointercancel="onTaskPointerUp">
                     <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
                   </button>
-                  <span class="task-tag">#{{ task.id }}</span>
-                  <button class="task-title" type="button" :class="{ 'is-finished': stepsDone(task) }" :aria-expanded="expandedTasks[task.id] ? 'true' : 'false'" @click="toggleSteps(task)">{{ task.title }}</button>
-                  <span class="task-meta">{{ agentLabel(task.assigned_agent) }}</span>
+                  <span class="task-name">
+                    <button class="task-title" type="button" :class="{ 'is-finished': stepsDone(task) }" :aria-expanded="expandedTasks[task.id] ? 'true' : 'false'" @click="toggleSteps(task)">{{ task.title }}</button>
+                    <span class="task-tag">#{{ task.id }}</span>
+                  </span>
                   <span class="task-when">{{ taskStateLabel(task) }}</span>
                   <span class="task-tools">
                     <button v-if="taskStatus(task)==='done' && !taskRepeats(task)" class="task-edit" type="button" aria-label="Archive task" @click="archiveTask(task)">
@@ -325,11 +326,33 @@ header('X-Danaco: 1');
                 </header>
                 <ul v-if="expandedTasks[task.id] && (task.subtasks || []).length" class="subtasks">
                   <li v-for="sub in task.subtasks" :key="sub.id" class="subtask" :class="{ 'is-done': subtaskStatus(sub) === 'done' }">
-                    <button class="subtask-check" type="button" :aria-pressed="subtaskStatus(sub) === 'done'" aria-label="Mark step done" @click="setSubtaskStatus(task, sub, subtaskStatus(sub) === 'done' ? 'in_progress' : 'done')"></button>
-                    <input class="subtask-title" :value="sub.title" aria-label="Step" @change="saveSubtaskTitle(task, sub, $event.target.value)">
-                    <button class="task-edit" type="button" aria-label="Remove step" @click="deleteSubtask(task, sub)">
-                      <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>
-                    </button>
+                    <div class="subtask-row">
+                      <button class="subtask-check" type="button" :aria-pressed="subtaskStatus(sub) === 'done'" aria-label="Mark step done" @click="setSubtaskStatus(task, sub, subtaskStatus(sub) === 'done' ? 'in_progress' : 'done')"></button>
+                      <span class="subtask-title">{{ sub.title }}</span>
+                      <span class="task-meta">{{ agentLabel(sub.assigned_agent || task.assigned_agent) }}</span>
+                      <button class="task-edit" type="button" :aria-label="openSubtask === sub.id ? 'Close' : 'Edit step'" @click="toggleSubtask(task, sub)">
+                        <svg class="ico" aria-hidden="true"><use :href="openSubtask === sub.id ? '#i-close' : '#i-edit'"></use></svg>
+                      </button>
+                      <button class="task-edit" type="button" aria-label="Remove step" @click="deleteSubtask(task, sub)">
+                        <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
+                      </button>
+                    </div>
+                    <p v-if="openSubtask !== sub.id && sub.description" class="subtask-detail">{{ sub.description }}</p>
+                    <form v-if="openSubtask === sub.id" class="subtask-form" @submit.prevent="saveSubtask(task, sub)">
+                      <label class="field">Title<input v-model="subtaskEdit.title"></label>
+                      <label class="field">Assigned to
+                        <select v-model="subtaskEdit.assigned_agent">
+                          <option v-if="subtaskEdit.assigned_agent && !agentNames.includes(subtaskEdit.assigned_agent)" :value="subtaskEdit.assigned_agent">{{ agentLabel(subtaskEdit.assigned_agent) }}</option>
+                          <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
+                        </select>
+                      </label>
+                      <label class="field">Description<textarea v-model="subtaskEdit.description" rows="4" placeholder="Requirements"></textarea></label>
+                      <p v-if="subtaskError" class="form-error">{{ subtaskError }}</p>
+                      <div class="task-actions">
+                        <button class="btn btn-gold" type="submit">Save step</button>
+                        <button class="btn" type="button" @click="toggleSubtask(task, sub)">Cancel</button>
+                      </div>
+                    </form>
                   </li>
                 </ul>
                 <p v-if="expandedTasks[task.id] && task.result" class="task-result is-full"><span class="task-result-label">Results:</span><span class="task-result-line">{{ task.result }}</span></p>
@@ -340,11 +363,6 @@ header('X-Danaco: 1');
                 <form v-if="openTask === task.id" @submit.prevent="saveTask(task)">
                   <label class="field">Title<input v-model="taskEdit.title"></label>
                   <div class="task-fields">
-                    <label class="field">Assigned to
-                      <select v-model="taskEdit.assigned_agent">
-                        <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
-                      </select>
-                    </label>
                     <label class="field">Time
                       <select v-model="taskEdit.when">
                         <option value="immediately">immediately</option>
@@ -405,19 +423,6 @@ header('X-Danaco: 1');
                     <option value="never">Never (inactivated)</option>
                   </select>
                 </label>
-                <label class="field">Repeat
-                  <select v-model="taskFilter.repeat">
-                    <option value="">All</option>
-                    <option value="none">run once</option>
-                    <option value="5min">every 5 min</option>
-                    <option value="15min">every 15 min</option>
-                    <option value="30min">every 30 min</option>
-                    <option value="hourly">hourly</option>
-                    <option value="daily">daily</option>
-                    <option value="weekly">weekly</option>
-                    <option value="monthly">monthly</option>
-                  </select>
-                </label>
               </aside>
             </div>
             <section class="task-archive">
@@ -436,10 +441,12 @@ header('X-Danaco: 1');
               <div v-if="archiveOpen && archivedVisible().length" class="task-list">
                 <article v-for="task in archivedVisible()" :key="'done'+task.id" class="task-card is-archive" @click="toggleArchive(task)">
                   <header class="task-row">
-                    <h3 class="task-title">{{ task.title }}</h3>
+                    <span class="task-name">
+                      <h3 class="task-title">{{ task.title }}</h3>
+                      <span class="task-tag">#{{ task.id }}</span>
+                    </span>
                     <span class="task-tags">
                       <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
-                      <span class="task-tag">#{{ task.id }}</span>
                     </span>
                     <span class="task-tools">
                       <button class="task-edit" type="button" aria-label="Delete task" @click.stop="deleteTask(task)">

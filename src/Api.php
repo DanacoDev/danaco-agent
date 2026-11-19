@@ -363,6 +363,23 @@ class Api
             }
             $fields['title'] = $title;
         }
+        if (array_key_exists('description', $body)) {
+            $description = trim((string)$body['description']);
+            if (strlen($description) > 20000) {
+                $this->json(['error' => 'Step description is too long.'], 422);
+                return;
+            }
+            $fields['description'] = $description;
+        }
+        if (array_key_exists('assigned_agent', $body)) {
+            $agent = strtolower(trim((string)$body['assigned_agent']));
+            $allowed = ['orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer', 'consultant', 'human'];
+            if (!in_array($agent, $allowed, true)) {
+                $this->json(['error' => 'Choose who this step is assigned to.'], 422);
+                return;
+            }
+            $fields['assigned_agent'] = $agent;
+        }
         if (array_key_exists('status', $body)) {
             $fields['status'] = $this->subtaskStatus((string)$body['status']);
         }

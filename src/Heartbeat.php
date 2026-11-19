@@ -180,9 +180,22 @@ class Heartbeat
                     continue;
                 }
                 $step = trim((string)($sub['title'] ?? ''));
-                if ($step !== '') {
-                    $lines[] = ($index + 1) . '. ' . $step;
+                $detail = trim((string)($sub['description'] ?? ''));
+                if ($step === '' && $detail === '') {
+                    continue;
                 }
+                $line = ($index + 1) . '. ' . $step;
+                $stepAgent = trim((string)($sub['assigned_agent'] ?? ''));
+                if ($stepAgent === '') {
+                    $stepAgent = (string)($fresh['assigned_agent'] ?? '');
+                }
+                if ($stepAgent !== '') {
+                    $line .= ' (' . $stepAgent . ')';
+                }
+                if ($detail !== '') {
+                    $line .= "\n" . $detail;
+                }
+                $lines[] = $line;
             }
             $body = implode("\n", $lines);
             if ($body === '') {

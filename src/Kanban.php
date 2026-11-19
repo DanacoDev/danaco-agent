@@ -134,6 +134,10 @@ class Kanban
             $fields['held'] = 0;
         }
         $saved = $this->db->updateTask($id, $fields);
+        if ($saved && isset($fields['assigned_agent'])) {
+            $this->db->assignSubtasks($id, (string)$fields['assigned_agent']);
+            $saved = $this->db->task($id) ?? $saved;
+        }
         if ($saved && $steps && $hasInstruction) {
             $this->addSteps($id, $steps, !$hasSteps);
             $saved = $this->db->task($id) ?? $saved;
@@ -240,7 +244,15 @@ class Kanban
                     continue;
                 }
                 $subStatus = (string)($sub['status'] ?? '') === 'done' ? 'done' : 'in_progress';
-                $lines[] = '  - [' . $subStatus . '] ' . $title;
+                $stepAgent = trim((string)($sub['assigned_agent'] ?? ''));
+                if ($stepAgent === '') {
+                    $stepAgent = (string)($task['assigned_agent'] ?? 'orchestrator');
+                }
+                $lines[] = '  - [' . $subStatus . '] ' . $title . ' (' . $stepAgent . ')';
+                $detail = trim((string)($sub['description'] ?? ''));
+                if ($detail !== '') {
+                    $lines[] = '    ' . trim(clip_text(preg_replace('/\s+/', ' ', $detail) ?? $detail, 400));
+                }
             }
         }
         return $lines ? implode("\n", $lines) : 'No open tasks.';
