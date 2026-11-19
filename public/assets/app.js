@@ -221,6 +221,7 @@
           chatHitIndex: 0,
           tasks: [],
           taskDraft: '',
+          addingTask: false,
           openTask: null,
           expandedTasks: {},
           openArchive: null,
@@ -231,8 +232,9 @@
           finishedOpen: false,
           archiveOpen: false,
           taskError: '',
+          taskFilter: { state: '', agent: '', when: '', repeat: '' },
           taskLoading: false,
-          agentNames: ['orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer', 'human'],
+          agentNames: ['human', 'orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer'],
           tree: [],
           filePath: '',
           fileName: '',
@@ -1927,19 +1929,73 @@
             return (status === 'in_progress' || status === 'done') && task.project_id === this.projectId;
           }).sort((a, b) => (Number(a.position) - Number(b.position)) || (a.id - b.id));
         },
+        taskState(task) {
+          if (Number(task.held) === 1 && !task.schedule_time) return 'pending';
+          const when = String(task.schedule_time || '').trim();
+          if (when) {
+            const at = Date.parse(when.replace(' ', 'T'));
+            if (!Number.isNaN(at) && at > Date.now()) return 'scheduled';
+          }
+          const result = String(task.result || '').trim();
+          if (this.stepsDone(task) && result) return 'finished';
+          return 'active';
+        },
+        taskStateLabel(task) {
+          return ({
+            pending: 'Pending',
+            active: 'Active',
+            scheduled: 'Scheduled',
+            finished: 'Finished'
+          })[this.taskState(task)] || 'Active';
+        },
+        taskFiltersOn() {
+          const filter = this.taskFilter;
+          return !!(filter.state || filter.agent || filter.when || filter.repeat);
+        },
+        clearTaskFilters() {
+          this.taskFilter.state = '';
+          this.taskFilter.agent = '';
+          this.taskFilter.when = '';
+          this.taskFilter.repeat = '';
+        },
+        taskMatchesFilter(task) {
+          const filter = this.taskFilter;
+          if (filter.state && this.taskState(task) !== filter.state) return false;
+          if (filter.agent && task.assigned_agent !== filter.agent) return false;
+          if (filter.when === 'never') {
+            if (!(Number(task.held) === 1 && !task.schedule_time)) return false;
+          } else if (filter.when === 'at') {
+            if (!task.schedule_time) return false;
+          } else if (filter.when === 'immediately') {
+            if (task.schedule_time || (Number(task.held) === 1 && !task.schedule_time)) return false;
+          }
+          if (filter.repeat && (task.recurrence_interval || 'none') !== filter.repeat) return false;
+          return true;
+        },
+        shownTasks() {
+          return this.openTasks().filter((task) => this.taskMatchesFilter(task));
+        },
         moveOpenTask(fromId, toId, after) {
           if (!fromId || fromId === toId) return;
-          const open = this.openTasks();
-          const from = open.findIndex((task) => task.id === fromId);
-          const to = open.findIndex((task) => task.id === toId);
+          const visible = this.shownTasks();
+          const from = visible.findIndex((task) => task.id === fromId);
+          const to = visible.findIndex((task) => task.id === toId);
           if (from < 0 || to < 0) return;
           let dest = after ? to + 1 : to;
           if (from < dest) dest -= 1;
           if (dest === from) return;
-          const next = open.slice();
+          const next = visible.slice();
           const moved = next.splice(from, 1)[0];
           next.splice(dest, 0, moved);
-          next.forEach((task, index) => { task.position = index; });
+          const visibleIds = {};
+          next.forEach((task) => { visibleIds[task.id] = true; });
+          let cursor = 0;
+          const merged = [];
+          this.openTasks().forEach((task) => {
+            if (visibleIds[task.id]) merged.push(next[cursor++]);
+            else merged.push(task);
+          });
+          merged.forEach((task, index) => { task.position = index; });
         },
         onTaskPointerDown(task, event) {
           if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -1992,10 +2048,25 @@
             this.taskLoading = false;
           }
         },
+        startAddTask() {
+          this.addingTask = true;
+          this.taskError = '';
+          this.$nextTick(() => {
+            if (this.$refs.taskTitle) this.$refs.taskTitle.focus();
+          });
+        },
+        cancelAddTask() {
+          this.addingTask = false;
+          this.taskDraft = '';
+          this.taskError = '';
+        },
         async addTask() {
           this.taskError = '';
           const title = this.taskDraft.trim();
-          if (!title) return;
+          if (!title) {
+            this.taskError = 'Task title is required.';
+            return;
+          }
           let projectId = this.projectId;
           if (!projectId) {
             this.taskError = this.projects.length ? 'Choose a project for this task.' : 'Create a project first.';
@@ -2007,6 +2078,7 @@
               body: { project_id: projectId, title: title, status: 'in_progress' }
             });
             this.taskDraft = '';
+            this.addingTask = false;
             await this.reloadTasks();
           } catch (error) {
             this.taskError = error.message || 'Could not add the task.';
