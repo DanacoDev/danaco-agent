@@ -396,6 +396,14 @@ class Api
         if (array_key_exists('status', $body)) {
             $fields['status'] = $this->subtaskStatus((string)$body['status']);
         }
+        if (array_key_exists('result', $body)) {
+            $result = trim((string)$body['result']);
+            if (strlen($result) > 2000) {
+                $this->json(['error' => 'Step result is too long.'], 422);
+                return;
+            }
+            $fields['result'] = $result;
+        }
         $this->db->updateSubtask($id, $fields);
         $this->json(['task' => $this->db->syncTaskFromSteps($this->db->task((int)$existing['task_id']))]);
     }

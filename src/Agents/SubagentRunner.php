@@ -6,6 +6,8 @@ class SubagentRunner
 
     private array $runTrace = [];
 
+    private int $stepTaskId = 0;
+
     public function __construct(
         private AgentRuntime $runtime,
         private Database $db,
@@ -32,6 +34,7 @@ class SubagentRunner
         $this->capabilities->blockedInstalls = [];
         $this->capabilities->missingPython = [];
         $this->runTrace = [];
+        $this->bindStepTask($instruction);
         $stored = false;
         $user = $this->withPriorRun($projectId, $agent, "project: {$projectFolder}\n\n{$instruction}");
         $messages = [
@@ -56,6 +59,7 @@ class SubagentRunner
                 $this->storeRun($projectId, $agent, '');
             }
             $this->runTrace = [];
+            $this->stepTaskId = 0;
             $this->runtime->releaseLocalModel();
             $this->db->unlock('subagent_lock');
         }
@@ -68,7 +72,7 @@ class SubagentRunner
             if ($reason === 'no_key') {
                 return 'The Consultant has no API key. Tell the user to add one on the Setup page, under External LLM provider, and use that API for the Consultant.';
             }
-            return 'The Consultant is turned off. Tell the user they can turn it on from the Agents page. It costs tokens while it is on.';
+            return 'The Consultant is turned off. Tell the user they can turn it on from the Activity page. It costs tokens while it is on.';
         }
         $instruction = trim($instruction);
         if ($instruction === '') {
@@ -80,6 +84,7 @@ class SubagentRunner
         $this->capabilities->blockedInstalls = [];
         $this->capabilities->missingPython = [];
         $this->runTrace = [];
+        $this->bindStepTask($instruction);
         $stored = false;
         $watch = function () use ($shouldStop): bool {
             $this->db->setSetting('consultant_lock', (string)time());
@@ -103,7 +108,11 @@ class SubagentRunner
             ? fn(array $running): array => $this->refreshSystem($running, 'consultant', $projectFolder, $projectId)
             : null;
         try {
-            $result = $this->finishSubagent($this->runtime->run('consultant', $messages, $this->traced($tools), $emit, $this->runtime->maxTurns(), $projectId > 0 ? $projectId : null, $watch, true, $scheduled, $refresh));
+            $result = $this->runtime->run('consultant', $messages, $this->traced($tools), $emit, $this->runtime->maxTurns(), $projectId > 0 ? $projectId : null, $watch, true, $scheduled, $refresh);
+            if ($projectId > 0) {
+                $this->settleWrittenTask($projectId, $instruction);
+            }
+            $result = $this->finishSubagent($result);
             $this->storeRun($projectId, 'consultant', $result);
             $stored = true;
             return $result;
@@ -112,6 +121,7 @@ class SubagentRunner
                 $this->storeRun($projectId, 'consultant', '');
             }
             $this->runTrace = [];
+            $this->stepTaskId = 0;
             $this->db->unlock('consultant_lock');
         }
     }
@@ -303,13 +313,87 @@ TXT;
         return $result;
     }
 
-    private function resultClosesSteps(array $args): bool
+    private function bindStepTask(string $instruction): void
     {
-        $done = $args['done'] ?? false;
-        if ($done === true || $done === 1) {
-            return true;
+        $this->stepTaskId = 0;
+        if (preg_match('/This is task #(\d+)/', $instruction, $found)) {
+            $this->stepTaskId = (int)$found[1];
         }
-        return in_array(strtolower(trim((string)$done)), ['1', 'true', 'yes', 'all'], true);
+    }
+
+    private function stepKind(string $title): string
+    {
+        $title = strtolower($title);
+        if (preg_match('/\b(report|cross off)\b/', $title) === 1) {
+            return 'report';
+        }
+        if (preg_match('/\bpdf\b/', $title) === 1 && preg_match('/\b(read|check)\b/', $title) === 1) {
+            return 'check';
+        }
+        if (preg_match('/\bpdf\b/', $title) === 1) {
+            return 'pdf';
+        }
+        if (preg_match('/\b(write|save|markdown|draft)\b/', $title) === 1) {
+            return 'write';
+        }
+        return '';
+    }
+
+    private function noteFinishedStep(string $name, string $text): void
+    {
+        if ($this->stepTaskId <= 0) {
+            return;
+        }
+        $text = trim($text);
+        if ($text === '' || str_starts_with($text, 'Error')) {
+            return;
+        }
+        $kind = '';
+        if ($name === 'filesystem' && preg_match('/^Wrote\s+\S+\.md\b/', $text) === 1) {
+            $kind = 'write';
+        } elseif ($name === 'create_pdf' && preg_match('/^Wrote\s+\S+\.pdf\b/', $text) === 1) {
+            $kind = 'pdf';
+        } elseif ($name === 'read_pdf' && !str_starts_with($text, 'No text could be read')) {
+            $kind = 'check';
+        } elseif ($name === 'tasklist' && str_starts_with($text, 'Added a result')) {
+            $kind = 'report';
+        }
+        if ($kind === '') {
+            return;
+        }
+        $line = '';
+        if ($kind === 'write' && preg_match('/^Wrote\s+(\S+\.md)\b/', $text, $path) === 1) {
+            $line = 'Wrote ' . $path[1];
+        } elseif ($kind === 'pdf' && preg_match('/^Wrote\s+(\S+\.pdf)\b/', $text, $path) === 1) {
+            $line = 'Wrote ' . $path[1];
+        } elseif ($kind === 'check') {
+            $line = 'Checked the PDF.';
+        }
+        try {
+            $task = $this->db->task($this->stepTaskId);
+            if (!$task) {
+                return;
+            }
+            $title = '';
+            foreach ($task['subtasks'] ?? [] as $sub) {
+                if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                    continue;
+                }
+                $label = trim((string)($sub['title'] ?? ''));
+                if ($label !== '' && $this->stepKind($label) === $kind) {
+                    $title = $label;
+                    break;
+                }
+            }
+            if ($title === '') {
+                return;
+            }
+            if ($kind === 'report') {
+                $line = trim((string)($task['result'] ?? ''));
+            }
+            (new Kanban($this->db))->crossOffSteps($this->stepTaskId, false, [$title], $line);
+        } catch (Throwable $e) {
+        }
     }
 
     private function settleWrittenTask(int $projectId, string $instruction): void
@@ -324,6 +408,22 @@ TXT;
         }
         $board = new Kanban($this->db);
         if ($board->column($task) === 'done') {
+            return;
+        }
+        $reports = [];
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                continue;
+            }
+            $label = trim((string)($sub['title'] ?? ''));
+            if ($this->stepKind($label) !== 'report') {
+                return;
+            }
+            if ($label !== '') {
+                $reports[] = $label;
+            }
+        }
+        if ($reports === []) {
             return;
         }
         $pdf = '';
@@ -352,7 +452,7 @@ TXT;
             if (!$reported) {
                 $board->recordResult($id, $projectId, 'Wrote ' . $path);
             }
-            $board->crossOffSteps($id, true);
+            $board->crossOffSteps($id, false, $reports, 'Wrote ' . $path);
         } catch (Throwable $e) {
         }
     }
@@ -369,9 +469,21 @@ TXT;
         }
         if ($action === 'result') {
             try {
-                $task = $board->recordResult($projectId > 0 ? (int)($args['id'] ?? 0) : 0, $projectId, (string)($args['result'] ?? ''));
-                if ($this->resultClosesSteps($args)) {
-                    $task = $board->crossOffSteps((int)$task['id'], true);
+                $reported = (string)($args['result'] ?? '');
+                $task = $board->recordResult($projectId > 0 ? (int)($args['id'] ?? 0) : 0, $projectId, $reported);
+                $report = '';
+                foreach ($task['subtasks'] ?? [] as $sub) {
+                    if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                        continue;
+                    }
+                    $label = trim((string)($sub['title'] ?? ''));
+                    if ($label !== '' && $this->stepKind($label) === 'report') {
+                        $report = $label;
+                        break;
+                    }
+                }
+                if ($report !== '') {
+                    $task = $board->crossOffSteps((int)$task['id'], false, [$report], $reported);
                 }
             } catch (InvalidArgumentException $e) {
                 return $e->getMessage();
@@ -610,6 +722,7 @@ TXT;
                     'hint' => $this->toolHint($args),
                     'text' => $result,
                 ];
+                $this->noteFinishedStep((string)$name, $result);
                 return $result;
             };
         }

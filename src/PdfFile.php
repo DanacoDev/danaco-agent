@@ -44,7 +44,7 @@ class PdfFile
             throw new RuntimeException('That text contains an HTML tag, so the tag would be printed. A large purple title is {size:18}{color:purple}# Scarface (1983). Bold is **word**. Italic is *word*. One purple phrase is {color:purple}word{/color}. Put {size:18} or {color:purple} at the start of a line to change that whole line.');
         }
         $relative = ltrim(str_replace('\\', '/', trim($path)), '/');
-        if (!preg_match('/^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,40}\/)*[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.pdf$/', $relative) || str_contains($relative, '..')) {
+        if (!preg_match('/^(?:[\p{L}0-9][\p{L}0-9._-]{0,40}\/)*[\p{L}0-9][\p{L}0-9._-]{0,80}\.pdf$/u', $relative) || str_contains($relative, '..')) {
             throw new RuntimeException('Name a .pdf file inside the project.');
         }
         if (str_starts_with($relative, 'wiki/')) {

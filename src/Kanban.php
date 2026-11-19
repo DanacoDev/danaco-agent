@@ -18,11 +18,11 @@ class Kanban
         $schedule = $inactivate ? null : $this->schedule($args['schedule_time'] ?? null);
         $recurrence = $this->recurrence((string)($args['recurrence'] ?? $args['recurrence_interval'] ?? 'none'));
         $this->rejectIdea($args, $schedule, $recurrence, $byUser);
-        $steps = $this->stepTitles($args);
+        $steps = $this->stepItems($args);
         if (!$byUser && $steps === []) {
             throw new InvalidArgumentException('A task needs at least one step. It was not added. Pass steps as a list. One instruction is step 1.');
         }
-        $description = implode("\n", $steps);
+        $description = implode("\n", array_map(fn(array $step): string => $step['title'], $steps));
         $agent = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
         if (!$byUser) {
             $duplicate = $this->exactDuplicate($projectId, $title, $description, $agent, $schedule, $recurrence);
@@ -49,7 +49,7 @@ class Kanban
         return $this->db->syncTaskFromSteps($task);
     }
 
-    public function crossOffSteps(int $taskId, bool $all = true, array $only = []): array
+    public function crossOffSteps(int $taskId, bool $all = true, array $only = [], string $result = ''): array
     {
         $task = $this->db->task($taskId);
         if (!$task) {
@@ -77,7 +77,12 @@ class Kanban
                 }
             }
             if ($match) {
-                $this->db->updateSubtask((int)$sub['id'], ['status' => 'done']);
+                $fields = ['status' => 'done'];
+                $line = trim($result);
+                if ($line !== '' && !$all && trim((string)($sub['result'] ?? '')) === '') {
+                    $fields['result'] = $this->oneLineResult($line);
+                }
+                $this->db->updateSubtask((int)$sub['id'], $fields);
             }
         }
         $fresh = $this->db->task($taskId);
@@ -115,7 +120,7 @@ class Kanban
             }
             $fields['title'] = $title;
         }
-        $steps = $this->stepTitles($args);
+        $steps = $this->stepItems($args);
         $hasSteps = array_key_exists('steps', $args) || array_key_exists('subtasks', $args);
         $hasInstruction = $hasSteps || array_key_exists('description', $args) || array_key_exists('instruction', $args);
         if ($hasInstruction && $steps) {
@@ -172,10 +177,6 @@ class Kanban
             $fields['held'] = 0;
         }
         $saved = $this->db->updateTask($id, $fields);
-        if ($saved && isset($fields['assigned_agent'])) {
-            $this->db->assignSubtasks($id, (string)$fields['assigned_agent']);
-            $saved = $this->db->task($id) ?? $saved;
-        }
         if ($saved && $steps && $hasInstruction) {
             $this->addSteps($id, $steps, !$hasSteps);
             $saved = $this->db->task($id) ?? $saved;
@@ -287,6 +288,10 @@ class Kanban
                     $stepAgent = (string)($task['assigned_agent'] ?? 'orchestrator');
                 }
                 $lines[] = '  - [' . $subStatus . '] ' . $title . ' (' . $stepAgent . ')';
+                $stepResult = trim((string)($sub['result'] ?? ''));
+                if ($stepResult !== '') {
+                    $lines[] = '    Results: ' . trim(clip_text(preg_replace('/\s+/', ' ', $stepResult) ?? $stepResult, 180));
+                }
                 $detail = trim((string)($sub['description'] ?? ''));
                 if ($detail !== '') {
                     $lines[] = '    ' . trim(clip_text(preg_replace('/\s+/', ' ', $detail) ?? $detail, 400));
@@ -363,38 +368,50 @@ class Kanban
         throw new InvalidArgumentException('There is no backlog. To keep a task without running it, set schedule_time to never. That inactivates it. A task runs now, or it has a real clock time.');
     }
 
-    private function stepTitles(array $args): array
+    private function stepItems(array $args): array
     {
         $raw = $args['steps'] ?? $args['subtasks'] ?? null;
-        $titles = [];
-        if (is_string($raw)) {
-            $text = trim($raw);
-            if ($text !== '') {
-                $titles[] = mb_substr($text, 0, 2000);
+        $items = [];
+        $add = function (string $title, string $agent, string $description) use (&$items): void {
+            $title = trim($title);
+            if ($title === '') {
+                return;
             }
+            $agent = strtolower(trim($agent));
+            if ($agent === 'user') {
+                $agent = 'human';
+            }
+            if (!in_array($agent, ['orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer', 'consultant', 'human'], true)) {
+                $agent = '';
+            }
+            $items[] = [
+                'title' => mb_substr($title, 0, 2000),
+                'agent' => $agent,
+                'description' => mb_substr(trim($description), 0, 20000),
+            ];
+        };
+        if (is_string($raw)) {
+            $add($raw, '', '');
         } elseif (is_array($raw)) {
             foreach ($raw as $step) {
                 if (is_array($step)) {
-                    $text = trim((string)($step['title'] ?? $step['step'] ?? $step['text'] ?? ''));
+                    $add((string)($step['title'] ?? $step['step'] ?? $step['text'] ?? ''), (string)($step['agent'] ?? $step['assigned_agent'] ?? ''), (string)($step['description'] ?? $step['detail'] ?? ''));
                 } else {
-                    $text = trim((string)$step);
-                }
-                if ($text !== '') {
-                    $titles[] = mb_substr($text, 0, 2000);
+                    $add((string)$step, '', '');
                 }
             }
         }
-        if ($titles) {
-            return $titles;
+        if ($items) {
+            return $items;
         }
         $one = trim((string)($args['description'] ?? $args['instruction'] ?? ''));
         if ($one !== '') {
-            return [mb_substr($one, 0, 2000)];
+            $add($one, '', '');
         }
-        return [];
+        return $items;
     }
 
-    private function addSteps(int $taskId, array $titles, bool $onlyIfEmpty): void
+    private function addSteps(int $taskId, array $items, bool $onlyIfEmpty): void
     {
         $task = $this->db->task($taskId);
         if (!$task) {
@@ -413,11 +430,12 @@ class Kanban
         if ($onlyIfEmpty && $existing) {
             return;
         }
-        foreach ($titles as $title) {
+        foreach ($items as $item) {
+            $title = trim((string)($item['title'] ?? ''));
             if ($title === '' || in_array($title, $existing, true)) {
                 continue;
             }
-            $this->db->insertSubtask($taskId, $title);
+            $this->db->insertSubtask($taskId, $title, 'in_progress', (string)($item['agent'] ?? ''), (string)($item['description'] ?? ''));
             $existing[] = $title;
         }
     }

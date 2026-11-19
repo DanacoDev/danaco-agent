@@ -170,6 +170,9 @@ SQL);
             $this->pdo->exec("ALTER TABLE subtasks ADD COLUMN assigned_agent TEXT NOT NULL DEFAULT ''");
             $this->pdo->exec("UPDATE subtasks SET assigned_agent = (SELECT COALESCE(NULLIF(tasks.assigned_agent, ''), 'orchestrator') FROM tasks WHERE tasks.id = subtasks.task_id) WHERE assigned_agent = ''");
         }
+        if (!in_array('result', $subtaskColumns, true)) {
+            $this->pdo->exec("ALTER TABLE subtasks ADD COLUMN result TEXT NOT NULL DEFAULT ''");
+        }
         if ($this->getSetting('task_steps_v1', '') !== '1') {
             $rows = $this->pdo->query("SELECT id, description, assigned_agent FROM tasks WHERE TRIM(COALESCE(description, '')) != '' AND id NOT IN (SELECT task_id FROM subtasks)")->fetchAll();
             $insert = $this->pdo->prepare("INSERT INTO subtasks (task_id, title, assigned_agent, status, position) VALUES (?, ?, ?, 'in_progress', 1)");
@@ -708,7 +711,7 @@ SQL);
 
     public function updateSubtask(int $id, array $fields): ?array
     {
-        $allowed = ['title', 'description', 'assigned_agent', 'status', 'position'];
+        $allowed = ['title', 'description', 'assigned_agent', 'status', 'position', 'result'];
         $sets = [];
         $values = [];
         foreach ($allowed as $key) {
@@ -1942,6 +1945,7 @@ SQL);
         $row['status'] = ($row['status'] ?? '') === 'done' ? 'done' : 'in_progress';
         $row['description'] = (string)($row['description'] ?? '');
         $row['assigned_agent'] = (string)($row['assigned_agent'] ?? '');
+        $row['result'] = (string)($row['result'] ?? '');
         return $row;
     }
 

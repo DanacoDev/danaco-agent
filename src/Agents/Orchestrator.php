@@ -659,7 +659,7 @@ TXT;
         } elseif (($state['reason'] ?? '') === 'no_key') {
             $consultNote = "The Consultant exists, but you cannot call it until an API key is saved. It is a paid external model for a hard multi-step problem the team should not handle alone, and it can use the same project file tools. If that would help, tell the user that adding a key on the Setup page, under External LLM provider, and using that API for the Consultant, gives the agent superpowers on hard work. Do not describe the Consultant as missing.\n";
         } else {
-            $consultNote = "The Consultant exists, but it is turned off, so you cannot call it. It is a paid external model for a hard multi-step problem, and it can use the same project file tools. If a task is too hard for the team, tell the user they can turn the Consultant on from the Agents page. It costs tokens while it is on. Do not describe the Consultant as missing.\n";
+            $consultNote = "The Consultant exists, but it is turned off, so you cannot call it. It is a paid external model for a hard multi-step problem, and it can use the same project file tools. If a task is too hard for the team, tell the user they can turn the Consultant on from the Activity page. It costs tokens while it is on. Do not describe the Consultant as missing.\n";
         }
         $team = $this->subagents->teamBrief($project ? (int)$project['id'] : 0);
         $full = $this->db->fullSystemControl();
@@ -959,7 +959,7 @@ TXT;
                             return 'The Consultant has no API key. Tell the user to add one on the Setup page, under External LLM provider, and use that API for the Consultant.';
                         }
                         $this->db->loop('orchestrator', 'process', 'Delegate rejected · consultant turned off');
-                        return 'The Consultant is turned off. Tell the user they can turn it on from the Agents page. It costs tokens while it is on.';
+                        return 'The Consultant is turned off. Tell the user they can turn it on from the Activity page. It costs tokens while it is on.';
                     }
                     if ($instruction === '') {
                         $this->db->loop('orchestrator', 'process', 'Delegate rejected · no instruction');
@@ -983,9 +983,14 @@ TXT;
                             $note = '';
                         }
                     }
+                    $wait = $this->humanStepWait($note);
+                    if ($wait !== '') {
+                        $this->db->loop('orchestrator', 'process', 'Delegate waiting · human step');
+                        return $wait;
+                    }
                     $runInstruction = $instruction;
                     if (preg_match('/Task #(\d+)/', $note, $card)) {
-                        $runInstruction .= "\n\nThis is task #" . $card[1] . ". When the file is checked, add that path with tasklist action result and done true. That crosses off the steps. Do not update anything else and do not delete the task.";
+                        $runInstruction .= "\n\nThis is task #" . $card[1] . ". Each step is crossed off when that step finishes. When the file is checked, add that path with tasklist action result. That crosses off the report step only. Do not pass done. Do not update anything else and do not delete the task.";
                     }
                     $emit(['type' => 'delegation', 'agent' => 'consultant', 'project' => $shownProject !== '' ? $shownProject : 'general', 'text' => $instruction]);
                     try {
@@ -1029,9 +1034,14 @@ TXT;
                 } catch (Throwable $e) {
                     $note = '';
                 }
+                $wait = $this->humanStepWait($note);
+                if ($wait !== '') {
+                    $this->db->loop('orchestrator', 'process', 'Delegate waiting · human step');
+                    return $wait;
+                }
                 $runInstruction = $instruction;
                 if (preg_match('/Task #(\d+)/', $note, $card)) {
-                    $runInstruction .= "\n\nThis is task #" . $card[1] . ". When the file is checked, add that path with tasklist action result and done true. That crosses off the steps. Do not update anything else and do not delete the task.";
+                    $runInstruction .= "\n\nThis is task #" . $card[1] . ". Each step is crossed off when that step finishes. When the file is checked, add that path with tasklist action result. That crosses off the report step only. Do not pass done. Do not update anything else and do not delete the task.";
                 }
                 $emit(['type' => 'delegation', 'agent' => $agent, 'project' => $shownProject, 'text' => $instruction]);
                 $jobId = $this->db->startJob('subagent', $projectId > 0 ? $projectId : null, [
@@ -1467,6 +1477,40 @@ TXT;
         return $plan;
     }
 
+    private function humanStepWait(string $note): string
+    {
+        if (!preg_match('/Task #(\d+)/', $note, $card)) {
+            return '';
+        }
+        $task = $this->db->task((int)$card[1]);
+        if (!$task) {
+            return '';
+        }
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                continue;
+            }
+            $title = trim((string)($sub['title'] ?? ''));
+            if ($title === '') {
+                continue;
+            }
+            $agent = strtolower(trim((string)($sub['assigned_agent'] ?? '')));
+            if ($agent === '') {
+                $agent = strtolower(trim((string)($task['assigned_agent'] ?? '')));
+            }
+            if ($agent !== 'human') {
+                return '';
+            }
+            $line = 'Task #' . $task['id'] . ' is waiting on the human. Ask the user and wait. Do not delegate.' . "\n" . $title;
+            $detail = trim((string)($sub['description'] ?? ''));
+            if ($detail !== '') {
+                $line .= "\n" . $detail;
+            }
+            return $line;
+        }
+        return '';
+    }
+
     private function freshTaskNote(string $note): string
     {
         if (!preg_match('/Task #(\d+)/', $note, $found)) {
@@ -1478,7 +1522,8 @@ TXT;
         }
         $board = new Kanban($this->db);
         if ($board->column($task) !== 'done') {
-            return $note;
+            $wait = $this->humanStepWait($note);
+            return $wait !== '' ? "\n" . $wait : $note;
         }
         $path = trim((string)($task['result'] ?? ''));
         $line = 'Task #' . $task['id'] . ' is done.';

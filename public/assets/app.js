@@ -157,7 +157,7 @@
             { id: 'chat', label: 'Chat', icon: 'i-chat' },
             { id: 'tasks', label: 'Tasks', icon: 'i-tasks' },
             { id: 'workspace', label: 'Files', icon: 'i-workspace' },
-            { id: 'agents', label: 'Agents', icon: 'i-agents' },
+            { id: 'agents', label: 'Activity', icon: 'i-agents' },
             { id: 'skills', label: 'Skills', icon: 'i-skills' },
             { id: 'setup', label: 'Setup', icon: 'i-setup' }
           ],
@@ -233,6 +233,9 @@
           subtaskDrafts: {},
           subtaskDetails: {},
           subtaskAgents: {},
+          humanNotes: {},
+          humanStepError: '',
+          humanStepErrorId: 0,
           finishedOpen: false,
           archiveOpen: false,
           taskError: '',
@@ -1926,6 +1929,86 @@
         subtaskStatus(sub) {
           return sub && sub.status === 'done' ? 'done' : 'in_progress';
         },
+        currentStep(task) {
+          const steps = task && Array.isArray(task.subtasks) ? task.subtasks : [];
+          return steps.find((sub) => this.subtaskStatus(sub) !== 'done' && String(sub.title || '').trim() !== '') || null;
+        },
+        currentHumanStep(task) {
+          const current = this.currentStep(task);
+          if (!current) return null;
+          return String(current.assigned_agent || task.assigned_agent || '').toLowerCase() === 'human' ? current : null;
+        },
+        isCurrentHumanStep(task, sub) {
+          const current = this.currentHumanStep(task);
+          return !!(current && sub && current.id === sub.id);
+        },
+        stepWithNote(description, note) {
+          const prior = String(description || '').trim();
+          if (!note) return prior;
+          if (prior === note || prior.endsWith('\n\n' + note)) return prior;
+          const joined = prior ? prior + '\n\n' + note : note;
+          return joined.length > 20000 ? joined.slice(0, 20000) : joined;
+        },
+        nextOpenStep(task, afterId) {
+          const steps = task && Array.isArray(task.subtasks) ? task.subtasks : [];
+          const index = steps.findIndex((item) => item.id === afterId);
+          for (let i = index + 1; i < steps.length; i++) {
+            if (this.subtaskStatus(steps[i]) !== 'done' && String(steps[i].title || '').trim() !== '') return steps[i];
+          }
+          return null;
+        },
+        stepKind(title) {
+          const text = String(title || '').toLowerCase();
+          if (/\b(report|cross off)\b/.test(text)) return 'report';
+          if (/\bpdf\b/.test(text) && /\b(read|check)\b/.test(text)) return 'check';
+          if (/\bpdf\b/.test(text)) return 'pdf';
+          if (/\b(write|save|markdown|draft)\b/.test(text)) return 'write';
+          return '';
+        },
+        stepResult(task, sub) {
+          const own = String(sub && sub.result || '').trim();
+          if (own) return own;
+          const shared = String(task && task.result || '').trim();
+          if (!shared || this.subtaskStatus(sub) !== 'done') return '';
+          const steps = (task.subtasks || []).filter((item) => this.subtaskStatus(item) === 'done' && !String(item.result || '').trim());
+          let owners = [];
+          if (/\.pdf\b/i.test(shared)) owners = steps.filter((item) => this.stepKind(item.title) === 'pdf');
+          else if (/\.md\b/i.test(shared)) owners = steps.filter((item) => this.stepKind(item.title) === 'write');
+          if (!owners.length) owners = steps.filter((item) => this.stepKind(item.title) === 'report');
+          if (!owners.length && steps.length) owners = [steps[steps.length - 1]];
+          const pick = owners[owners.length - 1];
+          return pick && pick.id === sub.id ? shared : '';
+        },
+        taskResultOnStep(task) {
+          const shared = String(task && task.result || '').trim();
+          if (!shared) return false;
+          return (task.subtasks || []).some((sub) => this.stepResult(task, sub) === shared);
+        },
+        stepFileHref(path) {
+          const project = (this.projects || []).find((item) => item.id === this.projectId);
+          const folder = project && project.folder_name ? project.folder_name : '';
+          const rel = String(path || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+          if (!folder || !rel || rel.indexOf('..') !== -1) return '';
+          return '/preview/project/' + encodeURIComponent(folder) + '/' + rel;
+        },
+        resultParts(text) {
+          const src = String(text || '');
+          const re = /((?:[\p{L}0-9][\p{L}0-9._-]*\/)*[\p{L}0-9][\p{L}0-9._-]*\.(?:pdf|md|markdown|txt|html?|svg|png|jpe?g|gif|webp))/giu;
+          const parts = [];
+          let last = 0;
+          let match;
+          while ((match = re.exec(src))) {
+            const path = match[1];
+            if (path.indexOf('..') !== -1) continue;
+            if (match.index > last) parts.push({ text: src.slice(last, match.index) });
+            const href = this.stepFileHref(path);
+            parts.push(href ? { text: path, href: href } : { text: path });
+            last = match.index + path.length;
+          }
+          if (last < src.length) parts.push({ text: src.slice(last) });
+          if (!parts.length) parts.push({ text: src });
+          return parts;
+        },
         stepsDone(task) {
           const steps = task && Array.isArray(task.subtasks) ? task.subtasks : [];
           return steps.length > 0 && steps.every((sub) => this.subtaskStatus(sub) === 'done');
@@ -2055,7 +2138,12 @@
           try {
             const data = await this.api('/api/tasks');
             if (generation !== this.taskReloadGen || this.taskFieldFocused()) return;
-            if (Array.isArray(data.tasks)) this.tasks = data.tasks;
+            if (Array.isArray(data.tasks)) {
+              this.tasks = data.tasks;
+              data.tasks.forEach((task) => {
+                if (this.expandedTasks[task.id] === undefined && this.currentHumanStep(task)) this.expandedTasks[task.id] = true;
+              });
+            }
           } catch (error) {
           } finally {
             this.taskLoading = false;
@@ -2197,6 +2285,36 @@
         async setSubtaskStatus(task, sub, status) {
           const saved = await this.api('/api/subtasks/' + sub.id, { method: 'PATCH', body: { status: status } });
           this.replaceTask(saved.task);
+        },
+        toggleSubtaskStatus(task, sub) {
+          if (this.subtaskStatus(sub) !== 'done' && this.isCurrentHumanStep(task, sub)) {
+            this.finishHumanStep(task, sub);
+            return;
+          }
+          this.setSubtaskStatus(task, sub, this.subtaskStatus(sub) === 'done' ? 'in_progress' : 'done');
+        },
+        async finishHumanStep(task, sub) {
+          const note = String(this.humanNotes[sub.id] || '').trim();
+          const body = { status: 'done' };
+          if (note) body.result = note.length > 2000 ? note.slice(0, 2000) : note;
+          this.humanStepError = '';
+          this.humanStepErrorId = 0;
+          this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+          try {
+            let saved = await this.api('/api/subtasks/' + sub.id, { method: 'PATCH', body: body });
+            const next = this.nextOpenStep(saved.task, sub.id);
+            if (note && next) {
+              saved = await this.api('/api/subtasks/' + next.id, { method: 'PATCH', body: { description: this.stepWithNote(next.description, note) } });
+            }
+            this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+            this.replaceTask(saved.task);
+            this.expandedTasks[task.id] = true;
+            delete this.humanNotes[sub.id];
+          } catch (error) {
+            this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+            this.humanStepError = error.message || 'Could not finish the step.';
+            this.humanStepErrorId = sub.id;
+          }
         },
         async saveSubtask(task, sub) {
           this.subtaskError = '';

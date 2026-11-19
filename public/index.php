@@ -329,7 +329,7 @@ header('X-Danaco: 1');
                 <ul v-if="expandedTasks[task.id] && (task.subtasks || []).length" class="subtasks">
                   <li v-for="sub in task.subtasks" :key="sub.id" class="subtask" :class="{ 'is-done': subtaskStatus(sub) === 'done' }">
                     <div class="subtask-row">
-                      <button class="subtask-check" type="button" :aria-pressed="subtaskStatus(sub) === 'done'" aria-label="Mark step done" @click="setSubtaskStatus(task, sub, subtaskStatus(sub) === 'done' ? 'in_progress' : 'done')"></button>
+                      <button class="subtask-check" type="button" :aria-pressed="subtaskStatus(sub) === 'done'" aria-label="Mark step done" @click="toggleSubtaskStatus(task, sub)"></button>
                       <span class="subtask-title">{{ sub.title }}</span>
                       <span class="task-meta">{{ agentLabel(sub.assigned_agent || task.assigned_agent) }}</span>
                       <button class="task-edit" type="button" :aria-label="openSubtask === sub.id ? 'Close' : 'Edit step'" @click="toggleSubtask(task, sub)">
@@ -340,6 +340,12 @@ header('X-Danaco: 1');
                       </button>
                     </div>
                     <p v-if="openSubtask !== sub.id && sub.description" class="subtask-detail">{{ sub.description }}</p>
+                    <p v-if="openSubtask !== sub.id && stepResult(task, sub)" class="task-result is-full step-result"><span class="task-result-label">Results:</span><span class="task-result-line"><template v-for="(part, index) in resultParts(stepResult(task, sub))" :key="index"><a v-if="part.href" :href="part.href" target="_blank" rel="noopener">{{ part.text }}</a><span v-else>{{ part.text }}</span></template></span></p>
+                    <form v-if="isCurrentHumanStep(task, sub) && openSubtask !== sub.id" class="human-step" @submit.prevent="finishHumanStep(task, sub)">
+                      <textarea v-model="humanNotes[sub.id]" rows="3" placeholder="Further instructions" :aria-label="'Further instructions for ' + sub.title"></textarea>
+                      <p v-if="humanStepErrorId === sub.id && humanStepError" class="form-error">{{ humanStepError }}</p>
+                      <button class="btn" type="submit">Finish step</button>
+                    </form>
                     <form v-if="openSubtask === sub.id" class="subtask-form" @submit.prevent="saveSubtask(task, sub)">
                       <label class="field">Title<input v-model="subtaskEdit.title"></label>
                       <label class="field">Assigned to
@@ -357,7 +363,7 @@ header('X-Danaco: 1');
                     </form>
                   </li>
                 </ul>
-                <p v-if="openTask !== task.id && expandedTasks[task.id] && task.result" class="task-result is-full"><span class="task-result-label">{{ taskFailed(task) ? 'Error:' : 'Results:' }}</span><span class="task-result-line">{{ task.result }}</span></p>
+                <p v-if="openTask !== task.id && expandedTasks[task.id] && task.result && !taskResultOnStep(task)" class="task-result is-full"><span class="task-result-label">{{ taskFailed(task) ? 'Error:' : 'Results:' }}</span><span class="task-result-line"><template v-for="(part, index) in resultParts(task.result)" :key="index"><a v-if="part.href" :href="part.href" target="_blank" rel="noopener">{{ part.text }}</a><span v-else>{{ part.text }}</span></template></span></p>
                 <form v-if="openTask === task.id" class="subtask-add" @submit.prevent="addSubtask(task)">
                   <div class="subtask-add-row">
                     <input v-model="subtaskDrafts[task.id]" placeholder="Add step title" aria-label="Add step title">
@@ -589,7 +595,7 @@ header('X-Danaco: 1');
 
           <section v-else-if="tab==='agents'" class="view">
             <div class="view-head">
-              <h2>Agents</h2>
+              <h2>Activity</h2>
               <div class="view-actions">
                 <button v-if="heartbeatPaused" class="btn btn-gold btn-start" type="button" :disabled="startBusy" @click="startAgents"><svg class="ico" aria-hidden="true"><use href="#i-play"></use></svg>Start</button>
                 <button v-if="!heartbeatPaused" class="btn" :class="{ 'btn-stop': stopReady }" type="button" :disabled="!stopReady" @click="stopAgents"><svg v-if="stopReady" class="ico" aria-hidden="true"><use href="#i-alert"></use></svg>Stop</button>

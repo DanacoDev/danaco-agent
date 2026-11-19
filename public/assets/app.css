@@ -409,6 +409,14 @@ button.task-title.is-finished { color: var(--muted); text-decoration: line-throu
   margin: 2px 0 0 24px; color: var(--muted); font-size: 0.8rem; white-space: pre-wrap;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
+.human-step { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 0 24px; }
+.human-step textarea {
+  min-height: 72px; resize: vertical; background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px;
+}
+.human-step .btn { align-self: flex-start; padding: 7px 10px; }
+.step-result { margin: 2px 0 4px 24px; }
+.step-result .task-result-line { white-space: pre-wrap; overflow: visible; text-overflow: unset; }
+.task-result a { color: inherit; text-decoration: underline; }
 .subtask-form .field { margin: 10px 0; }
 .subtask-form textarea { min-height: 72px; resize: vertical; }
 .subtask-add { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 0 18px; }
