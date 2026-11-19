@@ -17,10 +17,18 @@ if ($text === '') {
     fwrite(STDERR, "Pass the suspect line in text.\n");
     exit(1);
 }
-if (str_contains($text, "\n")) {
+$lines = [];
+foreach (explode("\n", $text) as $line) {
+    $line = trim($line);
+    if ($line !== '') {
+        $lines[] = $line;
+    }
+}
+if (count($lines) > 3) {
     fwrite(STDERR, "Nothing was sent. Pass one suspect line or a few words. Do not send the article.\n");
     exit(1);
 }
+$text = implode(' ', $lines);
 $chars = function_exists('mb_strlen') ? mb_strlen($text, 'UTF-8') : strlen($text);
 if ($chars > 400) {
     fwrite(STDERR, "Nothing was sent. That is longer than one line. Send the suspect words or one line.\n");
