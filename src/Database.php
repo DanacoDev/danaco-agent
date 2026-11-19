@@ -130,6 +130,9 @@ SQL);
         if (!in_array('held', $taskColumns, true)) {
             $this->pdo->exec('ALTER TABLE tasks ADD COLUMN held INTEGER NOT NULL DEFAULT 0');
         }
+        if (!in_array('failed', $taskColumns, true)) {
+            $this->pdo->exec('ALTER TABLE tasks ADD COLUMN failed INTEGER NOT NULL DEFAULT 0');
+        }
         if (!in_array('position', $taskColumns, true)) {
             $this->pdo->exec('ALTER TABLE tasks ADD COLUMN position INTEGER NOT NULL DEFAULT 0');
             $this->pdo->exec('UPDATE tasks SET position = -id');
@@ -604,7 +607,7 @@ SQL);
 
     public function updateTask(int $id, array $fields): ?array
     {
-        $allowed = ['title', 'description', 'status', 'assigned_agent', 'schedule_time', 'recurrence_interval', 'project_id', 'result', 'finished_at', 'held'];
+        $allowed = ['title', 'description', 'status', 'assigned_agent', 'schedule_time', 'recurrence_interval', 'project_id', 'result', 'finished_at', 'held', 'failed'];
         $sets = [];
         $values = [];
         foreach ($allowed as $key) {
@@ -679,7 +682,7 @@ SQL);
         return $row ? $this->castSubtask($row) : null;
     }
 
-    public function insertSubtask(int $taskId, string $title, string $status = 'in_progress', string $agent = ''): array
+    public function insertSubtask(int $taskId, string $title, string $status = 'in_progress', string $agent = '', string $description = ''): array
     {
         $status = $status === 'done' ? 'done' : 'in_progress';
         if ($agent === '') {
@@ -694,7 +697,7 @@ SQL);
         $stmt->execute([$taskId]);
         $position = (int)$stmt->fetchColumn();
         $insert = $this->pdo->prepare('INSERT INTO subtasks (task_id, title, description, assigned_agent, status, position) VALUES (?, ?, ?, ?, ?, ?)');
-        $insert->execute([$taskId, $title, '', $agent, $status, $position]);
+        $insert->execute([$taskId, $title, $description, $agent, $status, $position]);
         return $this->subtask((int)$this->pdo->lastInsertId());
     }
 
@@ -1926,6 +1929,7 @@ SQL);
         $row['id'] = (int)$row['id'];
         $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
         $row['held'] = (int)($row['held'] ?? 0);
+        $row['failed'] = (int)($row['failed'] ?? 0);
         $row['position'] = (int)($row['position'] ?? 0);
         return $row;
     }

@@ -231,6 +231,7 @@
           taskEdit: {},
           subtaskEdit: { title: '', description: '', assigned_agent: 'orchestrator' },
           subtaskDrafts: {},
+          subtaskDetails: {},
           subtaskAgents: {},
           finishedOpen: false,
           archiveOpen: false,
@@ -351,7 +352,8 @@
           projectFolderChoice: false,
           projectOpener: null,
           pollTimer: null,
-          healthTick: 0
+          healthTick: 0,
+          selectHold: false
         };
       },
       computed: {
@@ -543,6 +545,7 @@
       },
       mounted() {
         window.addEventListener('hashchange', () => this.onHash());
+        window.addEventListener('pointerdown', (event) => this.holdSelectRefresh(event), true);
         window.addEventListener('visibilitychange', () => {
           if (document.hidden || !this.authed || this.tab !== 'agents') return;
           this.refreshStatus(true).catch(function () {});
@@ -1933,6 +1936,9 @@
             return (status === 'in_progress' || status === 'done') && task.project_id === this.projectId;
           }).sort((a, b) => (Number(a.position) - Number(b.position)) || (a.id - b.id));
         },
+        taskFailed(task) {
+          return Number(task && task.failed) === 1;
+        },
         taskState(task) {
           if (Number(task.held) === 1 && !task.schedule_time) return 'pending';
           const when = String(task.schedule_time || '').trim();
@@ -2100,6 +2106,7 @@
             return;
           }
           this.openTask = task.id;
+          this.expandedTasks[task.id] = true;
           this.taskError = '';
           if (!this.subtaskAgents[task.id]) this.subtaskAgents[task.id] = task.assigned_agent || 'orchestrator';
           const stamp = String(task.schedule_time || '').replace(' ', 'T').slice(0, 16);
@@ -2153,6 +2160,17 @@
           Object.assign(task, saved.task);
           if (this.openTask === task.id) this.openTask = null;
         },
+        async restoreTask(task) {
+          this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+          try {
+            const saved = await this.api('/api/tasks/' + task.id, { method: 'PATCH', body: { status: 'in_progress' } });
+            this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+            Object.assign(task, saved.task);
+            if (this.openArchive === task.id) this.openArchive = null;
+          } catch (error) {
+            this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+          }
+        },
         replaceTask(saved) {
           if (!saved || !saved.id) return;
           const index = this.tasks.findIndex((item) => item.id === saved.id);
@@ -2161,14 +2179,16 @@
         async addSubtask(task) {
           const title = String(this.subtaskDrafts[task.id] || '').trim();
           if (!title) return;
+          const description = String(this.subtaskDetails[task.id] || '').trim();
           const agent = this.subtaskAgents[task.id] || task.assigned_agent || 'orchestrator';
           this.taskReloadGen = (this.taskReloadGen || 0) + 1;
           try {
-            const saved = await this.api('/api/tasks/' + task.id + '/subtasks', { method: 'POST', body: { title: title, assigned_agent: agent } });
+            const saved = await this.api('/api/tasks/' + task.id + '/subtasks', { method: 'POST', body: { title: title, description: description, assigned_agent: agent } });
             this.taskReloadGen = (this.taskReloadGen || 0) + 1;
             this.expandedTasks[task.id] = true;
             this.replaceTask(saved.task);
             this.subtaskDrafts[task.id] = '';
+            this.subtaskDetails[task.id] = '';
           } catch (error) {
             this.taskReloadGen = (this.taskReloadGen || 0) + 1;
             this.taskError = error.message || 'Could not add the step.';
@@ -3179,12 +3199,15 @@
         async refreshHealth() {
           try {
             const usage = await this.api('/api/setup/health', { quiet: true });
+            if (this.selectHold) return;
             this.hardware = Object.assign({}, this.hardware || {}, { usage: usage });
           } catch (error) {}
         },
         async refreshModelLoad(quiet) {
           try {
-            this.modelLoad = await this.api('/api/model/load', { quiet: !!quiet });
+            const load = await this.api('/api/model/load', { quiet: !!quiet });
+            if (this.selectHold) return;
+            this.modelLoad = load;
             if (this.modelLoad && typeof this.modelLoad.cpu === 'boolean' && this.settings && this.settings.model_mode !== 'cpu_failsafe') {
               this.settings.cpu_fallback = this.modelLoad.cpu ? '1' : '0';
             }
@@ -3194,15 +3217,52 @@
               this.clearSlowTimer();
             }
           } catch (error) {
+            if (this.selectHold) return;
             if (this.modelLoad && this.modelLoad.ready === true) return;
             this.modelLoad = { ready: false, percent: this.modelLoad ? this.modelLoad.percent : 0, model: this.modelLoad ? this.modelLoad.model : '', error: error.message, scratch: true };
             this.awaitingModel = false;
           }
         },
+        eventSelect(event) {
+          const target = event && event.target;
+          if (!target || typeof target.closest !== 'function') return null;
+          if (target.tagName === 'SELECT') return target;
+          const label = target.closest('label');
+          return label ? label.querySelector('select') : null;
+        },
+        holdSelectRefresh(event) {
+          if (this.tab !== 'setup') return;
+          if (this.eventSelect(event)) {
+            clearTimeout(this._selectHoldTimer);
+            if (!this.selectHold) this._selectOpenedAt = Date.now();
+            this.selectHold = true;
+            return;
+          }
+          if (!this.selectHold) return;
+          if (event.type !== 'pointerdown' && event.type !== 'focusin') return;
+          this.queueSelectRelease();
+        },
+        releaseSelectRefresh(event) {
+          if (this.tab !== 'setup' || !this.selectHold || !event || !event.target || event.target.tagName !== 'SELECT') return;
+          if (event.type === 'focusout' && Date.now() - (this._selectOpenedAt || 0) < 150) return;
+          if (event.type === 'change' && document.activeElement === event.target) return;
+          this.queueSelectRelease();
+        },
+        queueSelectRelease() {
+          clearTimeout(this._selectHoldTimer);
+          this._selectHoldTimer = setTimeout(() => {
+            this.selectHold = false;
+          }, 400);
+        },
         startPoll() {
           this.stopPoll();
           this.pollTimer = setInterval(() => {
-            if (!this.authed) return;
+            if (!this.authed) {
+              this.selectHold = false;
+              return;
+            }
+            if (this.tab !== 'setup') this.selectHold = false;
+            if (this.selectHold) return;
             if (!document.hidden) {
               this.refreshModelLoad(true).then(() => this.maybeSendProjectOpener()).catch(function () {});
               if (this.tab === 'tasks') this.reloadTasks();
@@ -3229,6 +3289,8 @@
         stopPoll() {
           if (this.pollTimer) clearInterval(this.pollTimer);
           this.pollTimer = null;
+          clearTimeout(this._selectHoldTimer);
+          this.selectHold = false;
         },
         toggleAllBackup(on) {
           this.backupFolders = on ? this.projects.map((project) => project.folder_name) : [];

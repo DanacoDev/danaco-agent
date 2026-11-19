@@ -342,6 +342,11 @@ class Api
             $this->json(['error' => 'Step title is required.'], 422);
             return;
         }
+        $description = trim((string)($body['description'] ?? ''));
+        if (strlen($description) > 20000) {
+            $this->json(['error' => 'Step description is too long.'], 422);
+            return;
+        }
         $agent = strtolower(trim((string)($body['assigned_agent'] ?? '')));
         if ($agent !== '') {
             $allowed = ['orchestrator', 'researcher', 'writer', 'coder', 'analyst', 'marketer', 'consultant', 'human'];
@@ -350,7 +355,7 @@ class Api
                 return;
             }
         }
-        $this->db->insertSubtask($taskId, $title, $this->subtaskStatus((string)($body['status'] ?? 'in_progress')), $agent);
+        $this->db->insertSubtask($taskId, $title, $this->subtaskStatus((string)($body['status'] ?? 'in_progress')), $agent, $description);
         $this->json(['task' => $this->db->syncTaskFromSteps($this->db->task($taskId))], 201);
     }
 

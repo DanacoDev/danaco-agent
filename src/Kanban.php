@@ -89,6 +89,9 @@ class Kanban
         if (array_key_exists('result', $args)) {
             $fields['result'] = $this->oneLineResult((string)$args['result']);
         }
+        if (array_key_exists('failed', $args)) {
+            $fields['failed'] = (int)$args['failed'] === 1 ? 1 : 0;
+        }
         if (array_key_exists('agent', $args) || array_key_exists('assigned_agent', $args)) {
             $fields['assigned_agent'] = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
         }

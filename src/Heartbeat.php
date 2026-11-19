@@ -262,6 +262,7 @@ class Heartbeat
                     $line = 'Failed · job ' . $jobId . ' · ' . $reason;
                 }
                 $this->db->loop('orchestrator', 'process', $line);
+                $this->noteTaskFailure($task, (string)($current['last_error'] ?? $e->getMessage()));
                 if ($ownJob && $status === 'gave_up') {
                     $this->settle($task, $this->withTaskNotes((string)($current['last_error'] ?? $e->getMessage()), $turn->notices), true);
                 }
@@ -444,6 +445,18 @@ class Heartbeat
         }
     }
 
+    private function noteTaskFailure(array $task, string $error): void
+    {
+        $error = trim($error);
+        if ($error === '') {
+            $error = 'The scheduled task stopped.';
+        }
+        $this->db->updateTask((int)$task['id'], [
+            'failed' => 1,
+            'result' => clip_text($error, 2000),
+        ]);
+    }
+
     private function withTaskNotes(string $result, array $notes): string
     {
         $lines = [];
@@ -471,9 +484,11 @@ class Heartbeat
                 $line .= ' · result noted';
             }
             $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'orchestrator', 'process', $line);
-            $fields = ['status' => 'in_progress', 'schedule_time' => $next];
+            $fields = ['status' => 'in_progress', 'schedule_time' => $next, 'failed' => $failed ? 1 : 0];
             if ($failed || $noted) {
                 $fields['result'] = $result;
+            } elseif ((int)($task['failed'] ?? 0) === 1) {
+                $fields['result'] = '';
             }
             $board->move((int)$task['id'], $fields, false);
             return;
@@ -481,6 +496,7 @@ class Heartbeat
         $saved = $board->move((int)$task['id'], [
             'status' => 'done',
             'result' => $result,
+            'failed' => $failed ? 1 : 0,
         ], false);
         $line = (string)($saved['status'] ?? '') === 'done'
             ? 'Task ' . (int)$task['id'] . ' settled to done'

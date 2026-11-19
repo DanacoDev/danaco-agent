@@ -105,6 +105,7 @@ header('X-Danaco: 1');
   <symbol id="i-edit" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M14.5 4.5 19.5 9.5 8 21H3v-5zM12.5 6.5l5 5"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4.5 7.5h15M9.2 7.4V5.2h5.6v2.2M7.2 7.5l.8 12h8l.8-12M10 11.2v5M14 11.2v5"/></symbol>
   <symbol id="i-archive" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 8h16v11H4zM3 4.5h18V8H3zM10 12h4"/></symbol>
+  <symbol id="i-restore" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 10h16v9.5H4zM12 14.5V3.5M8.2 7.2 12 3.5l3.8 3.7"/></symbol>
   <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="7" r="1.35" fill="currentColor"/><circle cx="15" cy="7" r="1.35" fill="currentColor"/><circle cx="9" cy="12" r="1.35" fill="currentColor"/><circle cx="15" cy="12" r="1.35" fill="currentColor"/><circle cx="9" cy="17" r="1.35" fill="currentColor"/><circle cx="15" cy="17" r="1.35" fill="currentColor"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 4v10M8 10l4 4 4-4M5 19h14"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
@@ -302,8 +303,8 @@ header('X-Danaco: 1');
             </form>
             <p v-if="addingTask && taskError" class="form-error">{{ taskError }}</p>
             <div class="task-list">
-              <article v-for="task in shownTasks()" :key="task.id" class="task-card" :class="['is-' + taskState(task), { 'is-dragging': dragTaskId === task.id }]" :data-task-id="task.id">
-                <header class="task-row">
+              <article v-for="task in shownTasks()" :key="task.id" class="task-card" :class="['is-' + taskState(task), { 'is-dragging': dragTaskId === task.id, 'is-failed': taskFailed(task) }]" :data-task-id="task.id">
+                <header v-if="openTask !== task.id" class="task-row">
                   <button class="task-drag" type="button" aria-label="Drag to reorder" @pointerdown="onTaskPointerDown(task, $event)" @pointermove="onTaskPointerMove" @pointerup="onTaskPointerUp" @pointercancel="onTaskPointerUp">
                     <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
                   </button>
@@ -323,6 +324,8 @@ header('X-Danaco: 1');
                     </button>
                   </span>
                 </header>
+                <p v-if="taskFailed(task) && task.result && !expandedTasks[task.id]" class="task-fail">{{ task.result }}</p>
+                <label v-if="openTask === task.id" class="field task-title-field">Title<input v-model="taskEdit.title" :form="'task-edit-' + task.id"></label>
                 <ul v-if="expandedTasks[task.id] && (task.subtasks || []).length" class="subtasks">
                   <li v-for="sub in task.subtasks" :key="sub.id" class="subtask" :class="{ 'is-done': subtaskStatus(sub) === 'done' }">
                     <div class="subtask-row">
@@ -354,17 +357,19 @@ header('X-Danaco: 1');
                     </form>
                   </li>
                 </ul>
-                <p v-if="expandedTasks[task.id] && task.result" class="task-result is-full"><span class="task-result-label">Results:</span><span class="task-result-line">{{ task.result }}</span></p>
+                <p v-if="expandedTasks[task.id] && task.result" class="task-result is-full"><span class="task-result-label">{{ taskFailed(task) ? 'Error:' : 'Results:' }}</span><span class="task-result-line">{{ task.result }}</span></p>
                 <form v-if="openTask === task.id" class="subtask-add" @submit.prevent="addSubtask(task)">
-                  <input v-model="subtaskDrafts[task.id]" placeholder="Add step" aria-label="Add step">
-                  <select v-model="subtaskAgents[task.id]" aria-label="Assigned to">
-                    <option v-if="subtaskAgents[task.id] && !agentNames.includes(subtaskAgents[task.id])" :value="subtaskAgents[task.id]">{{ agentLabel(subtaskAgents[task.id]) }}</option>
-                    <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
-                  </select>
-                  <button class="btn" type="submit">Add</button>
+                  <div class="subtask-add-row">
+                    <input v-model="subtaskDrafts[task.id]" placeholder="Add step title" aria-label="Add step title">
+                    <select v-model="subtaskAgents[task.id]" aria-label="Assigned to">
+                      <option v-if="subtaskAgents[task.id] && !agentNames.includes(subtaskAgents[task.id])" :value="subtaskAgents[task.id]">{{ agentLabel(subtaskAgents[task.id]) }}</option>
+                      <option v-for="name in agentNames" :key="name" :value="name">{{ agentLabel(name) }}</option>
+                    </select>
+                    <button class="btn" type="submit">Add</button>
+                  </div>
+                  <textarea v-model="subtaskDetails[task.id]" rows="3" placeholder="Detailed description" aria-label="Step description"></textarea>
                 </form>
-                <form v-if="openTask === task.id" @submit.prevent="saveTask(task)">
-                  <label class="field">Title<input v-model="taskEdit.title"></label>
+                <form v-if="openTask === task.id" :id="'task-edit-' + task.id" @submit.prevent="saveTask(task)">
                   <div class="task-fields">
                     <label class="field">Time
                       <select v-model="taskEdit.when">
@@ -448,10 +453,10 @@ header('X-Danaco: 1');
                       <h3 class="task-title">{{ task.title }}</h3>
                       <span class="task-tag">#{{ task.id }}</span>
                     </span>
-                    <span class="task-tags">
-                      <span class="task-tag">Project: {{ projectName(task.project_id) }}</span>
-                    </span>
                     <span class="task-tools">
+                      <button class="task-edit" type="button" aria-label="Restore task" @click.stop="restoreTask(task)">
+                        <svg class="ico" aria-hidden="true"><use href="#i-restore"></use></svg>
+                      </button>
                       <button class="task-edit" type="button" aria-label="Delete task" @click.stop="deleteTask(task)">
                         <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
                       </button>
@@ -816,7 +821,7 @@ header('X-Danaco: 1');
             </div>
           </section>
 
-          <section v-else class="view">
+          <section v-else class="view" @pointerdown="holdSelectRefresh" @focusin="holdSelectRefresh" @focusout="releaseSelectRefresh" @change="releaseSelectRefresh">
             <div v-if="updateInfo && updateInfo.available" class="update-note">
               <h3>New update available</h3>
               <p>Current version {{ updateInfo.current }} -&gt; New version {{ updateInfo.latest }}</p>
