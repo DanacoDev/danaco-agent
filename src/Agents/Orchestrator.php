@@ -1583,6 +1583,17 @@ TXT;
         return "\n" . $line . ' Do not delegate it again.';
     }
 
+    private function stepCount(array $task): int
+    {
+        $count = 0;
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (is_array($sub) && trim((string)($sub['title'] ?? '')) !== '') {
+                $count++;
+            }
+        }
+        return $count;
+    }
+
     private function taskHasStep(array $task): bool
     {
         if (trim((string)($task['description'] ?? '')) !== '') {
@@ -1623,9 +1634,18 @@ TXT;
                 if ($id <= 0) {
                     return 'Task not found.' . "\n" . $this->kanbanOpenCards($projectId);
                 }
+                $before = $this->db->task($id);
+                $beforeCount = $this->stepCount($before ?? []);
                 $task = $board->move($id, $args, false);
                 $held = (int)($task['held'] ?? 0) === 1 ? ' The task stays held and will not start.' : '';
-                return 'Updated task #' . $task['id'] . ' to ' . $board->column($task) . ': ' . $task['title'] . $held;
+                $stepsNote = '';
+                if (array_key_exists('steps', $args) || array_key_exists('subtasks', $args)) {
+                    $added = $this->stepCount($task) - $beforeCount;
+                    $stepsNote = $added > 0
+                        ? ' Added ' . $added . ($added === 1 ? ' step.' : ' steps.')
+                        : ' Those steps are already on the task. None were added. Do not send them again.';
+                }
+                return 'Updated task #' . $task['id'] . ' to ' . $board->column($task) . ': ' . $task['title'] . $held . $stepsNote;
             }
             if ($action === 'delete') {
                 $id = (int)($args['id'] ?? 0);

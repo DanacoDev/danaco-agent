@@ -432,12 +432,42 @@ class Kanban
         }
         foreach ($items as $item) {
             $title = trim((string)($item['title'] ?? ''));
-            if ($title === '' || in_array($title, $existing, true)) {
+            if ($title === '' || $this->stepAlreadyThere($title, $existing)) {
                 continue;
             }
             $this->db->insertSubtask($taskId, $title, 'in_progress', (string)($item['agent'] ?? ''), (string)($item['description'] ?? ''));
             $existing[] = $title;
         }
+    }
+
+    private function stepAlreadyThere(string $title, array $existing): bool
+    {
+        $key = $this->stepKey($title);
+        foreach ($existing as $have) {
+            if (strcasecmp($title, $have) === 0) {
+                return true;
+            }
+            $other = $this->stepKey($have);
+            if ($key !== '' && $key === $other) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function stepKey(string $title): string
+    {
+        $title = strtolower($title);
+        $title = preg_replace('/[^a-z0-9]+/', ' ', $title) ?? $title;
+        $drop = ['a', 'an', 'the', 'and', 'or', 'to', 'of', 'for', 'in', 'on', 'it', 'file'];
+        $words = [];
+        foreach (preg_split('/\s+/', trim($title)) ?: [] as $word) {
+            if ($word === '' || in_array($word, $drop, true)) {
+                continue;
+            }
+            $words[] = $word;
+        }
+        return implode(' ', $words);
     }
 
     private function instructionOf(array $task): string
