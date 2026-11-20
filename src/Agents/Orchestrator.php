@@ -982,6 +982,10 @@ TXT;
                         } catch (Throwable $e) {
                             $note = '';
                         }
+                        if ($note === '') {
+                            $this->db->loop('orchestrator', 'process', 'Delegate rejected · no task');
+                            return 'Delegation rejected. The task is not on the list. Create it with tasklist action create, list the tasks and read the new id, then delegate with that id. Do not invent an id.';
+                        }
                     }
                     $wait = $this->humanStepWait($note);
                     if ($wait !== '') {
@@ -1030,6 +1034,10 @@ TXT;
                     return $e->getMessage();
                 } catch (Throwable $e) {
                     $note = '';
+                }
+                if ($note === '') {
+                    $this->db->loop('orchestrator', 'process', 'Delegate rejected · no task');
+                    return 'Delegation rejected. The task is not on the list. Create it with tasklist action create, list the tasks and read the new id, then delegate with that id. Do not invent an id.';
                 }
                 $wait = $this->humanStepWait($note);
                 if ($wait !== '') {
