@@ -1279,21 +1279,81 @@ class CapabilityTools
             return 'That address is not a public host.';
         }
         $final = $url;
-        $body = $this->request($url, 0, null, $final);
+        $meta = [];
+        $body = $this->request($url, 0, null, $final, $meta);
+        $rendered = false;
+        if ($this->yahooDenied($url, $meta, $body)) {
+            if ($this->db->getSetting('headless_browser', '0') !== '1') {
+                return 'Yahoo answered HTTP 429 to this client. A browser still receives the JSON. The headless browser is off.';
+            }
+            $opened = $this->yahooBrowser($url);
+            if ($opened === '') {
+                return 'Yahoo answered HTTP 429 to this client. A browser still receives the JSON. The headless browser did not return it.';
+            }
+            $body = $opened;
+            $rendered = true;
+        }
         if (trim($body) === '') {
             return 'The page returned nothing.';
+        }
+        $json = $this->jsonBody($body, $meta);
+        if ($json !== '') {
+            return $json;
         }
         $pageUrl = $final !== '' ? $final : $url;
         $feed = $this->feedText($body, $pageUrl);
         if ($feed !== '') {
             return $feed;
         }
-        $text = $this->pageText($body, $pageUrl);
+        $text = $this->pageText($body, $pageUrl, $rendered);
         $shell = $this->githubShell($url, $text);
         if ($shell !== null) {
             return $shell;
         }
         return $text;
+    }
+
+    private function yahooDenied(string $url, array $meta, string $body): bool
+    {
+        $host = strtolower((string)(parse_url($url, PHP_URL_HOST) ?? ''));
+        if ($host !== 'query1.finance.yahoo.com' && $host !== 'query2.finance.yahoo.com') {
+            return false;
+        }
+        if ((int)($meta['code'] ?? 0) === 429) {
+            return true;
+        }
+        $text = trim(preg_replace('/\s+/', ' ', strip_tags($body)) ?? '');
+        return $text === 'Too Many Requests' || str_starts_with($text, 'Too Many Requests');
+    }
+
+    private function yahooBrowser(string $url): string
+    {
+        $html = Sight::page($url);
+        if ($html === '' || !str_contains($html, '<')) {
+            return '';
+        }
+        $text = trim(preg_replace('/\s+/', ' ', strip_tags($html)) ?? '');
+        if ($text === '' || $text === 'Too Many Requests' || str_starts_with($text, 'Too Many Requests')) {
+            return '';
+        }
+        return $html;
+    }
+
+    private function jsonBody(string $body, array $meta): string
+    {
+        $body = trim($body);
+        if ($body === '' || ($body[0] !== '{' && $body[0] !== '[')) {
+            return '';
+        }
+        $header = (string)($meta['header'] ?? '');
+        $typed = (bool)preg_match('/^content-type:\s*[^\r\n]*json/im', $header);
+        if (!$typed) {
+            json_decode($body);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                return '';
+            }
+        }
+        return clip_text($body, 8000);
     }
 
     private function githubDirect(string $url): ?string
