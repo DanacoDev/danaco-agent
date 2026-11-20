@@ -425,7 +425,7 @@ header('X-Danaco: 1');
                     </form>
                   </li>
                 </ul>
-                <p v-if="openTask !== task.id && expandedTasks[task.id] && task.result && !taskResultOnStep(task)" class="task-result is-full"><span class="task-result-label">{{ taskFailed(task) ? 'Error:' : 'Results:' }}</span><span class="task-result-line"><template v-for="(part, index) in resultParts(task.result)" :key="index"><a v-if="part.href" :href="part.href" target="_blank" rel="noopener">{{ part.text }}</a><span v-else>{{ part.text }}</span></template></span></p>
+                <p v-if="openTask !== task.id && expandedTasks[task.id] && task.result && (taskFailed(task) || !(task.subtasks || []).length)" class="task-result is-full"><span class="task-result-label">{{ taskFailed(task) ? 'Error:' : 'Results:' }}</span><span class="task-result-line"><template v-for="(part, index) in resultParts(task.result)" :key="index"><a v-if="part.href" :href="part.href" target="_blank" rel="noopener">{{ part.text }}</a><span v-else>{{ part.text }}</span></template></span></p>
                 <form v-if="openTask === task.id" class="subtask-add" @submit.prevent="addSubtask(task)">
                   <div class="subtask-add-row">
                     <input v-model="subtaskDrafts[task.id]" placeholder="Add step title" aria-label="Add step title">
@@ -654,40 +654,46 @@ header('X-Danaco: 1');
                 <div class="flow-top">
                   <article class="flow-node is-main" :class="['is-' + mainAgent.status, { 'is-picked': logAgent === mainAgent.name }]" @click="pickLogAgent(mainAgent.name)">
                     <svg class="avatar" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-av-orchestrator"></use></svg>
-                    <strong>{{ agentLabel(mainAgent.name) }}</strong>
-                    <p class="flow-status">
-                      <span v-if="agentBusy(mainAgent)" class="spinner"></span>
-                      <span :class="'status-' + mainAgent.status">{{ mainAgent.label }}</span>
-                    </p>
-                    <p class="hint flow-task">{{ agentWork(mainAgent) }}</p>
+                    <div class="flow-copy">
+                      <strong>{{ agentLabel(mainAgent.name) }}</strong>
+                      <p class="flow-status">
+                        <span v-if="agentBusy(mainAgent)" class="spinner"></span>
+                        <span :class="'status-' + mainAgent.status">{{ mainAgent.label }}</span>
+                      </p>
+                      <p class="hint flow-task">{{ agentWork(mainAgent) }}</p>
+                    </div>
                   </article>
                   <div v-if="consultant" class="flow-consult">
                     <span class="flow-link" :class="{live: agentBusy(consultant)}"></span>
                     <article class="flow-node is-consultant" :class="['is-' + consultant.status, { 'is-picked': logAgent === consultant.name }]" @click="pickLogAgent(consultant.name)">
                       <svg class="avatar" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-av-consultant"></use></svg>
-                      <strong>{{ agentLabel(consultant.name) }}</strong>
-                      <p class="flow-status">
-                        <span v-if="agentBusy(consultant)" class="spinner"></span>
-                        <span :class="'status-' + consultant.status">{{ consultant.label }}</span>
-                      </p>
-                      <p class="hint flow-task">
-                        <button class="retry-link" type="button" @click.stop="openProviderSetup">{{ consultant.reason === 'on' ? 'Enabled' : 'Edit settings' }}</button>
-                      </p>
+                      <div class="flow-copy">
+                        <strong>{{ agentLabel(consultant.name) }}</strong>
+                        <p class="flow-status">
+                          <span v-if="agentBusy(consultant)" class="spinner"></span>
+                          <span :class="'status-' + consultant.status">{{ consultant.label }}</span>
+                        </p>
+                        <p class="hint flow-task">
+                          <button class="retry-link" type="button" @click.stop="openProviderSetup">{{ consultant.reason === 'on' ? 'Enabled' : 'Edit settings' }}</button>
+                        </p>
+                      </div>
                     </article>
                 </div>
                 <div class="flow-down" :class="{live: flowLive}"></div>
               </div>
-                <div class="flow-row" :style="{ gridTemplateColumns: 'repeat(' + subAgents.length + ', minmax(120px, 1fr))', '--flow-inset': flowInset }">
+                <div class="flow-row" :style="{ gridTemplateColumns: 'repeat(' + subAgents.length + ', minmax(148px, 1fr))', '--flow-inset': flowInset }">
                   <div v-for="agent in subAgents" :key="agent.name" class="flow-slot">
                     <span class="flow-stem" :class="{live: agentBusy(agent)}"></span>
                     <article class="flow-node" :class="['is-' + agent.status, { 'is-picked': logAgent === agent.name }]" @click="pickLogAgent(agent.name)">
                       <svg class="avatar" viewBox="0 0 24 24" aria-hidden="true"><use :href="'#i-av-' + agent.name"></use></svg>
-                      <strong>{{ agentLabel(agent.name) }}</strong>
-                      <p class="flow-status">
-                        <span v-if="agentBusy(agent)" class="spinner"></span>
-                        <span :class="'status-' + agent.status">{{ agent.label }}</span>
-                      </p>
-                      <p class="hint flow-task">{{ agentWork(agent) }}</p>
+                      <div class="flow-copy">
+                        <strong>{{ agentLabel(agent.name) }}</strong>
+                        <p class="flow-status">
+                          <span v-if="agentBusy(agent)" class="spinner"></span>
+                          <span :class="'status-' + agent.status">{{ agent.label }}</span>
+                        </p>
+                        <p class="hint flow-task">{{ agentWork(agent) }}</p>
+                      </div>
                     </article>
                   </div>
                 </div>

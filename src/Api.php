@@ -492,6 +492,8 @@ class Api
     {
         foreach ([
             'The reply ran out of room while thinking.',
+            'The reply stopped after thinking and wrote nothing.',
+            'The model returned an empty answer. Trying again without thinking.',
             'The reply stopped while thinking.',
             'Ollama was not running.',
             'The whole model does not fit on the GPU.',

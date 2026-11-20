@@ -1996,11 +1996,6 @@
           const pick = owners[owners.length - 1];
           return pick && pick.id === sub.id ? shared : '';
         },
-        taskResultOnStep(task) {
-          const shared = String(task && task.result || '').trim();
-          if (!shared) return false;
-          return (task.subtasks || []).some((sub) => this.stepResult(task, sub) === shared);
-        },
         stepFileHref(path) {
           const project = (this.projects || []).find((item) => item.id === this.projectId);
           const folder = project && project.folder_name ? project.folder_name : '';

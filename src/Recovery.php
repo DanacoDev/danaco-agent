@@ -33,7 +33,7 @@ class Recovery
         if ($this->isFullGpu($error)) {
             $notes[] = 'The whole model does not fit on the GPU. Loading what fits and leaving the rest in RAM.';
             $retry = true;
-        } elseif (!$this->isLength($error) && ($this->isOom($error) || ($this->isModelFailure($error) && $this->memoryTight()))) {
+        } elseif (!$this->isLength($error) && !$this->isNoAnswer($error) && ($this->isOom($error) || ($this->isModelFailure($error) && $this->memoryTight()))) {
             $freed = $this->unloadModels();
             if ($freed > 0) {
                 $notes[] = 'Freed memory by unloading ' . $freed . ' model' . ($freed === 1 ? '' : 's') . '.';
@@ -48,6 +48,12 @@ class Recovery
             $this->moreRoom();
             $this->db->setSetting('recovery_hint', '1');
             $notes[] = 'The reply ran out of room while thinking. Trying again with a shorter step.';
+            $retry = true;
+        } elseif ($this->isNoAnswer($error)) {
+            $this->db->setSetting('recovery_hint', 'think');
+            $notes[] = $this->stoppedAfterThinking($error)
+                ? 'The reply stopped after thinking and wrote nothing. Trying again without thinking.'
+                : 'The model returned an empty answer. Trying again without thinking.';
             $retry = true;
         }
         if ($this->stoppedWhileThinking($error)) {
@@ -81,7 +87,17 @@ class Recovery
 
     private function isLength(string $error): bool
     {
-        return (bool)preg_match('/output limit|thinking only|empty answer/i', $error);
+        return (bool)preg_match('/output limit/i', $error);
+    }
+
+    private function isNoAnswer(string $error): bool
+    {
+        return (bool)preg_match('/thinking only|empty answer/i', $error);
+    }
+
+    private function stoppedAfterThinking(string $error): bool
+    {
+        return (bool)preg_match('/thinking only/i', $error);
     }
 
     private function stoppedWhileThinking(string $error): bool

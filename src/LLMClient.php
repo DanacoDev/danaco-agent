@@ -495,10 +495,17 @@ class LLMClient
         $brief = $short || $this->keepBrief;
         $mode = $failsafe ? 'cpu_failsafe' : (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
         $numCtx = $this->hardware->effectiveContext($mode);
-        if (!$brief && $this->db->getSetting('recovery_hint', '0') === '1') {
-            $hint = $agent === 'orchestrator'
-                ? 'The reply ran out of room while thinking. Keep this reply short. Do not restate the plan. Split the remaining work into smaller tasks and delegate the next one. One tool call, then stop.'
-                : 'The reply ran out of room while thinking. Keep this reply short. Do one small step and call the tool. Then stop.';
+        $hintKind = (string)$this->db->getSetting('recovery_hint', '0');
+        if (!$brief && ($hintKind === '1' || $hintKind === 'think')) {
+            if ($hintKind === 'think') {
+                $hint = $agent === 'orchestrator'
+                    ? 'The previous reply wrote no answer. Keep this reply short. Do not restate the plan. Split the remaining work into smaller tasks and delegate the next one. One tool call, then stop.'
+                    : 'The previous reply wrote no answer. Keep this reply short. Do one small step and call the tool. Then stop.';
+            } else {
+                $hint = $agent === 'orchestrator'
+                    ? 'The reply ran out of room while thinking. Keep this reply short. Do not restate the plan. Split the remaining work into smaller tasks and delegate the next one. One tool call, then stop.'
+                    : 'The reply ran out of room while thinking. Keep this reply short. Do one small step and call the tool. Then stop.';
+            }
             $messages[] = ['role' => 'user', 'content' => $hint];
             $this->db->setSetting('recovery_hint', '0');
             $brief = true;
