@@ -171,7 +171,7 @@ Those skills cover any file in the project, including the wiki. {$scope} A new o
 - coder: write and debug software in PHP, run code_verifier on each changed file, and use download_large for a download over 100 MB. Use Python only when a Python library is required, and run that file with run_python. If run_python says a library is missing, stop and name it. Do not install it. Do not use run_command for Python, and do not ask for full system control to run a script. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A skill program is PHP. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
 - marketer: campaigns, press copy, brand, and visual direction. An icon or infographic runs make_graphic.
-- consultant: a subagent for a hard multi-step problem. Delegate with agent consultant. It uses an external paid model and the same project file skills. It has no write_skill or test_skill. Delegate only when the note says the Consultant is on.
+- consultant: a subagent for a hard multi-step problem. Delegate with agent consultant. It uses an external paid model and the same project file skills. It can list, create, update, and delete tasks. It has no write_skill or test_skill. When it returns, delegate the first open step. Delegate only when the note says the Consultant is on.
 TXT;
     }
 
@@ -200,6 +200,9 @@ TXT;
         if ($agent === 'writer') {
             $expand[] = 'create_pdf';
         }
+        if ($agent === 'consultant') {
+            $expand[] = 'tasklist';
+        }
         $catalog = $this->skills->promptCatalog($omit, [], $expand);
         $extra = [];
         foreach ($this->capabilities->descriptions($projectId) as $line) {
@@ -224,9 +227,12 @@ TXT;
         if ($brief !== '') {
             $identity .= "\n\n" . $brief;
         }
+        $taskRule = $agent === 'consultant'
+            ? 'When the assignment names a task, list it with the tasklist tool first. You may create, update, or delete tasks so the pipeline is one task with open steps. Do not do the research or file work unless the assignment asks for that. End with the task id and the open steps.'
+            : 'You cannot create, update, or delete a task. When the instruction names a task, add a short result to it with the tasklist tool before you finish. The main agent checks that work and then updates the task.';
         $rules = <<<TXT
 {$identity}
-Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task. You cannot create, update, or delete a task. When the instruction names a task, add a short result to it with the tasklist tool before you finish. The main agent checks that work and then updates the task. If the task includes a previous run, that record is what you already found, wrote, or returned. Continue from it. Do not start that work over. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
+Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task. {$taskRule} If the task includes a previous run, that record is what you already found, wrote, or returned. Continue from it. Do not start that work over. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
 
 Do not install software or dependencies. If something is missing, say what it is and stop. The main agent asks the user and installs it.
 
@@ -470,7 +476,7 @@ TXT;
         }
     }
 
-    private function kanbanResult(int $projectId, array $args): string
+    private function kanbanResult(int $projectId, array $args, bool $manage = false): string
     {
         $board = new Kanban($this->db);
         $action = strtolower(trim((string)($args['action'] ?? 'list')));
@@ -479,6 +485,9 @@ TXT;
         }
         if ($action === 'list') {
             return $board->listing($projectId);
+        }
+        if ($manage && in_array($action, ['create', 'update', 'move', 'delete'], true)) {
+            return $this->consultantManageTask($projectId, $action, $args, $board);
         }
         if ($action === 'result') {
             try {
@@ -509,6 +518,158 @@ TXT;
             return 'Added a result to task #' . $task['id'] . ': ' . $task['title'] . '.' . $tail;
         }
         return 'Only the main agent can update a task. You can list the task list, or add a result with action result, id, and result.';
+    }
+
+    private function consultantManageTask(int $projectId, string $action, array $args, Kanban $board): string
+    {
+        try {
+            if ($action === 'create') {
+                if (array_key_exists('tasks', $args)) {
+                    return $this->consultantCreateTasks($projectId, $args['tasks'], $board);
+                }
+                $task = $board->create($projectId, $args, false);
+                return 'Created task #' . $task['id'] . ' in ' . $board->column($task) . ': ' . $task['title'];
+            }
+            if ($action === 'update' || $action === 'move') {
+                $id = $this->taskCardId($projectId, $args);
+                if ($id <= 0) {
+                    return 'Task not found.';
+                }
+                $before = $this->db->task($id);
+                $beforeCount = $this->stepTotal(is_array($before) ? $before : []);
+                $task = $board->move($id, $args, false);
+                $held = (int)($task['held'] ?? 0) === 1 ? ' The task stays held and will not start.' : '';
+                $stepsNote = '';
+                if (array_key_exists('steps', $args) || array_key_exists('subtasks', $args)) {
+                    $added = $this->stepTotal($task) - $beforeCount;
+                    $stepsNote = $added > 0
+                        ? ' Added ' . $added . ($added === 1 ? ' step.' : ' steps.')
+                        : ' Those steps are already on the task. None were added. Do not send them again.';
+                }
+                return 'Updated task #' . $task['id'] . ' to ' . $board->column($task) . ': ' . $task['title'] . $held . $stepsNote;
+            }
+            if ($action === 'delete') {
+                $id = $this->taskCardId($projectId, $args);
+                $task = $id > 0 ? $this->db->task($id) : null;
+                if (!$task || (int)$task['project_id'] !== $projectId) {
+                    return 'Task not found.';
+                }
+                $this->db->deleteTask($id);
+                return 'Deleted task #' . $id . ': ' . $task['title'];
+            }
+        } catch (InvalidArgumentException $e) {
+            return $e->getMessage();
+        } catch (RuntimeException $e) {
+            return $e->getMessage();
+        }
+        return 'Unknown tasklist action. Use list, create, update, or delete.';
+    }
+
+    private function consultantCreateTasks(int $projectId, mixed $tasks, Kanban $board): string
+    {
+        if (is_string($tasks)) {
+            $decoded = json_decode($tasks, true);
+            $tasks = is_array($decoded) ? $decoded : [];
+        }
+        if (!is_array($tasks)) {
+            return 'Pass tasks. Each task has a title, an agent, and steps.';
+        }
+        if (array_key_exists('title', $tasks) && !array_is_list($tasks)) {
+            $tasks = [$tasks];
+        }
+        $added = [];
+        $duplicates = [];
+        foreach ($tasks as $task) {
+            if (!is_array($task)) {
+                continue;
+            }
+            $title = trim((string)($task['title'] ?? ''));
+            if ($title === '') {
+                continue;
+            }
+            if (strlen($title) > 200) {
+                $title = substr($title, 0, 200);
+            }
+            $steps = $task['steps'] ?? $task['subtasks'] ?? [$title];
+            $payload = [
+                'title' => $title,
+                'agent' => strtolower(trim((string)($task['agent'] ?? $task['assigned_agent'] ?? 'orchestrator'))),
+                'steps' => is_array($steps) && $steps !== [] ? $steps : [$title],
+                'status' => (string)($task['status'] ?? 'in_progress'),
+            ];
+            if (array_key_exists('schedule_time', $task)) {
+                $payload['schedule_time'] = $task['schedule_time'];
+            }
+            if (array_key_exists('recurrence', $task) || array_key_exists('recurrence_interval', $task)) {
+                $payload['recurrence'] = $task['recurrence'] ?? $task['recurrence_interval'];
+            }
+            try {
+                $saved = $board->create($projectId, $payload, false);
+            } catch (InvalidArgumentException $e) {
+                $message = $e->getMessage();
+                if (str_starts_with($message, 'Error: Task #')) {
+                    $duplicates[] = $message;
+                    continue;
+                }
+                return $message;
+            }
+            $added[] = '#' . $saved['id'] . ' ' . $saved['title'];
+            if (count($added) >= 40) {
+                break;
+            }
+        }
+        $lines = [];
+        if ($added !== []) {
+            $lines[] = 'Added ' . count($added) . ' ' . (count($added) === 1 ? 'task' : 'tasks') . ' in in_progress: ' . implode('; ', $added) . '.';
+        }
+        if ($duplicates !== []) {
+            $lines[] = 'These tasks are already on the task list and were not added. Use those tasks. ' . implode(' ', $duplicates);
+        }
+        return $lines === [] ? 'Pass tasks with a title, an agent, and steps.' : implode("\n", $lines);
+    }
+
+    private function taskCardId(int $projectId, array $args): int
+    {
+        foreach (['id', 'task_id', 'task'] as $key) {
+            if (!array_key_exists($key, $args)) {
+                continue;
+            }
+            $raw = $args[$key];
+            $id = is_int($raw) || is_float($raw) ? (int)$raw : 0;
+            if ($id <= 0 && is_string($raw) && preg_match('/(\d+)/', $raw, $found)) {
+                $id = (int)$found[1];
+            }
+            if ($id > 0) {
+                $task = $this->db->task($id);
+                if ($task && (int)$task['project_id'] === $projectId) {
+                    return $id;
+                }
+            }
+        }
+        $title = trim((string)($args['title'] ?? ''));
+        if ($title === '') {
+            return 0;
+        }
+        foreach ($this->db->tasks($projectId) as $task) {
+            if ((string)($task['status'] ?? '') === 'archived') {
+                continue;
+            }
+            if (strcasecmp(trim((string)($task['title'] ?? '')), $title) === 0) {
+                return (int)$task['id'];
+            }
+        }
+        return 0;
+    }
+
+    private function stepTotal(array $task): int
+    {
+        $count = 0;
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (is_array($sub) && trim((string)($sub['title'] ?? '')) !== '') {
+                $count++;
+            }
+        }
+        return $count;
     }
 
     private function tools(string $agent, string $projectFolder, int $projectId, callable $emit, ?callable $shouldStop = null): array
@@ -618,14 +779,14 @@ TXT;
                 $args['action'] = 'search';
                 return $wiki($args);
             },
-            'tasklist' => function (array $args) use ($projectId): string {
-                return $this->kanbanResult($projectId, $args);
+            'tasklist' => function (array $args) use ($projectId, $agent): string {
+                return $this->kanbanResult($projectId, $args, $agent === 'consultant');
             },
             'task_breakdown' => function (): string {
                 return 'Only the main agent can add tasks. Add a result to the task you were given with tasklist action result.';
             },
-            'kanban' => function (array $args) use ($projectId): string {
-                return $this->kanbanResult($projectId, $args);
+            'kanban' => function (array $args) use ($projectId, $agent): string {
+                return $this->kanbanResult($projectId, $args, $agent === 'consultant');
             },
             'wiki_write' => function (array $args) use ($wiki): string {
                 $args['action'] = 'write';

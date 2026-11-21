@@ -1505,7 +1505,7 @@ class AgentRuntime
     private function promisedStep(string $text): bool
     {
         $intent = 'I\'ll|I will|Let me|I\'m going to|I am going to';
-        $verb = 'check|inspect|read|search|find|add|insert|update|write|save|delegate|move|look|query|create|fetch|browse|open|list|verify|confirm|research|restore|restoring';
+        $verb = 'check|inspect|read|search|find|add|insert|update|write|save|delegate|move|look|query|create|fetch|browse|open|list|verify|confirm|research|restore|restoring|execute|run';
         return (bool)preg_match('/\b(?:' . $intent . ')\b(?!\s+not\b)[^.\n]{0,160}\b(?:' . $verb . ')\b(?!\s+you\b)/i', $text);
     }
 
