@@ -870,11 +870,16 @@ cmd_update() {
     echo "Updated to $(git -C "$ROOT" rev-parse --short HEAD)."
   fi
   deps=0
-  bash "$ROOT/bin/ensure-php.sh" || deps=$?
+  DANACO_SKIP_OLLAMA_PARALLEL=1 bash "$ROOT/bin/ensure-php.sh" || deps=$?
   cdeps=0
   bash "$ROOT/bin/ensure-chromium.sh" || cdeps=$?
   ndeps=0
   bash "$ROOT/bin/ensure-nvidia.sh" || ndeps=$?
+  pstatus=0
+  bash "$ROOT/bin/ensure-ollama-parallel.sh" update || pstatus=$?
+  if [[ "$pstatus" -eq 10 ]]; then
+    bash "$ROOT/bin/ensure-ollama-parallel.sh" verify || true
+  fi
   if [[ "$before" != "$after" || "$deps" -eq 10 ]]; then
     restart_service 2>/dev/null || true
     if wait_for_http; then

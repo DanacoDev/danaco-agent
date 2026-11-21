@@ -17,6 +17,18 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 bash "$ROOT/bin/save-github-credentials.sh" "$ROOT" || true
 
+# danaco update from before this check still lands here after git pull.
+if [[ "${DANACO_SKIP_OLLAMA_PARALLEL:-}" != "1" ]]; then
+  parent="$(ps -p "$PPID" -o args= 2>/dev/null || true)"
+  if [[ "$parent" == *danaco* && "$parent" == *" update"* ]]; then
+    pstatus=0
+    bash "$ROOT/bin/ensure-ollama-parallel.sh" update || pstatus=$?
+    if [[ "$pstatus" -eq 10 ]]; then
+      bash "$ROOT/bin/ensure-ollama-parallel.sh" verify || true
+    fi
+  fi
+fi
+
 PACKAGES=(php-cli php-sqlite3 sqlite3 php-curl php-mbstring php-xml php-zip bubblewrap python3 python3-pip)
 FEDORA_PACKAGES=(php-cli php-pdo php-sqlite3 sqlite bubblewrap python3 python3-pip)
 ARCH_PACKAGES=(php sqlite bubblewrap python python-pip)
