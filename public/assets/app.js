@@ -470,6 +470,25 @@
           const projectId = this.projectId || 0;
           return this.agents.some((agent) => this.agentBusy(agent) && (agent.project_id || 0) === projectId);
         },
+        workingSubagents() {
+          const rows = [];
+          const seen = {};
+          this.agents.forEach((agent) => {
+            if (!agent || agent.name === 'orchestrator' || !this.agentBusy(agent)) return;
+            seen[agent.name] = true;
+            rows.push(agent);
+          });
+          const hint = this.delegation;
+          if (hint && hint.agent && hint.agent !== 'orchestrator' && !seen[hint.agent]) {
+            rows.push({
+              name: hint.agent,
+              status: 'thinking',
+              project_id: null,
+              project_label: hint.project || ''
+            });
+          }
+          return rows;
+        },
         stopReady() {
           return (this.agentsBusy || this.sending) && !this.stopBusy;
         },
@@ -567,8 +586,9 @@
         window.addEventListener('hashchange', () => this.onHash());
         window.addEventListener('pointerdown', (event) => this.holdSelectRefresh(event), true);
         window.addEventListener('visibilitychange', () => {
-          if (document.hidden || !this.authed || this.tab !== 'agents') return;
-          this.refreshStatus(true).catch(function () {});
+          if (document.hidden || !this.authed) return;
+          if (this.tab === 'chat' || this.tab === 'agents') this.refreshStatus(true).catch(function () {});
+          if (this.tab !== 'agents') return;
           this.refreshLogs(true).catch(function () {});
           this.refreshLoop(true).catch(function () {});
         });
@@ -768,7 +788,6 @@
           this.live = '';
           this.liveDetail = { thinking: [], tools: [] };
           this.replyId = null;
-          this.delegation = null;
           this.streamError = '';
           clearTimeout(this._chatSearchTimer);
           await this.refreshTab();
@@ -935,7 +954,6 @@
             this.live = '';
             this.liveAgent = 'orchestrator';
             this.streamError = '';
-            this.delegation = null;
             this.draft = '';
             this.attachments = [];
             if (this.tab !== 'chat') this.setTab('chat');
@@ -1035,6 +1053,24 @@
         agentProject(agent) {
           if (!agent || !agent.project_id) return '';
           return this.projectName(agent.project_id);
+        },
+        workLine(agent) {
+          const label = this.agentLabel(agent && agent.name);
+          let project = agent && agent.project_label ? agent.project_label : this.agentProject(agent);
+          if (!project && this.delegation && agent && this.delegation.agent === agent.name) project = this.delegation.project || '';
+          project = String(project || '').trim();
+          if (!project || project.toLowerCase() === 'general') return label + ' is working';
+          return label + ' is working on project: ' + project;
+        },
+        syncDelegation() {
+          const hint = this.delegation;
+          if (!hint || !hint.agent) return;
+          const agent = this.agents.find((item) => item.name === hint.agent);
+          if (agent && this.agentBusy(agent)) {
+            hint.seen = true;
+            return;
+          }
+          if (hint.seen || Date.now() - (hint.at || 0) > 4000) this.delegation = null;
         },
         logProject(log) {
           if (!log || !log.project_id) return '';
@@ -1451,7 +1487,6 @@
           this.streamError = '';
           this.slowReply = false;
           this.waitPhase = '';
-          this.delegation = null;
           this.armSlowTimer();
           this.scrollChat();
           const generation = Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
@@ -1541,7 +1576,6 @@
             this.replyId = null;
             this.toolPending = false;
             this.chatAbort = null;
-            this.delegation = null;
             this.compressArmed = false;
             const next = this.steerText;
             this.steerText = '';
@@ -1743,6 +1777,15 @@
             last.text = 'Earlier reasoning was set aside.\n\n' + last.text.slice(-2500);
           }
         },
+        trimThinking(data) {
+          if (data.agent && data.agent !== 'orchestrator') return;
+          const cut = data.text || '';
+          const blocks = this.liveDetail.thinking;
+          const last = blocks[blocks.length - 1];
+          if (!last || !cut || !last.text.endsWith(cut)) return;
+          last.text = last.text.slice(0, -cut.length);
+          if (!last.text) blocks.pop();
+        },
         noteTool(data) {
           this.liveDetail.tools.push({
             agent: data.agent || '',
@@ -1789,7 +1832,14 @@
           const live = this.live || '';
           const thinking = this.liveDetail.thinking || [];
           const tools = this.liveDetail.tools || [];
-          if (!live && !thinking.length && !tools.length) return;
+          if (!live && !thinking.length && !tools.length) {
+            const existing = this.replyId ? this.messages.find((msg) => msg.id === this.replyId) : null;
+            if (existing) {
+              existing.content = '';
+              existing.detail = { thinking: [], tools: [] };
+            }
+            return;
+          }
           const detail = {
             thinking: thinking.map((block) => ({ agent: block.agent, text: block.text })),
             tools: tools.map((tool) => ({ agent: tool.agent, name: tool.name, args: tool.args, result: tool.result }))
@@ -1845,11 +1895,22 @@
             if (data.text) this.answerStarted = true;
             this.holdReply();
             this.scrollChat();
+          } else if (event === 'trim') {
+            const cut = data.text || '';
+            if ((!data.agent || data.agent === 'orchestrator') && cut && this.live.endsWith(cut)) {
+              this.live = this.live.slice(0, -cut.length);
+            }
+            this.holdReply();
+            this.scrollChat();
           } else if (event === 'thinking') {
             this.slowReply = false;
             this.waitPhase = '';
             this.answerStarted = false;
             this.noteThinking(data);
+            this.holdReply();
+            this.scrollChat();
+          } else if (event === 'thinking_trim') {
+            this.trimThinking(data);
             this.holdReply();
             this.scrollChat();
           } else if (event === 'context') {
@@ -1867,7 +1928,12 @@
               if (this.steerText && this.chatAbort && !this.userStop) this.chatAbort.abort();
             }
           } else if (event === 'delegation') {
-            this.delegation = data;
+            this.delegation = {
+              agent: data.agent,
+              project: data.project || '',
+              at: Date.now(),
+              seen: false
+            };
           } else if (event === 'install_prompt' || event === 'action_prompt') {
             this.actionPrompt = {
               id: data.id,
@@ -1919,8 +1985,9 @@
               this.toolPending = false;
             }
             if (data.status === 'executing_tool') this.toolPending = false;
-            if ((data.status === 'completed' || data.status === 'error') && this.delegation && this.delegation.agent === data.agent) {
-              this.delegation = null;
+            if (this.delegation && this.delegation.agent === data.agent) {
+              if (data.status === 'thinking' || data.status === 'executing_tool') this.delegation.seen = true;
+              else this.delegation = null;
             }
           }
         },
@@ -2984,6 +3051,7 @@
           this.agents = data.agents;
           this.runStopping = !!data.stopping;
           this.heartbeatPaused = !!data.heartbeat_paused;
+          this.syncDelegation();
         },
         async refreshLogs(quiet) {
           const projectId = this.projectId || 0;
@@ -3527,8 +3595,10 @@
                 }
               }
             }
-            if (this.tab === 'agents') {
+            if (this.tab === 'chat' || this.tab === 'agents') {
               this.refreshStatus(true).catch(function () {});
+            }
+            if (this.tab === 'agents') {
               this.refreshLogs(true).catch(function () {});
               this.refreshLoop(true).catch(function () {});
               if (!document.hidden) this.refreshPendingActions().catch(function () {});

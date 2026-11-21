@@ -1588,6 +1588,10 @@ TXT;
                 }
             }
             if ($open === []) {
+                $recurrence = strtolower(trim((string)($task['recurrence_interval'] ?? 'none')));
+                if ($recurrence !== '' && $recurrence !== 'none') {
+                    return "\nTask #" . $task['id'] . ' finished its steps for this run. Leave it in progress. Do not delegate it again.';
+                }
                 return $note;
             }
             $line = "\nTask #" . $task['id'] . ' is not done. Open steps:';

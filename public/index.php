@@ -251,7 +251,9 @@ header('X-Danaco: 1');
                   <span>{{ thinkingLabel }}</span>
                 </div>
               </div>
-              <div v-if="delegation" class="banner">{{ agentLabel(delegation.agent) }} is working on project: {{ delegation.project }}</div>
+              <div v-if="workingSubagents.length" class="banner work-banner">
+                <div v-for="agent in workingSubagents" :key="agent.name">{{ workLine(agent) }}</div>
+              </div>
               <div v-if="actionPrompt" class="banner install-banner">
                 <span>{{ actionPrompt.summary || ('Allow this ' + (actionPrompt.kind || 'action') + '?') }}</span>
                 <span>

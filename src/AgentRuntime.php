@@ -683,11 +683,20 @@ class AgentRuntime
         $skipCompact = false;
         $savedWritePath = '';
         $savedWriteBody = null;
+        $keptThinking = '';
+        $carryThought = '';
+        $dropCarryThought = false;
         try {
         for ($turn = 0; $turn < $maxTurns; $turn++) {
             if ($shouldStop && $shouldStop()) {
                 throw new ChatStopped('Stopped.');
             }
+            if ($dropCarryThought) {
+                $dropCarryThought = false;
+            } else {
+                $keptThinking .= $carryThought;
+            }
+            $carryThought = '';
             if ($turn > 0 && !$skipCompact && $betweenTurns) {
                 $next = $betweenTurns($messages);
                 if (is_array($next) && $next !== []) {
@@ -743,7 +752,7 @@ class AgentRuntime
             $toolNoted = false;
             $thinkBuf = '';
             $thinkAt = 0.0;
-            $flushThinking = function (bool $force = false) use (&$thinkBuf, &$thinkAt, $emit, $agent): void {
+            $flushThinking = function (bool $force = false) use (&$thinkBuf, &$thinkAt, &$carryThought, &$keptThinking, $emit, $agent): void {
                 if ($thinkBuf === '') {
                     return;
                 }
@@ -753,6 +762,10 @@ class AgentRuntime
                 $chunk = $thinkBuf;
                 $thinkBuf = '';
                 $thinkAt = microtime(true);
+                if ($carryThought === '' && $keptThinking !== '' && !preg_match('/\s$/', $keptThinking)) {
+                    $chunk = "\n\n" . $chunk;
+                }
+                $carryThought .= $chunk;
                 $emit(['type' => 'thinking', 'agent' => $agent, 'text' => $chunk]);
             };
             $keepAside = function (string $aside) use (&$thinkBuf, &$thinkAt, $flushThinking, &$turnText): void {
@@ -1000,6 +1013,13 @@ class AgentRuntime
                 $messages[] = ['role' => 'user', 'content' => $prompt];
                 $this->llm->incomplete = false;
                 $this->llm->ranOut = false;
+                if ($why === 'prose tool' || $why === 'unfinished step') {
+                    $this->rewindVisible($visible, $visibleMark, $emit, $agent);
+                    if ($carryThought !== '') {
+                        $emit(['type' => 'thinking_trim', 'agent' => $agent, 'text' => $carryThought]);
+                    }
+                    $dropCarryThought = true;
+                }
                 continue;
             }
             $retryOpen = 0;
@@ -1135,6 +1155,9 @@ class AgentRuntime
                 $this->db->loop($agent, 'tool', $this->toolResultTrace($toolName, $result), $projectId);
                 $this->db->logAgent($agent, $projectId, 'output', $result);
                 $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => $tool['name'], 'text' => $result]);
+                if ($toolName === 'delegate' && str_starts_with($result, 'Delegation rejected') && $this->singleNarrationLine($visible, $visibleMark)) {
+                    $this->rewindVisible($visible, $visibleMark, $emit, $agent);
+                }
                 if ($toolName === 'web_search' && str_starts_with($result, 'The search provider rejected this request.')) {
                     $this->db->loop($agent, 'stop', 'search provider rejected', $projectId);
                     $this->db->setAgentStatus($agent, 'completed');
@@ -1702,10 +1725,28 @@ class AgentRuntime
         if ($text === '' || preg_match('/^\s/', $text)) {
             return $text;
         }
-        if (preg_match('/[.!?][\'")\]]*$/', $prior)) {
+        if (preg_match('/[.!?:][\'")\]]*$/', $prior)) {
             return ' ' . $text;
         }
         return $text;
+    }
+
+    private function rewindVisible(string &$visible, int $mark, callable $emit, string $agent): void
+    {
+        if (strlen($visible) <= $mark) {
+            return;
+        }
+        $cut = substr($visible, $mark);
+        $visible = substr($visible, 0, $mark);
+        $emit(['type' => 'trim', 'agent' => $agent, 'text' => $cut]);
+    }
+
+    private function singleNarrationLine(string $visible, int $mark): bool
+    {
+        if (strlen($visible) <= $mark) {
+            return false;
+        }
+        return !str_contains(trim(substr($visible, $mark)), "\n");
     }
 
     private function finishVisible(string $visible): string

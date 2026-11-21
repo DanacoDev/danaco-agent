@@ -503,6 +503,7 @@ class Heartbeat
                 $fields['result'] = '';
             }
             $board->move((int)$task['id'], $fields, false);
+            $this->reopenFinishedSteps((int)$task['id']);
             return;
         }
         $saved = $board->move((int)$task['id'], [
@@ -517,6 +518,32 @@ class Heartbeat
             $line .= ' · result noted';
         }
         $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'orchestrator', 'process', $line);
+    }
+
+    private function reopenFinishedSteps(int $taskId): void
+    {
+        $task = $this->db->task($taskId);
+        if (!$task) {
+            return;
+        }
+        $steps = [];
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub) || trim((string)($sub['title'] ?? '')) === '') {
+                continue;
+            }
+            $steps[] = $sub;
+        }
+        if ($steps === []) {
+            return;
+        }
+        foreach ($steps as $sub) {
+            if ((string)($sub['status'] ?? '') !== 'done') {
+                return;
+            }
+        }
+        foreach ($steps as $sub) {
+            $this->db->updateSubtask((int)$sub['id'], ['status' => 'in_progress', 'result' => '']);
+        }
     }
 
     private function traceJob(array $job, string $line): void

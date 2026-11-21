@@ -372,8 +372,6 @@ TXT;
                 $line = 'Checked spelling and grammar.';
             } elseif ($name === 'read_pdf') {
                 $line = 'Checked the PDF.';
-            } elseif ($name === 'tasklist') {
-                $line = trim((string)($task['result'] ?? ''));
             }
             (new Kanban($this->db))->crossOffSteps($this->stepTaskId, false, [$title], $line);
         } catch (Throwable $e) {
@@ -409,9 +407,6 @@ TXT;
         }
         if ($name === 'grammar_check') {
             return preg_match('/\b(typo|typos|grammar|spelling|stavning)\b/', $lower) === 1;
-        }
-        if ($name === 'tasklist' && str_starts_with($text, 'Added a result')) {
-            return $kind === 'report';
         }
         return false;
     }
@@ -499,7 +494,7 @@ TXT;
                 }
                 $task = $board->recordResult($id, $projectId, $reported);
                 $current = $this->currentOpenStep($task);
-                if ($current && $this->stepKind((string)$current['title']) === 'report') {
+                if ($current) {
                     $task = $board->crossOffSteps((int)$task['id'], false, [trim((string)$current['title'])], $reported);
                 }
             } catch (InvalidArgumentException $e) {
@@ -509,10 +504,14 @@ TXT;
             }
             $status = $board->column($task);
             $open = $this->currentOpenStep($task);
+            $recurrence = strtolower(trim((string)($task['recurrence_interval'] ?? 'none')));
+            $repeats = $recurrence !== '' && $recurrence !== 'none';
             if ($status === 'done') {
                 $tail = ' Task is done. Do not delegate it again.';
             } elseif ($open) {
                 $tail = ' The task is not done. The open step is: ' . trim((string)$open['title']) . '. Do not tell the user the task is finished.';
+            } elseif ($repeats) {
+                $tail = ' The steps for this run are finished. Leave the task in progress. Do not delegate it again.';
             } else {
                 $tail = ' The main agent checks this and updates the task.';
             }

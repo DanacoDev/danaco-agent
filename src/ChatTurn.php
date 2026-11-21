@@ -21,13 +21,20 @@ class ChatTurn
                 return;
             }
             $agent = (string)($event['agent'] ?? '');
-            if ($agent !== '' && $agent !== 'orchestrator' && in_array($type, ['token', 'thinking', 'tool_call', 'tool_result', 'activity'], true)) {
+            if ($agent !== '' && $agent !== 'orchestrator' && in_array($type, ['token', 'thinking', 'tool_call', 'tool_result', 'activity', 'trim', 'thinking_trim'], true)) {
                 return;
             }
             if ($type === 'token') {
                 $this->streamed .= (string)($event['text'] ?? '');
+            } elseif ($type === 'trim') {
+                $cut = (string)($event['text'] ?? '');
+                if ($cut !== '' && str_ends_with($this->streamed, $cut)) {
+                    $this->streamed = substr($this->streamed, 0, -strlen($cut));
+                }
             } elseif ($type === 'thinking') {
                 $this->appendThinking((string)($event['agent'] ?? ''), (string)($event['text'] ?? ''));
+            } elseif ($type === 'thinking_trim') {
+                $this->trimThinking((string)($event['agent'] ?? ''), (string)($event['text'] ?? ''));
             } elseif ($type === 'tool_call') {
                 $this->detail['tools'][] = [
                     'agent' => (string)($event['agent'] ?? ''),
@@ -120,5 +127,29 @@ class ChatTurn
         if (strlen($combined) > 16000) {
             $this->detail['thinking'][$last]['text'] = self::clipThinking($combined);
         }
+    }
+
+    private function trimThinking(string $agent, string $text): void
+    {
+        if ($text === '') {
+            return;
+        }
+        $last = count($this->detail['thinking']) - 1;
+        if ($last < 0) {
+            return;
+        }
+        if (($this->detail['thinking'][$last]['agent'] ?? '') !== $agent) {
+            return;
+        }
+        $block = (string)$this->detail['thinking'][$last]['text'];
+        if (!str_ends_with($block, $text)) {
+            return;
+        }
+        $block = substr($block, 0, -strlen($text));
+        if ($block === '') {
+            array_pop($this->detail['thinking']);
+            return;
+        }
+        $this->detail['thinking'][$last]['text'] = $block;
     }
 }
