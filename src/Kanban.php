@@ -203,7 +203,7 @@ class Kanban
             if (preg_match('/^#\d+\s+\[/', $line)) {
                 continue;
             }
-            if (preg_match('/^-\s+\[(done|in_progress)\]/i', $line)) {
+            if (preg_match('/^-\s+\[(done|in_progress|scheduled)\]/i', $line)) {
                 continue;
             }
             if (preg_match('/^(Let me|I need to|I\'ll |I will |You\'re right|However,|Is there anything|Since it\'s already)/i', $line)) {
@@ -253,9 +253,12 @@ class Kanban
             if ($this->column($task) === 'archived' || (string)($task['status'] ?? '') === 'archived') {
                 continue;
             }
-            $line = '#' . $task['id'] . ' [' . $this->column($task) . '] ' . $task['title'] . ' (' . $task['assigned_agent'] . ')';
+            $waiting = $this->awaiting($task);
+            $line = '#' . $task['id'] . ' [' . ($waiting ? 'scheduled' : $this->column($task)) . '] ' . $task['title'] . ' (' . $task['assigned_agent'] . ')';
             if ((int)($task['held'] ?? 0) === 1 && empty($task['schedule_time'])) {
                 $line .= ' never';
+            } elseif ($waiting) {
+                $line .= ' scheduled for ' . $task['schedule_time'];
             } elseif (!empty($task['schedule_time'])) {
                 $line .= ' at ' . $task['schedule_time'];
             } else {
@@ -282,7 +285,7 @@ class Kanban
                 if ($title === '') {
                     continue;
                 }
-                $subStatus = (string)($sub['status'] ?? '') === 'done' ? 'done' : 'in_progress';
+                $subStatus = (string)($sub['status'] ?? '') === 'done' ? 'done' : ($waiting ? 'scheduled' : 'in_progress');
                 $stepAgent = trim((string)($sub['assigned_agent'] ?? ''));
                 if ($stepAgent === '') {
                     $stepAgent = (string)($task['assigned_agent'] ?? 'orchestrator');
@@ -299,6 +302,41 @@ class Kanban
             }
         }
         return $lines ? implode("\n", $lines) : 'No open tasks.';
+    }
+
+    public function awaiting(array $task): bool
+    {
+        if ((int)($task['held'] ?? 0) === 1) {
+            return false;
+        }
+        $when = $task['schedule_time'] ?? null;
+        if (!is_string($when) || trim($when) === '') {
+            return false;
+        }
+        $at = strtotime($when);
+        return $at !== false && $at > time();
+    }
+
+    public function createdLine(array $task): string
+    {
+        $line = 'Created task #' . $task['id'];
+        if ($this->awaiting($task)) {
+            $line .= ', scheduled for ' . $task['schedule_time'];
+        } else {
+            $line .= ' in ' . $this->column($task);
+        }
+        return $line . ': ' . $task['title'];
+    }
+
+    public function updatedLine(array $task): string
+    {
+        $line = 'Updated task #' . $task['id'];
+        if ($this->awaiting($task)) {
+            $line .= ', scheduled for ' . $task['schedule_time'];
+        } else {
+            $line .= ' to ' . $this->column($task);
+        }
+        return $line . ': ' . $task['title'];
     }
 
     public function column(array $task): string

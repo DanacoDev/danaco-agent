@@ -1635,7 +1635,7 @@ TXT;
                 if ($createdTaskIds !== null) {
                     $createdTaskIds[] = (int)$task['id'];
                 }
-                return 'Created task #' . $task['id'] . ' in ' . $board->column($task) . ': ' . $task['title'];
+                return $board->createdLine($task);
             }
             if ($action === 'move' || $action === 'update') {
                 $id = $this->kanbanCardId($projectId, $args);
@@ -1653,7 +1653,7 @@ TXT;
                         ? ' Added ' . $added . ($added === 1 ? ' step.' : ' steps.')
                         : ' Those steps are already on the task. None were added. Do not send them again.';
                 }
-                return 'Updated task #' . $task['id'] . ' to ' . $board->column($task) . ': ' . $task['title'] . $held . $stepsNote;
+                return $board->updatedLine($task) . $held . $stepsNote;
             }
             if ($action === 'delete') {
                 $id = (int)($args['id'] ?? 0);
