@@ -373,6 +373,7 @@ header('X-Danaco: 1');
                   <span class="task-name">
                     <button class="task-title" type="button" :class="{ 'is-finished': stepsDone(task) }" :aria-expanded="expandedTasks[task.id] ? 'true' : 'false'" @click="toggleSteps(task)">{{ task.title }}</button>
                     <span class="task-tag">#{{ task.id }}</span>
+                    <span v-if="taskNextRun(task)" class="task-when">{{ taskNextRun(task) }}</span>
                   </span>
                   <span class="task-tools">
                     <button v-if="taskStatus(task)==='done' && !taskRepeats(task)" class="task-edit" type="button" aria-label="Archive task" @click="archiveTask(task)">

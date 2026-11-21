@@ -2046,6 +2046,24 @@
           if (this.stepsDone(task) && result) return 'finished';
           return 'active';
         },
+        taskNextRun(task) {
+          if (this.taskState(task) !== 'scheduled') return '';
+          const when = String(task.schedule_time || '').trim();
+          const at = Date.parse(when.replace(' ', 'T'));
+          if (Number.isNaN(at)) return '';
+          const date = new Date(at);
+          const now = new Date();
+          const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+          const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+          const day = Math.round((dayStart - start) / 86400000);
+          const clock = date.getHours() + ':' + String(date.getMinutes()).padStart(2, '0');
+          if (day <= 0) return 'Today ' + clock;
+          if (day === 1) return 'Tomorrow ' + clock;
+          const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+          if (day < 7) return weekdays[date.getDay()] + ' ' + clock;
+          const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          return months[date.getMonth()] + ' ' + date.getDate() + ' ' + clock;
+        },
         taskStatusIndex() {
           const order = ['', 'pending', 'active', 'scheduled', 'finished'];
           const index = order.indexOf(this.taskFilter.state);

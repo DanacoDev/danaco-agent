@@ -714,9 +714,13 @@ class AgentRuntime
             $turnText = '';
             $guard = new RepeatLineGuard();
             $thinkingGuard = new RepeatLineGuard();
-            $showLeak = function (string $text) use ($leak, $emit, $agent, &$visible): void {
+            $visibleMark = strlen($visible);
+            $showLeak = function (string $text) use ($leak, $emit, $agent, &$visible, $visibleMark): void {
                 if ($text === '') {
                     return;
+                }
+                if ($visibleMark > 0 && strlen($visible) === $visibleMark) {
+                    $text = $this->spaceAfterSentence($visible, $text);
                 }
                 $visible .= $text;
                 $emit(['type' => 'token', 'agent' => $agent, 'text' => $text]);
@@ -1691,6 +1695,17 @@ class AgentRuntime
             $lines[] = $name . ' ' . (is_string($json) ? $json : '{}');
         }
         return $lines === [] ? 'tool' : implode("\n", $lines);
+    }
+
+    private function spaceAfterSentence(string $prior, string $text): string
+    {
+        if ($text === '' || preg_match('/^\s/', $text)) {
+            return $text;
+        }
+        if (preg_match('/[.!?][\'")\]]*$/', $prior)) {
+            return ' ' . $text;
+        }
+        return $text;
     }
 
     private function finishVisible(string $visible): string
