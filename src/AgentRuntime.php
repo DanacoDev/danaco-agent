@@ -1284,6 +1284,9 @@ class AgentRuntime
         if ($this->fakeXmlToolName($text) !== null) {
             return true;
         }
+        if (preg_match('/(?:^|[^A-Za-z0-9_])tool_[A-Za-z][A-Za-z0-9_-]{0,64}\s*\{/', $text)) {
+            return true;
+        }
         if ($this->claimedFileWriteWithoutCall($text)) {
             return true;
         }

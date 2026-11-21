@@ -961,8 +961,9 @@ header('X-Danaco: 1');
                 <label class="field">Max turns {{ settings.cloud_max_turns }}
                   <input v-model.number="settings.cloud_max_turns" type="range" min="10" max="500">
                 </label>
-                <label class="field">Base URL<input v-model="settings.cloud_base_url"></label>
-                <label class="field">Model<input v-model="settings.cloud_model"></label>
+                <label class="field">Endpoint URL (OpenAI schema)<input v-model="settings.cloud_base_url" placeholder="https://openrouter.ai/api/v1/responses"></label>
+                <label class="field">Model<input v-model="settings.cloud_model" placeholder="openrouter/free"></label>
+                <p class="hint">Use an API root, or the full address when it already ends in /chat/completions or /responses. The OpenRouter free router model is openrouter/free.</p>
                 <label class="field">API key
                   <input id="provider-key" v-model="cloudKeyDraft" type="password" autocomplete="off" :placeholder="settings.cloud_api_key_set ? 'Saved (' + settings.cloud_api_key + ')' : 'Not set'">
                 </label>

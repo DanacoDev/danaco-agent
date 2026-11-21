@@ -581,29 +581,273 @@ class LLMClient
     private function streamOpenAi(array $messages, callable $onToken, ?callable $shouldStop, ?callable $onThinking = null, bool $brief = false): string
     {
         $key = trim((string)$this->db->getSetting('cloud_api_key', ''));
-        $base = rtrim((string)$this->db->getSetting('cloud_base_url', app_config()['cloud_base_url']), '/');
         $model = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
         if ($key === '') {
             throw new LlmException('Cloud model mode needs an API key in Setup.');
         }
-        $request = [
-            'model' => $model,
-            'messages' => $messages,
-            'stream' => true,
-        ];
-        if ($brief) {
-            $request['max_tokens'] = 4096;
-        }
+        $target = $this->cloudTarget();
+        $request = $this->cloudBody($target['wire'], $model, $messages, true, $brief ? 4096 : null);
         $payload = json_encode($request, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (!is_string($payload) || $payload === '') {
             throw new LlmException('The model request could not be encoded.', false);
         }
-        return $this->curlStream($base . '/chat/completions', $payload, [
+        return $this->curlStream($target['url'], $payload, [
             'Authorization: Bearer ' . $key,
-        ], $onToken, false, $base, $model, $shouldStop, $onThinking);
+        ], $onToken, false, $target['base'], $model, $shouldStop, $onThinking, $target['wire']);
     }
 
-    private function curlStream(string $url, string $payload, array $headers, callable $onToken, bool $ollama, string $base, string $model, ?callable $shouldStop, ?callable $onThinking = null): string
+    private function cloudTarget(): array
+    {
+        $base = rtrim((string)$this->db->getSetting('cloud_base_url', app_config()['cloud_base_url']), '/');
+        $path = strtolower($base);
+        if (str_ends_with($path, '/responses')) {
+            return ['url' => $base, 'wire' => 'responses', 'base' => $base];
+        }
+        if (str_ends_with($path, '/chat/completions')) {
+            return ['url' => $base, 'wire' => 'chat', 'base' => $base];
+        }
+        return ['url' => $base . '/chat/completions', 'wire' => 'chat', 'base' => $base];
+    }
+
+    private function cloudBody(string $wire, string $model, array $messages, bool $stream, ?int $maxTokens): array
+    {
+        if ($wire !== 'responses') {
+            $request = [
+                'model' => $model,
+                'messages' => $messages,
+                'stream' => $stream,
+            ];
+            if ($maxTokens !== null) {
+                $request['max_tokens'] = $maxTokens;
+            }
+            return $request;
+        }
+        [$instructions, $input] = $this->responsesInput($messages);
+        if ($input === []) {
+            throw new LlmException('The model request had no message to send.', false);
+        }
+        $request = [
+            'model' => $model,
+            'input' => $input,
+            'stream' => $stream,
+        ];
+        if ($instructions !== []) {
+            $request['instructions'] = implode("\n\n", $instructions);
+        }
+        if ($maxTokens !== null) {
+            $request['max_output_tokens'] = $maxTokens;
+        }
+        return $request;
+    }
+
+    private function responsesInput(array $messages): array
+    {
+        $instructions = [];
+        $input = [];
+        foreach ($messages as $message) {
+            if (!is_array($message)) {
+                continue;
+            }
+            $role = (string)($message['role'] ?? 'user');
+            $content = $message['content'] ?? '';
+            if ($role === 'system' || $role === 'developer') {
+                $text = $this->plainContent($content);
+                if ($text !== '') {
+                    $instructions[] = $text;
+                }
+                continue;
+            }
+            $outRole = $role === 'assistant' ? 'assistant' : 'user';
+            $parts = $this->responsesParts($outRole, $content);
+            if ($parts === []) {
+                continue;
+            }
+            $input[] = [
+                'type' => 'message',
+                'role' => $outRole,
+                'content' => $parts,
+            ];
+        }
+        return [$instructions, $input];
+    }
+
+    private function responsesParts(string $role, mixed $content): array
+    {
+        $textType = $role === 'assistant' ? 'output_text' : 'input_text';
+        if (is_string($content)) {
+            return $content === '' ? [] : [['type' => $textType, 'text' => $content]];
+        }
+        if (!is_array($content)) {
+            return [];
+        }
+        $parts = [];
+        foreach ($content as $part) {
+            if (is_string($part)) {
+                if ($part !== '') {
+                    $parts[] = ['type' => $textType, 'text' => $part];
+                }
+                continue;
+            }
+            if (!is_array($part)) {
+                continue;
+            }
+            $type = (string)($part['type'] ?? '');
+            if ($type === 'text' || $type === 'input_text' || $type === 'output_text') {
+                $text = (string)($part['text'] ?? '');
+                if ($text !== '') {
+                    $parts[] = ['type' => $textType, 'text' => $text];
+                }
+                continue;
+            }
+            if ($type === 'image_url' || $type === 'input_image') {
+                $image = $part['image_url'] ?? ($part['url'] ?? '');
+                if (is_array($image)) {
+                    $image = (string)($image['url'] ?? '');
+                }
+                if (is_string($image) && $image !== '') {
+                    $parts[] = ['type' => 'input_image', 'image_url' => $image];
+                }
+            }
+        }
+        return $parts;
+    }
+
+    private function plainContent(mixed $content): string
+    {
+        if (is_string($content)) {
+            return $content;
+        }
+        $bits = [];
+        foreach ($this->responsesParts('user', $content) as $part) {
+            if (($part['type'] ?? '') === 'input_text') {
+                $bits[] = (string)$part['text'];
+            }
+        }
+        return implode("\n", $bits);
+    }
+
+    private function responsesText(array $json): string
+    {
+        if (is_string($json['output_text'] ?? null) && trim($json['output_text']) !== '') {
+            return trim($json['output_text']);
+        }
+        $text = '';
+        $output = $json['output'] ?? [];
+        if (!is_array($output)) {
+            return '';
+        }
+        foreach ($output as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $content = $item['content'] ?? null;
+            if (is_string($content)) {
+                $text .= $content;
+                continue;
+            }
+            if (!is_array($content)) {
+                continue;
+            }
+            foreach ($content as $part) {
+                if (!is_array($part)) {
+                    continue;
+                }
+                if ((string)($part['type'] ?? '') === 'output_text') {
+                    $text .= (string)($part['text'] ?? '');
+                }
+            }
+        }
+        return trim($text);
+    }
+
+    private function readResponsesEvent(array $json, string &$channel, string &$doneReason): array
+    {
+        $out = ['token' => '', 'thought' => '', 'error' => ''];
+        $type = (string)($json['type'] ?? '');
+        if ($type === 'response.output_text.delta' || $type === 'response.content_part.delta') {
+            if ($type === 'response.content_part.delta') {
+                $partType = (string)($json['part']['type'] ?? '');
+                if ($partType !== '' && $partType !== 'output_text') {
+                    return $out;
+                }
+            }
+            $kind = $type === 'response.output_text.delta' ? 'output' : 'part';
+            $delta = $json['delta'] ?? '';
+            if (is_array($delta)) {
+                $delta = (string)($delta['text'] ?? '');
+            }
+            if (!is_string($delta) || $delta === '') {
+                return $out;
+            }
+            if ($channel === '') {
+                $channel = $kind;
+            }
+            if ($channel === $kind) {
+                $out['token'] = $delta;
+            }
+            return $out;
+        }
+        if ($type === 'response.reasoning_text.delta' || $type === 'response.reasoning_summary_text.delta') {
+            $delta = $json['delta'] ?? '';
+            if (is_string($delta)) {
+                $out['thought'] = $delta;
+            }
+            return $out;
+        }
+        if ($type === 'response.failed' || $type === 'error') {
+            $out['error'] = $this->responsesFailure($json);
+            return $out;
+        }
+        if ($type === 'response.incomplete') {
+            $doneReason = $this->responsesStop($json);
+            return $out;
+        }
+        if ($type === 'response.completed') {
+            $status = (string)($json['response']['status'] ?? 'completed');
+            if ($status === 'failed') {
+                $out['error'] = $this->responsesFailure($json);
+            } elseif ($status === 'incomplete') {
+                $doneReason = $this->responsesStop($json);
+            } elseif ($doneReason === '') {
+                $doneReason = 'stop';
+            }
+        }
+        return $out;
+    }
+
+    private function responsesFailure(array $json): string
+    {
+        $err = $json['response']['error'] ?? $json['error'] ?? null;
+        if (is_array($err)) {
+            $message = trim((string)($err['message'] ?? ''));
+            return $message !== '' ? $message : (string)json_encode($err);
+        }
+        if (is_string($err) && trim($err) !== '') {
+            return trim($err);
+        }
+        $message = trim((string)($json['message'] ?? ''));
+        return $message !== '' ? $message : 'The response failed.';
+    }
+
+    private function responsesStop(array $json): string
+    {
+        $reason = (string)($json['response']['incomplete_details']['reason'] ?? $json['incomplete_details']['reason'] ?? '');
+        if ($reason === 'max_output_tokens') {
+            return 'length';
+        }
+        return $reason !== '' ? $reason : 'length';
+    }
+
+    private function cloudReplyText(array $json): string
+    {
+        $content = trim((string)($json['choices'][0]['message']['content'] ?? ''));
+        if ($content !== '') {
+            return $content;
+        }
+        return $this->responsesText($json);
+    }
+
+    private function curlStream(string $url, string $payload, array $headers, callable $onToken, bool $ollama, string $base, string $model, ?callable $shouldStop, ?callable $onThinking = null, string $wire = 'chat'): string
     {
         $buffer = '';
         $full = '';
@@ -611,6 +855,7 @@ class LLMClient
         $doneReason = '';
         $thinking = '';
         $toolNames = [];
+        $textChannel = '';
         $this->placementTries = 0;
         $this->placementNext = 0;
         $ch = curl_init($url);
@@ -641,7 +886,7 @@ class LLMClient
                     return 0;
                 }
             },
-            CURLOPT_WRITEFUNCTION => function ($ch, string $data) use (&$buffer, &$full, &$errorBody, &$doneReason, &$thinking, &$toolNames, $onToken, $onThinking, $ollama, $shouldStop): int {
+            CURLOPT_WRITEFUNCTION => function ($ch, string $data) use (&$buffer, &$full, &$errorBody, &$doneReason, &$thinking, &$toolNames, &$textChannel, $onToken, $onThinking, $ollama, $shouldStop, $wire): int {
                 try {
                     if ($shouldStop && $shouldStop()) {
                         return 0;
@@ -668,6 +913,30 @@ class LLMClient
                     }
                     $json = json_decode($line, true);
                     if (!is_array($json)) {
+                        continue;
+                    }
+                    if ($wire === 'responses') {
+                        if (isset($json['error']) && (string)($json['type'] ?? '') === '') {
+                            $errorBody .= is_string($json['error']) ? $json['error'] : json_encode($json['error']);
+                        }
+                        $picked = $this->readResponsesEvent($json, $textChannel, $doneReason);
+                        if ($picked['error'] !== '') {
+                            $errorBody .= $picked['error'];
+                        }
+                        $thought = $picked['thought'];
+                        if ($thought !== '') {
+                            $thinking .= $thought;
+                            if (strlen($thinking) > 4000) {
+                                $thinking = substr($thinking, -4000);
+                            }
+                            if ($onThinking) {
+                                $onThinking($thought);
+                            }
+                        }
+                        if ($picked['token'] !== '') {
+                            $full .= $picked['token'];
+                            $onToken($picked['token']);
+                        }
                         continue;
                     }
                     if (isset($json['error'])) {
@@ -1195,23 +1464,23 @@ class LLMClient
     private function askYesNoCloud(array $messages, ?callable $shouldStop): ?string
     {
         $key = trim((string)$this->db->getSetting('cloud_api_key', ''));
-        $base = rtrim((string)$this->db->getSetting('cloud_base_url', app_config()['cloud_base_url']), '/');
         $model = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
         $this->db->loop('orchestrator', 'model', 'yesno · ask cloud · ' . $model . ' · ' . $this->loadedSummary());
         $this->noteMachine('orchestrator');
         if ($key === '') {
             return null;
         }
-        $payload = json_encode([
-            'model' => $model,
-            'messages' => $messages,
-            'stream' => false,
-            'max_tokens' => 8,
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        $target = $this->cloudTarget();
+        try {
+            $request = $this->cloudBody($target['wire'], $model, $messages, false, 8);
+        } catch (LlmException $e) {
+            return null;
+        }
+        $payload = json_encode($request, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (!is_string($payload) || $payload === '') {
             return null;
         }
-        $raw = $this->postJson($base . '/chat/completions', $payload, [
+        $raw = $this->postJson($target['url'], $payload, [
             'Authorization: Bearer ' . $key,
         ], $shouldStop);
         if ($raw === null) {
@@ -1221,7 +1490,7 @@ class LLMClient
         if (!is_array($json)) {
             return null;
         }
-        $content = trim((string)($json['choices'][0]['message']['content'] ?? ''));
+        $content = $this->cloudReplyText($json);
         return $content !== '' ? $content : null;
     }
 
@@ -1302,23 +1571,18 @@ class LLMClient
     private function seeImageCloud(string $question, string $mime, string $b64, ?callable $shouldStop): string
     {
         $key = trim((string)$this->db->getSetting('cloud_api_key', ''));
-        $base = rtrim((string)$this->db->getSetting('cloud_base_url', app_config()['cloud_base_url']), '/');
         $model = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
         if ($key === '') {
             return 'Cloud model mode needs an API key in Setup.';
         }
-        $response = $this->postImage($base . '/chat/completions', [
-            'model' => $model,
-            'messages' => [[
-                'role' => 'user',
-                'content' => [
-                    ['type' => 'text', 'text' => $question],
-                    ['type' => 'image_url', 'image_url' => ['url' => 'data:' . $mime . ';base64,' . $b64]],
-                ],
-            ]],
-            'stream' => false,
-            'max_tokens' => 900,
-        ], ['Authorization: Bearer ' . $key], $shouldStop);
+        $target = $this->cloudTarget();
+        $response = $this->postImage($target['url'], $this->cloudBody($target['wire'], $model, [[
+            'role' => 'user',
+            'content' => [
+                ['type' => 'text', 'text' => $question],
+                ['type' => 'image_url', 'image_url' => ['url' => 'data:' . $mime . ';base64,' . $b64]],
+            ],
+        ]], false, 900), ['Authorization: Bearer ' . $key], $shouldStop);
         return $this->imageAnswer($response, true);
     }
 
@@ -1390,7 +1654,7 @@ class LLMClient
             return 'The model did not answer after looking at the image.';
         }
         if ($cloud) {
-            $content = $this->visibleText((string)($json['choices'][0]['message']['content'] ?? ''));
+            $content = $this->visibleText($this->cloudReplyText($json));
         } else {
             $message = is_array($json['message'] ?? null) ? $json['message'] : [];
             $content = $this->visibleText((string)($message['content'] ?? ''));

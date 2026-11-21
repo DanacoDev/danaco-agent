@@ -677,7 +677,7 @@ class ToolStreamParser
     private function nameBeforeBrace(string $text, int $braceAt): ?array
     {
         $i = $braceAt - 1;
-        while ($i >= 0 && ($text[$i] === ' ' || $text[$i] === "\t")) {
+        while ($i >= 0 && ($text[$i] === ' ' || $text[$i] === "\t" || $text[$i] === "\n" || $text[$i] === "\r")) {
             $i--;
         }
         if ($i < 0) {
@@ -703,6 +703,22 @@ class ToolStreamParser
     }
 
     private function matchCallName(string $word): ?array
+    {
+        $exact = $this->exactCallName($word);
+        if ($exact !== null) {
+            return $exact;
+        }
+        if (preg_match('/^tool_(.+)$/i', $word, $prefix) !== 1) {
+            return null;
+        }
+        $inner = $this->exactCallName($prefix[1]);
+        if ($inner !== null) {
+            return $inner;
+        }
+        return ['kind' => 'unknown', 'name' => $prefix[1]];
+    }
+
+    private function exactCallName(string $word): ?array
     {
         foreach ($this->toolNames as $known) {
             if (strcasecmp((string)$known, $word) === 0) {
@@ -754,10 +770,10 @@ class ToolStreamParser
         $word = $match[1];
         $after = $match[2];
         if ($this->matchCallName($word) !== null) {
-            if ($after === '' || preg_match('/^[ \t]+$/', $after) === 1) {
+            if ($after === '' || preg_match('/^[ \t\r\n]+$/', $after) === 1) {
                 return true;
             }
-            return preg_match('/^[ \t]*\{/', $after) === 1;
+            return preg_match('/^[ \t\r\n]*\{/', $after) === 1;
         }
         if ($after !== '') {
             return false;
@@ -772,15 +788,23 @@ class ToolStreamParser
         }
         foreach (array_merge($this->toolNames, self::ALIASES) as $name) {
             $name = (string)$name;
-            if (strlen($word) < strlen($name) && strncasecmp($name, $word, strlen($word)) === 0) {
+            if ($this->namePrefix($word, $name) || $this->namePrefix($word, 'tool_' . $name)) {
                 return true;
             }
         }
         return false;
     }
 
+    private function namePrefix(string $word, string $name): bool
+    {
+        return strlen($word) < strlen($name) && strncasecmp($name, $word, strlen($word)) === 0;
+    }
+
     private function callFromName(string $kind, string $name, array $decoded): ?array
     {
+        if ($kind === 'unknown') {
+            return null;
+        }
         $args = $this->objectArgs($decoded);
         if ($kind === 'tool') {
             return ['name' => $name, 'args' => $args];

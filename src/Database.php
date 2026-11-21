@@ -323,6 +323,15 @@ SQL);
             }
             $this->setSetting('tools_default_on', '1');
         }
+        if ($this->getSetting('cloud_openrouter_default') !== '1') {
+            if ((string)$this->getSetting('cloud_base_url', '') === 'https://api.openai.com/v1') {
+                $this->setSetting('cloud_base_url', (string)$config['cloud_base_url']);
+            }
+            if ((string)$this->getSetting('cloud_model', '') === 'gpt-4o-mini') {
+                $this->setSetting('cloud_model', (string)$config['cloud_model']);
+            }
+            $this->setSetting('cloud_openrouter_default', '1');
+        }
         if ($this->getSetting('cloud_api_use_fixed') !== '1') {
             $use = (string)$this->getSetting('cloud_api_use', '');
             $mode = (string)$this->getSetting('model_mode', '');
