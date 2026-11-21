@@ -1359,7 +1359,7 @@ class AgentRuntime
             'delegate', 'filesystem', 'list_files', 'read_file', 'read_image', 'read_pdf', 'screenshot', 'write_file', 'delete_file', 'move_file',
             'create_pdf', 'run_command', 'run_python', 'py_install', 'tasklist', 'kanban', 'wiki_memory', 'wiki_search', 'wiki_read', 'wiki_write',
             'wiki_reindex', 'list_vault', 'read_vault', 'restore_file', 'write_skill', 'test_skill', 'remember', 'send_email',
-            'web_search', 'fetch_url', 'browse_url', 'ftp', 'mcp', 'download_large', 'task_breakdown',
+            'web_search', 'fetch_url', 'browse_url', 'yahoo_finance', 'ftp', 'mcp', 'download_large', 'task_breakdown',
             'research_pipeline', 'sqlite_helper', 'code_verifier', 'humanizer', 'grammar_check', 'write_article', 'make_graphic', 'save_note',
             'news_fetcher', 'atr_stop_loss',
         ];

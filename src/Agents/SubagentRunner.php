@@ -166,7 +166,7 @@ class SubagentRunner
 Team. Delegate by the kind of work. Every subagent can use: {$shared}.
 Those skills cover any file in the project, including the wiki. {$scope} A new or replaced skill goes to the coder through write_skill. That registers it in the Skills library, outside the project, so later runs and scheduled tasks can call it by name. You have write_skill when the coder cannot finish it. test_skill runs a skill and returns what it printed. You have that too. Do not write a skill into the project.
 {$capLine}
-- researcher: find and check facts with web_search, fetch_url, and browse_url, parse documents, then log them with research_pipeline in their own wiki file. Do not put research in the project description.
+- researcher: find and check facts with web_search, fetch_url, and browse_url, and use yahoo_finance for trading research across stocks, bonds, commodities, crypto, currencies, indexes, and futures, parse documents, then log them with research_pipeline in their own wiki file. Do not put research in the project description.
 - writer: draft long-form text, documentation, and communication copy, and save it in the wiki. A poem, book, web content, or article runs write_article and follows every step, including humanizer and a spelling pass. A PDF is the last step of that skill, and only the file path comes back. A figure, icon, or infographic runs make_graphic, then the file is written and its path comes back. Delegate the brief and the file name. Do not give a PDF to the coder.
 - coder: write and debug software in PHP, run code_verifier on each changed file, and use download_large for a download over 100 MB. Use Python only when a Python library is required, and run that file with run_python. If run_python says a library is missing, stop and name it. Do not install it. Do not use run_command for Python, and do not ask for full system control to run a script. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A skill program is PHP. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
@@ -203,6 +203,11 @@ TXT;
         }
         if ($agent === 'consultant') {
             $expand[] = 'tasklist';
+        }
+        if ($agent === 'researcher') {
+            $expand[] = 'yahoo_finance';
+        } else {
+            $omit[] = 'yahoo_finance';
         }
         $catalog = $this->skills->promptCatalog($omit, [], $expand);
         $extra = [];
@@ -864,6 +869,9 @@ TXT;
                 $tools[$name] = $handler;
             }
         }
+        if ($agent !== 'researcher') {
+            unset($tools['yahoo_finance']);
+        }
         foreach (array_keys($tools) as $name) {
             if (!$this->skills->offered($name)) {
                 unset($tools[$name]);
@@ -1120,7 +1128,7 @@ TXT;
     private function toolHint(array $args): string
     {
         $bits = [];
-        foreach (['action', 'query', 'url', 'path', 'database', 'table', 'name'] as $key) {
+        foreach (['action', 'symbol', 'query', 'url', 'path', 'database', 'table', 'name'] as $key) {
             $value = trim((string)($args[$key] ?? ''));
             if ($value === '') {
                 continue;

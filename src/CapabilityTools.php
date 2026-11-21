@@ -16,6 +16,7 @@ class CapabilityTools
         $handlers['web_search'] = fn(array $args): string => $this->webSearch((string)($args['query'] ?? ''), (string)($args['region'] ?? ''));
         $handlers['fetch_url'] = fn(array $args): string => $this->fetchUrl((string)($args['url'] ?? ''));
         $handlers['browse_url'] = fn(array $args): string => $this->browseUrl((string)($args['url'] ?? ''));
+        $handlers['yahoo_finance'] = fn(array $args): string => $this->yahooFinance($args);
         $handlers['run_command'] = fn(array $args): string => $this->runCommand((string)($args['command'] ?? ''), $projectFolder, $allowInstall);
         $handlers['run_python'] = fn(array $args): string => $this->runPython((string)($args['path'] ?? $args['file'] ?? ''), $projectFolder);
         if ($projectId > 0 && $this->db->emailAccounts($projectId)) {
@@ -2366,5 +2367,868 @@ class CapabilityTools
                 $found[] = $full;
             }
         }
+    }
+
+    public function yahooFinance(array $args): string
+    {
+        $action = $this->yahooAction($args);
+        if ($action === '') {
+            return 'action is quote, history, dividends, splits, events, or search.';
+        }
+        $asked = trim((string)($args['symbol'] ?? $args['ticker'] ?? ''));
+        if ($asked === '') {
+            $asked = trim((string)($args['query'] ?? ''));
+        }
+        $query = $this->yahooQuery($asked);
+        if ($query === '' || !preg_match('/^[A-Z0-9^.= -]{1,80}$/', $query)) {
+            return 'Pass a ticker or Yahoo symbol, such as NIBE-B or NIBE-B.ST.';
+        }
+        $type = $this->yahooType((string)($args['type'] ?? $args['kind'] ?? ''));
+        if ($type === null) {
+            return 'type is stock, etf, fund, index, bond, commodity, crypto, fx, or future.';
+        }
+        $exchange = strtoupper(trim((string)($args['exchange'] ?? '')));
+        if ($exchange !== '' && !in_array($exchange, $this->yahooExchanges(), true)) {
+            return 'exchange is a Yahoo suffix such as ST, L, or TO.';
+        }
+        $window = $this->yahooWindow($action, $args);
+        if (is_string($window)) {
+            return $window;
+        }
+        if ($action !== 'search') {
+            $query = $this->yahooAlias($query, $type);
+        }
+        $picked = null;
+        $symbol = $query;
+        $lookup = $action === 'search' || !$this->yahooDirect($query) || ($type !== '' && !$this->yahooEncoded($query));
+        if ($lookup) {
+            $picked = $this->yahooFind($query, $exchange, $type);
+            if (is_string($picked)) {
+                return $picked;
+            }
+            if ($action === 'search') {
+                return $this->yahooSearchText($query, $type, $picked);
+            }
+            $symbol = (string)$picked['symbol'];
+        }
+        $chart = $this->yahooLoadChart($symbol, $window);
+        if (is_string($chart)) {
+            if ($picked !== null) {
+                return $chart;
+            }
+            $picked = $this->yahooFind($query, $exchange, $type);
+            if (is_string($picked) || (string)$picked['symbol'] === $symbol) {
+                return $chart;
+            }
+            $symbol = (string)$picked['symbol'];
+            $chart = $this->yahooLoadChart($symbol, $window);
+            if (is_string($chart)) {
+                return $chart;
+            }
+        }
+        return $this->yahooPresent($action, $asked, $symbol, is_array($picked) ? $picked : [], $chart, $window);
+    }
+
+    private function yahooAction(array $args): string
+    {
+        $action = strtolower(trim((string)($args['action'] ?? '')));
+        $map = [
+            'quote' => 'quote',
+            'price' => 'quote',
+            'history' => 'history',
+            'chart' => 'history',
+            'prices' => 'history',
+            'dividends' => 'dividends',
+            'dividend' => 'dividends',
+            'splits' => 'splits',
+            'split' => 'splits',
+            'events' => 'events',
+            'search' => 'search',
+            'lookup' => 'search',
+        ];
+        if ($action !== '' && !isset($map[$action])) {
+            return '';
+        }
+        if ($action !== '') {
+            return $map[$action];
+        }
+        foreach (['range', 'interval', 'start', 'end'] as $key) {
+            if (trim((string)($args[$key] ?? '')) !== '') {
+                return 'history';
+            }
+        }
+        return 'quote';
+    }
+
+    private function yahooQuery(string $raw): string
+    {
+        $text = strtoupper(trim($raw));
+        $text = preg_replace('/\s+/', ' ', $text) ?? $text;
+        if (preg_match('/^[A-Z0-9^][A-Z0-9.^*=-]{0,30} [A-Z]$/', $text)) {
+            $text = str_replace(' ', '-', $text);
+        }
+        if (preg_match('/^([A-Z0-9]{1,12})\.([A-Z])$/', $text, $match) && !in_array($match[2], $this->yahooExchanges(), true)) {
+            $text = $match[1] . '-' . $match[2];
+        }
+        return $text;
+    }
+
+    private function yahooDirect(string $symbol): bool
+    {
+        if ($symbol === '' || str_contains($symbol, ' ')) {
+            return false;
+        }
+        if ($this->yahooEncoded($symbol)) {
+            return true;
+        }
+        return (bool)preg_match('/^[A-Z][A-Z0-9]{0,9}$/', $symbol);
+    }
+
+    private function yahooType(string $type): ?string
+    {
+        $type = strtolower(trim($type));
+        if ($type === '') {
+            return '';
+        }
+        $map = [
+            'stock' => 'stock',
+            'equity' => 'stock',
+            'etf' => 'etf',
+            'fund' => 'fund',
+            'mutualfund' => 'fund',
+            'index' => 'index',
+            'bond' => 'bond',
+            'bonds' => 'bond',
+            'yield' => 'bond',
+            'commodity' => 'commodity',
+            'commodities' => 'commodity',
+            'fx' => 'fx',
+            'currency' => 'fx',
+            'forex' => 'fx',
+            'crypto' => 'crypto',
+            'cryptocurrency' => 'crypto',
+            'future' => 'future',
+            'futures' => 'future',
+            'option' => 'option',
+            'options' => 'option',
+        ];
+        return $map[$type] ?? null;
+    }
+
+    private function yahooWindow(string $action, array $args): array|string
+    {
+        $range = strtolower(trim((string)($args['range'] ?? '')));
+        $interval = strtolower(trim((string)($args['interval'] ?? '')));
+        $start = trim((string)($args['start'] ?? ''));
+        $end = trim((string)($args['end'] ?? ''));
+        if ($range !== '' && !$this->yahooRangeOk($range)) {
+            return 'range is a number of days such as 10d or 30d, or 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, or max.';
+        }
+        if ($interval !== '' && !in_array($interval, ['1m', '2m', '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk', '1mo', '3mo'], true)) {
+            return 'interval is 1m, 2m, 5m, 15m, 30m, 60m, 90m, 1h, 1d, 5d, 1wk, 1mo, or 3mo.';
+        }
+        $params = ['includeAdjustedClose' => 'true', 'events' => 'div|split'];
+        if ($action === 'quote' || $action === 'search') {
+            $params['interval'] = '1d';
+            $params['range'] = '5d';
+            return $params;
+        }
+        if ($start !== '' || $end !== '') {
+            if ($start === '' || $end === '') {
+                return 'Pass both start and end as YYYY-MM-DD, or pass range.';
+            }
+            $from = $this->yahooStamp($start, false);
+            $to = $this->yahooStamp($end, true);
+            if ($from === null || $to === null) {
+                return 'start and end are dates, YYYY-MM-DD.';
+            }
+            if ($from > $to) {
+                return 'start is after end.';
+            }
+            $params['period1'] = (string)$from;
+            $params['period2'] = (string)$to;
+            $params['interval'] = $interval !== '' ? $interval : ($action === 'history' ? '1d' : '1mo');
+            return $params;
+        }
+        if ($action === 'history') {
+            $params['range'] = $range !== '' ? $range : '1y';
+            $params['interval'] = $interval !== '' ? $interval : '1d';
+            return $params;
+        }
+        $params['range'] = $range !== '' ? $range : 'max';
+        $params['interval'] = '1mo';
+        return $params;
+    }
+
+    private function yahooRangeOk(string $range): bool
+    {
+        if (in_array($range, ['1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max'], true)) {
+            return true;
+        }
+        return (bool)preg_match('/^[1-9]\d{0,3}d$/', $range);
+    }
+
+    private function yahooStamp(string $value, bool $end): ?int
+    {
+        if (!preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $value, $match) || !checkdate((int)$match[2], (int)$match[3], (int)$match[1])) {
+            return null;
+        }
+        $stamp = strtotime($value . ' ' . ($end ? '23:59:59' : '00:00:00') . ' UTC');
+        return $stamp === false ? null : $stamp;
+    }
+
+    private function yahooFind(string $query, string $exchange, string $type): array|string
+    {
+        $url = 'https://query2.finance.yahoo.com/v1/finance/search?quotesCount=8&newsCount=0&q=' . rawurlencode($query);
+        $json = $this->yahooJson($url);
+        if (is_string($json)) {
+            return $json;
+        }
+        $quotes = $json['quotes'] ?? null;
+        if (!is_array($quotes) || $quotes === []) {
+            return 'Yahoo has no listing for ' . $query . '.';
+        }
+        $rows = [];
+        foreach ($quotes as $quote) {
+            if (!is_array($quote)) {
+                continue;
+            }
+            $symbol = strtoupper(trim((string)($quote['symbol'] ?? '')));
+            if ($symbol === '') {
+                continue;
+            }
+            $rows[] = $quote;
+        }
+        if ($rows === []) {
+            return 'Yahoo has no listing for ' . $query . '.';
+        }
+        $pool = $type === '' ? $rows : array_values(array_filter($rows, fn(array $quote): bool => $this->yahooTypeMatch($type, $quote)));
+        if ($pool === []) {
+            $bits = [];
+            foreach (array_slice($rows, 0, 5) as $quote) {
+                $bits[] = strtoupper((string)$quote['symbol']) . ' (' . $this->yahooKind((string)($quote['quoteType'] ?? '')) . ')';
+            }
+            return 'No ' . $type . ' matched ' . $query . '. Yahoo returned: ' . implode(', ', $bits) . '.';
+        }
+        $best = -1;
+        $scored = [];
+        foreach ($pool as $quote) {
+            $score = $this->yahooScore($query, strtoupper((string)$quote['symbol']));
+            $scored[] = ['quote' => $quote, 'score' => $score];
+            if ($score > $best) {
+                $best = $score;
+            }
+        }
+        $chosen = null;
+        if ($exchange !== '') {
+            foreach ($scored as $item) {
+                if ($item['score'] >= 90 && $this->yahooSuffix(strtoupper((string)$item['quote']['symbol'])) === $exchange) {
+                    $chosen = $item;
+                    break;
+                }
+            }
+        }
+        $note = '';
+        if ($chosen === null) {
+            if ($exchange !== '' && $best >= 90) {
+                $note = 'No ' . $exchange . ' listing matched. Using the closest Yahoo symbol.';
+            }
+            foreach ($scored as $item) {
+                if ($best >= 90 && $item['score'] === $best) {
+                    $chosen = $item;
+                    break;
+                }
+            }
+        }
+        if ($chosen === null && str_contains($query, ' ')) {
+            $chosen = $scored[0];
+        }
+        if ($chosen === null && !str_contains($query, ' ')) {
+            foreach ($scored as $item) {
+                if ($this->yahooPrefix($query, strtoupper((string)$item['quote']['symbol']))) {
+                    $chosen = $item;
+                    break;
+                }
+            }
+        }
+        if ($chosen === null) {
+            $bits = [];
+            foreach (array_slice($pool, 0, 5) as $quote) {
+                $bits[] = strtoupper((string)$quote['symbol']) . ' (' . $this->yahooKind((string)($quote['quoteType'] ?? '')) . ')';
+            }
+            return 'Yahoo has no listing for ' . $query . '. Nearby: ' . implode(', ', $bits) . '.';
+        }
+        $symbol = strtoupper((string)$chosen['quote']['symbol']);
+        $alternates = [];
+        foreach ($scored as $item) {
+            $other = strtoupper((string)$item['quote']['symbol']);
+            if ($other === $symbol) {
+                continue;
+            }
+            $keep = ($best >= 90 && $item['score'] === $best)
+                || ($best < 90 && str_contains($query, ' '))
+                || ($best < 90 && $this->yahooPrefix($query, $other));
+            if ($keep && count($alternates) < 6) {
+                $alternates[] = $other;
+            }
+        }
+        return [
+            'symbol' => $symbol,
+            'alternates' => $alternates,
+            'note' => $note,
+            'rows' => $pool,
+        ];
+    }
+
+    private function yahooPrefix(string $query, string $symbol): bool
+    {
+        return $symbol === '^' . $query
+            || str_starts_with($symbol, $query . '-')
+            || str_starts_with($symbol, $query . '=');
+    }
+
+    private function yahooScore(string $query, string $symbol): int
+    {
+        if ($symbol === $query || $symbol === '^' . $query) {
+            return 100;
+        }
+        $base = $this->yahooBase($symbol);
+        $want = $this->yahooBase($query);
+        if ($base !== '' && $base === $want) {
+            return 90;
+        }
+        return 0;
+    }
+
+    private function yahooBase(string $symbol): string
+    {
+        if (str_starts_with($symbol, '^')) {
+            $symbol = substr($symbol, 1);
+        }
+        if (str_ends_with($symbol, '=X') || str_ends_with($symbol, '=F')) {
+            return substr($symbol, 0, -2);
+        }
+        $suffix = $this->yahooSuffix($symbol);
+        if ($suffix !== '') {
+            return substr($symbol, 0, -strlen($suffix) - 1);
+        }
+        return $symbol;
+    }
+
+    private function yahooSuffix(string $symbol): string
+    {
+        $pos = strrpos($symbol, '.');
+        if ($pos === false) {
+            return '';
+        }
+        $suffix = substr($symbol, $pos + 1);
+        return in_array($suffix, $this->yahooExchanges(), true) ? $suffix : '';
+    }
+
+    private function yahooTypeMatch(string $type, array $quote): bool
+    {
+        $kind = strtoupper((string)($quote['quoteType'] ?? ''));
+        if ($type === 'bond') {
+            return $this->yahooIsBond($quote);
+        }
+        if ($type === 'commodity') {
+            return $this->yahooIsCommodity($quote);
+        }
+        $map = [
+            'stock' => 'EQUITY',
+            'etf' => 'ETF',
+            'fund' => 'MUTUALFUND',
+            'index' => 'INDEX',
+            'fx' => 'CURRENCY',
+            'crypto' => 'CRYPTOCURRENCY',
+            'future' => 'FUTURE',
+            'option' => 'OPTION',
+        ];
+        return $kind === ($map[$type] ?? '');
+    }
+
+    private function yahooIsBond(array $quote): bool
+    {
+        $kind = strtoupper((string)($quote['quoteType'] ?? ''));
+        $disp = strtolower((string)($quote['typeDisp'] ?? ''));
+        $name = strtolower(trim((string)($quote['shortname'] ?? '') . ' ' . (string)($quote['longname'] ?? '')));
+        if ($kind === 'BOND' || str_contains($disp, 'bond')) {
+            return $kind !== 'ETF' && $kind !== 'MUTUALFUND';
+        }
+        if ($kind === 'ETF' || $kind === 'MUTUALFUND' || $kind === 'OPTION' || $kind === 'FUTURE') {
+            return false;
+        }
+        return (bool)preg_match('/\b(bond|treasury|yield|gilt|bund|obligation)\b/', $name);
+    }
+
+    private function yahooEncoded(string $symbol): bool
+    {
+        if ($symbol === '' || str_contains($symbol, ' ')) {
+            return false;
+        }
+        if (str_starts_with($symbol, '^') || str_ends_with($symbol, '=X') || str_ends_with($symbol, '=F') || $this->yahooSuffix($symbol) !== '') {
+            return true;
+        }
+        return (bool)preg_match('/^[A-Z0-9]{2,12}-(?:USD|EUR|GBP|JPY|SEK|CHF|CAD|AUD|USDT|USDC)$/', $symbol);
+    }
+
+    private function yahooAlias(string $query, string $type): string
+    {
+        if ($type === 'commodity') {
+            $mapped = [
+                'GOLD' => 'GC=F',
+                'SILVER' => 'SI=F',
+                'OIL' => 'CL=F',
+                'CRUDE' => 'CL=F',
+                'CRUDE OIL' => 'CL=F',
+                'WTI' => 'CL=F',
+                'BRENT' => 'BZ=F',
+                'NATGAS' => 'NG=F',
+                'NATURAL GAS' => 'NG=F',
+                'COPPER' => 'HG=F',
+                'PLATINUM' => 'PL=F',
+                'PALLADIUM' => 'PA=F',
+                'CORN' => 'ZC=F',
+                'WHEAT' => 'ZW=F',
+                'SOYBEAN' => 'ZS=F',
+                'SOYBEANS' => 'ZS=F',
+                'COFFEE' => 'KC=F',
+                'SUGAR' => 'SB=F',
+                'COTTON' => 'CT=F',
+                'COCOA' => 'CC=F',
+                'GASOLINE' => 'RB=F',
+                'HEATING OIL' => 'HO=F',
+                'CATTLE' => 'LE=F',
+                'LIVE CATTLE' => 'LE=F',
+                'HOGS' => 'HE=F',
+                'LEAN HOGS' => 'HE=F',
+            ][$query] ?? '';
+            return $mapped !== '' ? $mapped : $query;
+        }
+        if ($type === 'crypto') {
+            $mapped = [
+                'BITCOIN' => 'BTC-USD',
+                'ETHEREUM' => 'ETH-USD',
+            ][$query] ?? '';
+            if ($mapped !== '') {
+                return $mapped;
+            }
+            if (preg_match('/^[A-Z0-9]{2,6}$/', $query)) {
+                return $query . '-USD';
+            }
+        }
+        if ($type === 'fx' && preg_match('/^[A-Z]{6}$/', $query)) {
+            return $query . '=X';
+        }
+        return $query;
+    }
+
+    private function yahooIsCommodity(array $quote): bool
+    {
+        $kind = strtoupper((string)($quote['quoteType'] ?? ''));
+        $symbol = strtoupper((string)($quote['symbol'] ?? ''));
+        if ($kind !== 'FUTURE' || !str_ends_with($symbol, '=F')) {
+            return false;
+        }
+        $name = strtolower(trim((string)($quote['shortname'] ?? '') . ' ' . (string)($quote['longname'] ?? '') . ' ' . $symbol));
+        return (bool)preg_match('/\b(gold|silver|oil|crude|brent|gas|copper|platinum|palladium|corn|wheat|soy|coffee|sugar|cotton|cocoa|cattle|hog|gasoline|gc|si|cl|bz|ng|hg|pl|pa|zc|zw|zs|kc|sb|ct|cc|le|he|rb|ho)\b/', $name);
+    }
+
+    private function yahooSearchText(string $query, string $type, array $picked): string
+    {
+        $rows = is_array($picked['rows'] ?? null) ? $picked['rows'] : [];
+        $head = $type !== '' ? ucfirst($type) . ' listings for ' . $query : 'Yahoo listings for ' . $query;
+        $lines = [$head];
+        foreach (array_slice($rows, 0, 8) as $quote) {
+            if (!is_array($quote)) {
+                continue;
+            }
+            $lines[] = strtoupper((string)$quote['symbol'])
+                . '  ' . $this->yahooKind((string)($quote['quoteType'] ?? ''))
+                . '  ' . $this->yahooText((string)($quote['exchDisp'] ?? ''))
+                . '  ' . $this->yahooText((string)($quote['shortname'] ?? $quote['longname'] ?? ''));
+        }
+        return implode("\n", $lines);
+    }
+
+    private function yahooLoadChart(string $symbol, array $window): array|string
+    {
+        $url = 'https://query1.finance.yahoo.com/v8/finance/chart/' . rawurlencode($symbol) . '?' . http_build_query($window);
+        $json = $this->yahooJson($url);
+        if (is_string($json)) {
+            return $json;
+        }
+        $kind = $this->yahooPayload($json);
+        if ($kind === 'chart') {
+            return $json;
+        }
+        $why = trim((string)($json['chart']['error']['description'] ?? ''));
+        if ($why === '') {
+            $why = 'Yahoo returned no data for ' . $symbol . '.';
+        }
+        return $symbol . ': ' . $why;
+    }
+
+    private function yahooJson(string $url): array|string
+    {
+        $meta = [];
+        $final = $url;
+        $body = $this->request($url, 0, null, $final, $meta, ['Accept: application/json']);
+        $json = $this->yahooDecode($body);
+        if (is_array($json) && $this->yahooPayload($json) !== '') {
+            return $json;
+        }
+        $denied = $this->yahooDenied($url, $meta, $body);
+        if ($this->db->getSetting('headless_browser', '0') !== '1') {
+            if ($denied) {
+                return 'Yahoo answered HTTP 429 to this client. A browser still receives the JSON. The headless browser is off.';
+            }
+            return 'Yahoo did not return data.';
+        }
+        $opened = $this->yahooBrowser($url);
+        $json = $this->yahooDecode($opened);
+        if (is_array($json) && $this->yahooPayload($json) !== '') {
+            return $json;
+        }
+        if ($denied || $opened === '') {
+            return 'Yahoo answered HTTP 429 to this client. A browser still receives the JSON. The headless browser did not return it.';
+        }
+        return 'Yahoo did not return data.';
+    }
+
+    private function yahooDecode(string $body): ?array
+    {
+        $body = trim($body);
+        if ($body === '') {
+            return null;
+        }
+        if ($body[0] !== '{' && $body[0] !== '[') {
+            $body = trim(strip_tags($body));
+        }
+        $start = strpos($body, '{');
+        if ($start === false) {
+            $start = strpos($body, '[');
+        }
+        if ($start === false) {
+            return null;
+        }
+        $json = json_decode(substr($body, $start), true);
+        return is_array($json) ? $json : null;
+    }
+
+    private function yahooPayload(array $json): string
+    {
+        if (isset($json['quotes']) && is_array($json['quotes'])) {
+            return 'search';
+        }
+        $result = $json['chart']['result'] ?? null;
+        if (is_array($result) && $result !== []) {
+            return 'chart';
+        }
+        $code = (string)($json['chart']['error']['code'] ?? '');
+        return $code === 'Not Found' ? 'missing' : '';
+    }
+
+    private function yahooPresent(string $action, string $asked, string $symbol, array $picked, array $chart, array $window): string
+    {
+        $result = $chart['chart']['result'][0] ?? null;
+        if (!is_array($result)) {
+            $why = trim((string)($chart['chart']['error']['description'] ?? ''));
+            return $why !== '' ? $symbol . ': ' . $why : 'Yahoo returned no data for ' . $symbol . '.';
+        }
+        $lead = $this->yahooLead($asked, $symbol, $picked);
+        if ($action === 'quote') {
+            return $lead . $this->yahooQuoteText($result);
+        }
+        if ($action === 'history') {
+            return $lead . $this->yahooHistoryText($result, (string)($window['interval'] ?? '1d'));
+        }
+        return $lead . $this->yahooEventText($result, $action);
+    }
+
+    private function yahooLead(string $asked, string $symbol, array $picked): string
+    {
+        $lines = [];
+        $normalized = $this->yahooQuery($asked);
+        if ($normalized !== $symbol && strtoupper($asked) !== $symbol) {
+            $lines[] = 'Asked for ' . $asked . '. Using ' . $symbol . '.';
+        }
+        $note = trim((string)($picked['note'] ?? ''));
+        if ($note !== '') {
+            $lines[] = $note;
+        }
+        $alternates = is_array($picked['alternates'] ?? null) ? $picked['alternates'] : [];
+        if ($alternates !== []) {
+            $lines[] = count($alternates) === 1
+                ? 'Also listed as: ' . $alternates[0] . '. Pass that symbol to use it.'
+                : 'Also listed as: ' . implode(', ', $alternates) . '. Pass one of those symbols to use it.';
+        }
+        return $lines === [] ? '' : implode("\n", $lines) . "\n";
+    }
+
+    private function yahooQuoteText(array $result): string
+    {
+        $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
+        $symbol = (string)($meta['symbol'] ?? '');
+        $hint = $this->yahooHint($meta);
+        $price = $meta['regularMarketPrice'] ?? null;
+        if ($symbol === '' || !is_numeric($price)) {
+            return 'Yahoo returned no price.';
+        }
+        $name = $this->yahooText((string)($meta['longName'] ?? $meta['shortName'] ?? ''));
+        $lines = [$symbol . ($name !== '' ? ' — ' . $name : '')];
+        $where = array_filter([
+            $this->yahooKind((string)($meta['instrumentType'] ?? '')),
+            $this->yahooText((string)($meta['fullExchangeName'] ?? '')),
+            trim((string)($meta['currency'] ?? '')),
+        ]);
+        if ($where !== []) {
+            $lines[] = implode(' · ', $where);
+        }
+        $rows = $this->yahooSeries($result)['rows'];
+        $prev = null;
+        if (count($rows) >= 2 && is_numeric($rows[count($rows) - 2]['close'])) {
+            $prev = $rows[count($rows) - 2]['close'];
+        }
+        $priceText = 'Price: ' . $this->yahooNum($price, $hint);
+        if (is_numeric($prev) && (float)$prev != 0.0) {
+            $change = (float)$price - (float)$prev;
+            $pct = ($change / (float)$prev) * 100;
+            $priceText .= '  Previous close: ' . $this->yahooNum($prev, $hint);
+            $priceText .= '  Change: ' . $this->yahooSigned($change, $hint) . ' (' . $this->yahooSigned($pct, 2) . '%)';
+        }
+        $lines[] = $priceText;
+        $day = '';
+        $low = $meta['regularMarketDayLow'] ?? null;
+        $high = $meta['regularMarketDayHigh'] ?? null;
+        if (is_numeric($low) && is_numeric($high) && (float)$low > 0 && (float)$high > 0) {
+            $day = 'Day: ' . $this->yahooNum($low, $hint) . '–' . $this->yahooNum($high, $hint);
+        }
+        if (is_numeric($meta['regularMarketVolume'] ?? null) && (float)$meta['regularMarketVolume'] > 0) {
+            $day .= ($day !== '' ? '  ' : '') . 'Volume: ' . (string)(int)round((float)$meta['regularMarketVolume']);
+        }
+        if ($day !== '') {
+            $lines[] = $day;
+        }
+        $weekLow = $meta['fiftyTwoWeekLow'] ?? null;
+        $weekHigh = $meta['fiftyTwoWeekHigh'] ?? null;
+        if (is_numeric($weekLow) && is_numeric($weekHigh) && (float)$weekLow > 0 && (float)$weekHigh > 0) {
+            $lines[] = '52-week: ' . $this->yahooNum($weekLow, $hint) . '–' . $this->yahooNum($weekHigh, $hint);
+        }
+        $stamp = $meta['regularMarketTime'] ?? null;
+        if (is_numeric($stamp)) {
+            $lines[] = 'As of: ' . $this->yahooWhen((int)$stamp, (string)($meta['exchangeTimezoneName'] ?? 'UTC'), true);
+        }
+        return implode("\n", $lines);
+    }
+
+    private function yahooHistoryText(array $result, string $interval): string
+    {
+        $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
+        $symbol = (string)($meta['symbol'] ?? '');
+        $series = $this->yahooSeries($result);
+        $rows = $series['rows'];
+        if ($rows === []) {
+            return $symbol . ' has no bars for that range.';
+        }
+        $total = count($rows);
+        $shown = $rows;
+        $note = '';
+        if ($total > 160) {
+            $shown = array_slice($rows, -160);
+            $note = ' Showing the latest 160. Pass start and end for an earlier span.';
+        }
+        $head = $symbol . ' ' . $interval . ', ' . $total . ' bars from ' . $rows[0]['date'] . ' to ' . $rows[$total - 1]['date'] . '.' . $note;
+        $lines = [$head, 'date,open,high,low,close,adjclose,volume'];
+        $hint = $series['hint'];
+        $intraday = !in_array($interval, ['1d', '5d', '1wk', '1mo', '3mo'], true);
+        foreach ($shown as $row) {
+            $lines[] = ($intraday ? $row['time'] : $row['date'])
+                . ',' . $this->yahooCell($row['open'], $hint)
+                . ',' . $this->yahooCell($row['high'], $hint)
+                . ',' . $this->yahooCell($row['low'], $hint)
+                . ',' . $this->yahooCell($row['close'], $hint)
+                . ',' . $this->yahooCell($row['adj'], $hint)
+                . ',' . (is_numeric($row['volume']) ? (string)(int)round((float)$row['volume']) : '');
+        }
+        return implode("\n", $lines);
+    }
+
+    private function yahooEventText(array $result, string $action): string
+    {
+        $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
+        $symbol = (string)($meta['symbol'] ?? '');
+        $currency = trim((string)($meta['currency'] ?? ''));
+        $tz = (string)($meta['exchangeTimezoneName'] ?? 'UTC');
+        $hint = $this->yahooHint($meta);
+        $events = is_array($result['events'] ?? null) ? $result['events'] : [];
+        $parts = [];
+        if ($action === 'dividends' || $action === 'events') {
+            $parts[] = $this->yahooDividendLines($symbol, $currency, $tz, $hint, is_array($events['dividends'] ?? null) ? $events['dividends'] : []);
+        }
+        if ($action === 'splits' || $action === 'events') {
+            $parts[] = $this->yahooSplitLines($symbol, $tz, is_array($events['splits'] ?? null) ? $events['splits'] : []);
+        }
+        return implode("\n\n", $parts);
+    }
+
+    private function yahooDividendLines(string $symbol, string $currency, string $tz, int $hint, array $dividends): string
+    {
+        $rows = [];
+        foreach ($dividends as $item) {
+            if (!is_array($item) || !is_numeric($item['date'] ?? null) || !is_numeric($item['amount'] ?? null)) {
+                continue;
+            }
+            $rows[] = $item;
+        }
+        usort($rows, static fn(array $a, array $b): int => ((int)$a['date']) <=> ((int)$b['date']));
+        $label = $currency !== '' ? $symbol . ' dividends, ' . $currency : $symbol . ' dividends';
+        if ($rows === []) {
+            return $label . "\nNone in that range.";
+        }
+        $cut = '';
+        if (count($rows) > 80) {
+            $rows = array_slice($rows, -80);
+            $cut = ' Showing the latest 80.';
+        }
+        $lines = [$label . $cut];
+        foreach ($rows as $item) {
+            $lines[] = $this->yahooWhen((int)$item['date'], $tz, false) . ',' . $this->yahooNum($item['amount'], $hint);
+        }
+        return implode("\n", $lines);
+    }
+
+    private function yahooSplitLines(string $symbol, string $tz, array $splits): string
+    {
+        $rows = [];
+        foreach ($splits as $item) {
+            if (!is_array($item) || !is_numeric($item['date'] ?? null)) {
+                continue;
+            }
+            $rows[] = $item;
+        }
+        usort($rows, static fn(array $a, array $b): int => ((int)$a['date']) <=> ((int)$b['date']));
+        if ($rows === []) {
+            return $symbol . " splits\nNone in that range.";
+        }
+        $lines = [$symbol . ' splits'];
+        foreach ($rows as $item) {
+            $ratio = trim((string)($item['splitRatio'] ?? ''));
+            if ($ratio === '' && is_numeric($item['numerator'] ?? null) && is_numeric($item['denominator'] ?? null)) {
+                $ratio = $this->yahooPlain($item['numerator']) . ':' . $this->yahooPlain($item['denominator']);
+            }
+            $lines[] = $this->yahooWhen((int)$item['date'], $tz, false) . ($ratio !== '' ? ',' . $ratio : '');
+        }
+        return implode("\n", $lines);
+    }
+
+    private function yahooSeries(array $result): array
+    {
+        $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
+        $tz = $this->yahooZone((string)($meta['exchangeTimezoneName'] ?? 'UTC'));
+        $indicators = is_array($result['indicators'] ?? null) ? $result['indicators'] : [];
+        $quote = is_array($indicators['quote'][0] ?? null) ? $indicators['quote'][0] : [];
+        $adjClose = is_array($indicators['adjclose'][0] ?? null) ? $indicators['adjclose'][0] : [];
+        $adj = is_array($adjClose['adjclose'] ?? null) ? $adjClose['adjclose'] : [];
+        $rows = [];
+        foreach (($result['timestamp'] ?? []) as $i => $stamp) {
+            if (!is_numeric($stamp)) {
+                continue;
+            }
+            $close = is_array($quote) ? ($quote['close'][$i] ?? null) : null;
+            if (!is_numeric($close)) {
+                continue;
+            }
+            $when = (new DateTimeImmutable('@' . (int)$stamp))->setTimezone($tz);
+            $rows[] = [
+                'date' => $when->format('Y-m-d'),
+                'time' => $when->format('Y-m-d H:i'),
+                'open' => is_array($quote) ? ($quote['open'][$i] ?? null) : null,
+                'high' => is_array($quote) ? ($quote['high'][$i] ?? null) : null,
+                'low' => is_array($quote) ? ($quote['low'][$i] ?? null) : null,
+                'close' => $close,
+                'adj' => is_array($adj) ? ($adj[$i] ?? null) : null,
+                'volume' => is_array($quote) ? ($quote['volume'][$i] ?? null) : null,
+            ];
+        }
+        return ['hint' => $this->yahooHint($meta), 'rows' => $rows];
+    }
+
+    private function yahooHint(array $meta): int
+    {
+        $hint = (int)($meta['priceHint'] ?? 2);
+        if ($hint < 0 || $hint > 6) {
+            return 2;
+        }
+        return $hint;
+    }
+
+    private function yahooNum(mixed $value, int $hint): string
+    {
+        return number_format((float)$value, $hint, '.', '');
+    }
+
+    private function yahooSigned(float $value, int $hint): string
+    {
+        $text = $this->yahooNum($value, $hint);
+        return $value > 0 ? '+' . $text : $text;
+    }
+
+    private function yahooCell(mixed $value, int $hint): string
+    {
+        return is_numeric($value) ? $this->yahooNum($value, $hint) : '';
+    }
+
+    private function yahooText(string $text): string
+    {
+        return trim(html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+
+    private function yahooPlain(mixed $value): string
+    {
+        $text = rtrim(rtrim(number_format((float)$value, 4, '.', ''), '0'), '.');
+        return $text === '' ? '0' : $text;
+    }
+
+    private function yahooWhen(int $stamp, string $zone, bool $clock): string
+    {
+        $when = (new DateTimeImmutable('@' . $stamp))->setTimezone($this->yahooZone($zone));
+        return $when->format($clock ? 'Y-m-d H:i T' : 'Y-m-d');
+    }
+
+    private function yahooZone(string $zone): DateTimeZone
+    {
+        try {
+            return new DateTimeZone($zone !== '' ? $zone : 'UTC');
+        } catch (Throwable $e) {
+            return new DateTimeZone('UTC');
+        }
+    }
+
+    private function yahooKind(string $type): string
+    {
+        return match (strtoupper($type)) {
+            'EQUITY' => 'Equity',
+            'ETF' => 'ETF',
+            'MUTUALFUND' => 'Fund',
+            'INDEX' => 'Index',
+            'CURRENCY' => 'Currency',
+            'CRYPTOCURRENCY' => 'Crypto',
+            'FUTURE' => 'Future',
+            'OPTION' => 'Option',
+            'BOND' => 'Bond',
+            '' => 'Listing',
+            default => $type,
+        };
+    }
+
+    private function yahooExchanges(): array
+    {
+        return [
+            'ST', 'OL', 'HE', 'CO', 'IC', 'IS', 'IR', 'L', 'IL', 'DE', 'F', 'MU', 'DU', 'HM', 'HA', 'BE', 'SG',
+            'PA', 'AS', 'BR', 'LS', 'MC', 'MI', 'AT', 'VI', 'SW', 'WA', 'PR', 'BD',
+            'TO', 'V', 'CN', 'NE', 'AX', 'NZ', 'HK', 'T', 'TW', 'TWO', 'KS', 'KQ', 'SI', 'KL', 'BK', 'JK',
+            'SS', 'SZ', 'BO', 'NS', 'TA', 'JO', 'MX', 'SA', 'BA', 'SN', 'QA', 'SR', 'ME',
+        ];
     }
 }

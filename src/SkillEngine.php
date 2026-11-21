@@ -6,7 +6,7 @@ class SkillEngine
         'filesystem', 'read_image', 'read_pdf', 'screenshot', 'create_pdf',
         'wiki_memory', 'list_vault', 'read_vault', 'restore_file', 'tasklist', 'delegate',
         'web_search', 'fetch_url', 'browse_url', 'run_command', 'run_python', 'send_email',
-        'ftp', 'mcp', 'remember', 'write_skill', 'test_skill',
+        'ftp', 'mcp', 'remember', 'write_skill', 'test_skill', 'yahoo_finance',
     ];
 
     public const SYSTEM = [
@@ -15,7 +15,7 @@ class SkillEngine
         'web_search', 'fetch_url', 'browse_url', 'run_command', 'run_python', 'send_email',
         'ftp', 'mcp', 'remember', 'write_skill', 'test_skill', 'sqlite_helper', 'save_note',
         'code_verifier', 'research_pipeline', 'download_large',
-        'write_article', 'humanizer', 'grammar_check', 'make_graphic',
+        'write_article', 'humanizer', 'grammar_check', 'make_graphic', 'yahoo_finance',
     ];
 
     private array $hidden = [];
