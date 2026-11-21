@@ -197,6 +197,7 @@ TXT;
         if ($projectId <= 0 || !$this->db->ftpAccounts($projectId)) {
             $omit[] = 'ftp';
         }
+        $expand[] = 'wiki_memory';
         if ($agent === 'writer') {
             $expand[] = 'create_pdf';
         }
@@ -228,11 +229,11 @@ TXT;
             $identity .= "\n\n" . $brief;
         }
         $taskRule = $agent === 'consultant'
-            ? 'When the assignment names a task, list it with the tasklist tool first. You may create, update, or delete tasks so the pipeline is one task with open steps. Do not do the research or file work unless the assignment asks for that. End with the task id and the open steps.'
+            ? 'When the assignment names a task, list it with the tasklist tool first. Update the named task so its open steps match the plan. Do not delete it and create another. Delete only when the assignment says to remove that task. Each step needs a description that names the files, lists, and skills, and what to save or return. A title alone is rejected. To replace the open steps, pass replace_steps true and the full new list. Done steps stay. Do not do the research or file work unless the assignment asks for that. End with the task id and the open steps.'
             : 'You cannot create, update, or delete a task. When the instruction names a task, add a short result to it with the tasklist tool before you finish. The main agent checks that work and then updates the task.';
         $rules = <<<TXT
 {$identity}
-Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task. {$taskRule} If the task includes a previous run, that record is what you already found, wrote, or returned. Continue from it. Do not start that work over. When your work reaches conclusions, decisions, or facts worth keeping, write or edit the matching wiki file before you finish. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
+Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task. {$taskRule} If the task includes a previous run, that record is what you already found, wrote, or returned. Continue from it. Do not start that work over. A plan, a rule, a decision, or a conclusion from this run is written with wiki_memory before you reply. Read the matching file first. Do not wait to be asked, and do not copy the whole chat into the wiki. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
 
 Do not install software or dependencies. If something is missing, say what it is and stop. The main agent asks the user and installs it.
 
@@ -260,7 +261,7 @@ Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> 
 Do not print a tool call in the reply. Do not write a tool name followed by a JSON object. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_memory with action write, or filesystem with action write, first, then answer.
 
-These are the skills at your disposal. Each line is the description and the arguments. After a skill is called, its instructions are added here and stay while that call is still in this chat.
+These are the skills at your disposal. wiki_memory is written out in full. Each other line is the description and the arguments. After a skill is called, its instructions are added here and stay while that call is still in this chat.
 TXT;
         if ($this->db->fullSystemControl()) {
             $rules .= "\nFull system control is on. You may use sudo, and a path that starts with / can read or change any file on this computer. Prefer {$projectFolder}/ unless the task needs something outside it. Python still runs through run_python and stays inside the project.\n";
@@ -535,16 +536,26 @@ TXT;
                 if ($id <= 0) {
                     return 'Task not found.';
                 }
-                $before = $this->db->task($id);
-                $beforeCount = $this->stepTotal(is_array($before) ? $before : []);
                 $task = $board->move($id, $args, false);
                 $held = (int)($task['held'] ?? 0) === 1 ? ' The task stays held and will not start.' : '';
                 $stepsNote = '';
                 if (array_key_exists('steps', $args) || array_key_exists('subtasks', $args)) {
-                    $added = $this->stepTotal($task) - $beforeCount;
-                    $stepsNote = $added > 0
-                        ? ' Added ' . $added . ($added === 1 ? ' step.' : ' steps.')
-                        : ' Those steps are already on the task. None were added. Do not send them again.';
+                    $write = $board->stepWrite();
+                    $added = (int)($write['added'] ?? 0);
+                    $detailed = (int)($write['detailed'] ?? 0);
+                    $removed = (int)($write['removed'] ?? 0);
+                    if ($added > 0) {
+                        $stepsNote = ' Added ' . $added . ($added === 1 ? ' step.' : ' steps.');
+                    }
+                    if ($detailed > 0) {
+                        $stepsNote .= ' Updated ' . $detailed . ($detailed === 1 ? ' existing step.' : ' existing steps.');
+                    }
+                    if ($removed > 0) {
+                        $stepsNote .= ' Removed ' . $removed . ' open ' . ($removed === 1 ? 'step.' : 'steps.');
+                    }
+                    if ($stepsNote === '') {
+                        $stepsNote = ' That task already has those steps. Change it with update. Do not delete it and do not create a new one.';
+                    }
                 }
                 return $board->updatedLine($task) . $held . $stepsNote;
             }

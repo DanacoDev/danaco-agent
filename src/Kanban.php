@@ -4,6 +4,8 @@ class Kanban
 {
     private const RESTART_DELAY = 180;
 
+    private array $lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0];
+
     public function __construct(private Database $db)
     {
     }
@@ -20,7 +22,10 @@ class Kanban
         $this->rejectIdea($args, $schedule, $recurrence, $byUser);
         $steps = $this->stepItems($args);
         if (!$byUser && $steps === []) {
-            throw new InvalidArgumentException('A task needs at least one step. It was not added. Pass steps as a list. One instruction is step 1.');
+            throw new InvalidArgumentException('A task needs at least one step. It was not added. Each step is an object with title, agent, and description. description names the files, lists, and skills to use, and what to save or return.');
+        }
+        if (!$byUser) {
+            $this->requireStepDetail($steps);
         }
         $description = implode("\n", array_map(fn(array $step): string => $step['title'], $steps));
         $agent = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
@@ -122,6 +127,12 @@ class Kanban
         }
         $steps = $this->stepItems($args);
         $hasSteps = array_key_exists('steps', $args) || array_key_exists('subtasks', $args);
+        if (!$byUser && $hasSteps) {
+            if ($steps === []) {
+                throw new InvalidArgumentException('A step needs a title and a description. It was not saved. Pass each step as an object with title, agent, and description. description names the files, lists, and skills to use, and what to save or return.');
+            }
+            $this->requireStepDetail($steps);
+        }
         $hasInstruction = $hasSteps || array_key_exists('description', $args) || array_key_exists('instruction', $args);
         if ($hasInstruction && $steps) {
             $fields['description'] = '';
@@ -178,7 +189,7 @@ class Kanban
         }
         $saved = $this->db->updateTask($id, $fields);
         if ($saved && $steps && $hasInstruction) {
-            $this->addSteps($id, $steps, !$hasSteps);
+            $this->addSteps($id, $steps, !$hasSteps, $hasSteps && $this->wantsReplace($args));
             $saved = $this->db->task($id) ?? $saved;
         }
         return $saved ? $this->db->syncTaskFromSteps($saved) : $saved;
@@ -444,53 +455,160 @@ class Kanban
         }
         $one = trim((string)($args['description'] ?? $args['instruction'] ?? ''));
         if ($one !== '') {
-            $add($one, '', '');
+            $title = trim((string)($args['title'] ?? ''));
+            if ($title === '' || strcasecmp($title, $one) === 0) {
+                $title = $this->shortStepTitle($one);
+            }
+            $add($title, '', $one);
         }
         return $items;
     }
 
-    private function addSteps(int $taskId, array $items, bool $onlyIfEmpty): void
+    public function stepWrite(): array
     {
+        return $this->lastStepWrite;
+    }
+
+    private function requireStepDetail(array $steps): void
+    {
+        foreach ($steps as $step) {
+            $detail = trim((string)($step['description'] ?? ''));
+            if (mb_strlen($detail) >= 80) {
+                continue;
+            }
+            $shown = trim((string)($step['title'] ?? ''));
+            if ($shown === '') {
+                $shown = 'untitled';
+            }
+            if (mb_strlen($shown) > 80) {
+                $shown = rtrim(mb_substr($shown, 0, 77)) . '…';
+            }
+            $fault = $detail === '' ? 'needs a description' : 'needs a longer description';
+            throw new InvalidArgumentException('Step "' . $shown . '" ' . $fault . '. It was not saved. Pass the step as an object with title, agent, and description. description is the instruction: name the files, lists, and skills to use, and what to save or return. A title alone is not enough.');
+        }
+    }
+
+    private function shortStepTitle(string $text): string
+    {
+        $text = trim((string)preg_replace('/\s+/u', ' ', $text));
+        if (mb_strlen($text) <= 80) {
+            return $text;
+        }
+        $clip = mb_substr($text, 0, 77);
+        $space = strrpos($clip, ' ');
+        if ($space !== false && $space > 40) {
+            $clip = mb_substr($clip, 0, $space);
+        }
+        return rtrim($clip, '.,;:') . '…';
+    }
+
+    private function addSteps(int $taskId, array $items, bool $onlyIfEmpty, bool $replace = false): void
+    {
+        $this->lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0];
         $task = $this->db->task($taskId);
         if (!$task) {
             return;
         }
-        $existing = [];
+        $subs = [];
         foreach ($task['subtasks'] ?? [] as $sub) {
-            if (!is_array($sub)) {
-                continue;
-            }
-            $title = trim((string)($sub['title'] ?? ''));
-            if ($title !== '') {
-                $existing[] = $title;
+            if (is_array($sub) && trim((string)($sub['title'] ?? '')) !== '') {
+                $subs[] = $sub;
             }
         }
-        if ($onlyIfEmpty && $existing) {
+        if ($onlyIfEmpty && $subs) {
             return;
         }
+        $touched = [];
         foreach ($items as $item) {
             $title = trim((string)($item['title'] ?? ''));
-            if ($title === '' || $this->stepAlreadyThere($title, $existing)) {
+            if ($title === '') {
                 continue;
             }
-            $this->db->insertSubtask($taskId, $title, 'in_progress', (string)($item['agent'] ?? ''), (string)($item['description'] ?? ''));
-            $existing[] = $title;
+            $matchAt = $this->matchingStepIndex($title, $subs, true);
+            if ($matchAt !== null) {
+                $fields = [];
+                $haveTitle = trim((string)($subs[$matchAt]['title'] ?? ''));
+                if (strcasecmp($title, $haveTitle) !== 0) {
+                    $fields['title'] = $title;
+                }
+                $incoming = trim((string)($item['description'] ?? ''));
+                $have = trim((string)($subs[$matchAt]['description'] ?? ''));
+                if ($incoming !== '' && $incoming !== $have) {
+                    $fields['description'] = $incoming;
+                }
+                $agent = (string)($item['agent'] ?? '');
+                $haveAgent = strtolower(trim((string)($subs[$matchAt]['assigned_agent'] ?? '')));
+                if ($agent !== '' && $agent !== $haveAgent) {
+                    $fields['assigned_agent'] = $agent;
+                }
+                if ($fields) {
+                    $this->db->updateSubtask((int)$subs[$matchAt]['id'], $fields);
+                    $subs[$matchAt] = array_merge($subs[$matchAt], $fields);
+                    $this->lastStepWrite['detailed']++;
+                }
+                $touched[] = (int)$subs[$matchAt]['id'];
+                continue;
+            }
+            if (!$replace && $this->matchingStepIndex($title, $subs, false) !== null) {
+                continue;
+            }
+            $created = $this->db->insertSubtask($taskId, $title, 'in_progress', (string)($item['agent'] ?? ''), (string)($item['description'] ?? ''));
+            $subs[] = $created;
+            $touched[] = (int)($created['id'] ?? 0);
+            $this->lastStepWrite['added']++;
+        }
+        if (!$replace) {
+            return;
+        }
+        foreach ($subs as $sub) {
+            if ((string)($sub['status'] ?? '') === 'done') {
+                continue;
+            }
+            $id = (int)($sub['id'] ?? 0);
+            if ($id <= 0 || in_array($id, $touched, true)) {
+                continue;
+            }
+            $this->db->deleteSubtask($id);
+            $this->lastStepWrite['removed']++;
         }
     }
 
-    private function stepAlreadyThere(string $title, array $existing): bool
+    private function wantsReplace(array $args): bool
+    {
+        $value = $args['replace_steps'] ?? false;
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_int($value) || is_float($value)) {
+            return (int)$value === 1;
+        }
+        return in_array(strtolower(trim((string)$value)), ['1', 'true', 'yes'], true);
+    }
+
+    private function matchingStepIndex(string $title, array $subs, bool $openOnly): ?int
     {
         $key = $this->stepKey($title);
-        foreach ($existing as $have) {
+        foreach ($subs as $index => $sub) {
+            if (!is_array($sub)) {
+                continue;
+            }
+            $open = (string)($sub['status'] ?? '') !== 'done';
+            if ($openOnly !== $open) {
+                continue;
+            }
+            $have = trim((string)($sub['title'] ?? ''));
+            if ($have === '') {
+                continue;
+            }
             if (strcasecmp($title, $have) === 0) {
-                return true;
+                return $index;
             }
             $other = $this->stepKey($have);
             if ($key !== '' && $key === $other) {
-                return true;
+                return $index;
             }
         }
-        return false;
+        return null;
     }
 
     private function stepKey(string $title): string

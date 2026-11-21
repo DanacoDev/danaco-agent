@@ -1069,6 +1069,7 @@
           if (type === 'thinking') return 'Thinking';
           if (type === 'output') return 'Result';
           if (type === 'error') return 'Error';
+          if (type === 'stop') return 'Stop';
           return type || 'Note';
         },
         logPreview(text) {

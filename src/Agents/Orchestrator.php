@@ -640,7 +640,7 @@ Assigned project folder: {$folder}
 Assigned project name: {$project['name']}
 {$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file in that folder, such as wiki/research.md, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task.
 When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat.
-When this chat settles conclusions, decisions, or facts worth keeping, read the matching wiki file and then write or edit it with wiki_memory action write before you finish. Keep doing this as the chat continues and those conclusions change. Do not wait for the end of a long task, and do not leave the record only in the chat.
+A plan, a rule, a decision, or a conclusion is written in the same turn it is made. Read the matching wiki file, then update it with wiki_memory action write. Do this again when a later message changes it. Do not wait to be asked, and do not leave that record only in the chat. Do not copy the whole chat into the wiki. Update the file that already holds that topic, or start a new file for a new plan.
 Tag every delegation exactly as project: {$folder}
 TXT;
             $brief = Projects::promptContext((string)$folder, true);
@@ -699,7 +699,7 @@ Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> 
 Do not print a tool call in the reply. Do not write a tool name followed by a JSON object. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_memory with action write first, then answer. A project file is written by a subagent with filesystem action write.
 
-{$pdfNote}These are the skills at your disposal. delegate and tasklist are written out in full. Each other line is the description and the arguments. After another skill is called, its instructions are added here and stay while that call is still in this chat.
+{$pdfNote}These are the skills at your disposal. delegate, tasklist, and wiki_memory are written out in full. Each other line is the description and the arguments. After another skill is called, its instructions are added here and stay while that call is still in this chat.
 TXT;
         $projectId = $project ? (int)$project['id'] : 0;
         $omit = ['create_pdf', 'run_command', 'run_python'];
@@ -709,7 +709,7 @@ TXT;
         if ($projectId <= 0 || !$this->db->ftpAccounts($projectId)) {
             $omit[] = 'ftp';
         }
-        $expand = array_values(array_unique(array_merge(['delegate', 'tasklist'], $expand)));
+        $expand = array_values(array_unique(array_merge(['delegate', 'tasklist', 'wiki_memory'], $expand)));
         $catalog = $this->skills->promptCatalog($omit, [
             'web_search' => $this->researchToolLine('web_search'),
             'fetch_url' => $this->researchToolLine('fetch_url'),
@@ -1422,7 +1422,7 @@ TXT;
         if ($open !== null) {
             if (!$this->taskHasStep($open)) {
                 $id = (int)$open['id'];
-                throw new InvalidArgumentException('Task #' . $id . ' has no steps. It was not started. Add at least one step with tasklist action update and id ' . $id . ', then delegate again. Pass steps as a list. One instruction is step 1.');
+                throw new InvalidArgumentException('Task #' . $id . ' has no steps. It was not started. Add at least one step with tasklist action update and id ' . $id . ', then delegate again. Pass steps as a list. Each step is an object with title, agent, and description. description names the files, lists, and skills to use, and what to save or return.');
             }
             $saved = $board->move((int)$open['id'], ['status' => 'in_progress', 'agent' => $agent], false);
             return "\nTask #" . $saved['id'] . ' is in in_progress.';
@@ -1440,7 +1440,7 @@ TXT;
             }
             if (!$this->taskHasStep($task)) {
                 $id = (int)$task['id'];
-                throw new InvalidArgumentException('Task #' . $id . ' has no steps. It was not started. Add at least one step with tasklist action update and id ' . $id . ', then delegate again. Pass steps as a list. One instruction is step 1.');
+                throw new InvalidArgumentException('Task #' . $id . ' has no steps. It was not started. Add at least one step with tasklist action update and id ' . $id . ', then delegate again. Pass steps as a list. Each step is an object with title, agent, and description. description names the files, lists, and skills to use, and what to save or return.');
             }
             $saved = $board->move((int)$task['id'], ['status' => 'in_progress', 'agent' => $agent], false);
             return "\nTask #" . $saved['id'] . ' is in in_progress.';
@@ -1470,12 +1470,25 @@ TXT;
             return null;
         }
         $noPdf = preg_match('/\bno pdf\b|\bonly output\b|\bin the chat\b|\bdo not (?:make|create) a pdf\b|\bdon\'t (?:make|create) a pdf\b/i', $title) === 1;
-        $plan = ['Write the piece and save it as markdown in wiki/'];
+        $piece = trim($title);
+        $plan = [[
+            'title' => 'Write the piece and save it as markdown in wiki/',
+            'description' => 'Write "' . $piece . '" and save it as markdown in wiki/. Use a file name that matches the piece. Do not put it in the project description.',
+        ]];
         if (!$noPdf && preg_match('/\bpdf\b/i', $title) === 1) {
-            $plan[] = 'Create the PDF in docs/';
-            $plan[] = 'Read the PDF and check it';
+            $plan[] = [
+                'title' => 'Create the PDF in docs/',
+                'description' => 'Create the PDF in docs/ from the markdown just saved in wiki/. The PDF contains that piece and no other project text.',
+            ];
+            $plan[] = [
+                'title' => 'Read the PDF and check it',
+                'description' => 'Read the PDF in docs/ and check that its text matches the markdown in wiki/. Note any missing section before you finish.',
+            ];
         }
-        $plan[] = 'Report the file path and cross off the steps';
+        $plan[] = [
+            'title' => 'Report the file path and cross off the steps',
+            'description' => 'Report the file path that was saved, including the PDF in docs/ when one was written. Then cross off the steps. Do not start another piece.',
+        ];
         return $plan;
     }
 
@@ -1642,16 +1655,26 @@ TXT;
                 if ($id <= 0) {
                     return 'Task not found.' . "\n" . $this->kanbanOpenCards($projectId);
                 }
-                $before = $this->db->task($id);
-                $beforeCount = $this->stepCount($before ?? []);
                 $task = $board->move($id, $args, false);
                 $held = (int)($task['held'] ?? 0) === 1 ? ' The task stays held and will not start.' : '';
                 $stepsNote = '';
                 if (array_key_exists('steps', $args) || array_key_exists('subtasks', $args)) {
-                    $added = $this->stepCount($task) - $beforeCount;
-                    $stepsNote = $added > 0
-                        ? ' Added ' . $added . ($added === 1 ? ' step.' : ' steps.')
-                        : ' Those steps are already on the task. None were added. Do not send them again.';
+                    $write = $board->stepWrite();
+                    $added = (int)($write['added'] ?? 0);
+                    $detailed = (int)($write['detailed'] ?? 0);
+                    $removed = (int)($write['removed'] ?? 0);
+                    if ($added > 0) {
+                        $stepsNote = ' Added ' . $added . ($added === 1 ? ' step.' : ' steps.');
+                    }
+                    if ($detailed > 0) {
+                        $stepsNote .= ' Updated ' . $detailed . ($detailed === 1 ? ' existing step.' : ' existing steps.');
+                    }
+                    if ($removed > 0) {
+                        $stepsNote .= ' Removed ' . $removed . ' open ' . ($removed === 1 ? 'step.' : 'steps.');
+                    }
+                    if ($stepsNote === '') {
+                        $stepsNote = ' That task already has those steps. Change it with update. Do not delete it and do not create a new one.';
+                    }
                 }
                 return $board->updatedLine($task) . $held . $stepsNote;
             }

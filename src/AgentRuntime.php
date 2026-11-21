@@ -1114,6 +1114,10 @@ class AgentRuntime
                     } else {
                         $result = (string)$toolHandlers[$tool['name']]($tool['args']);
                     }
+                } catch (ChatStopped $e) {
+                    $this->db->setAgentStatus($agent, 'idle');
+                    $this->db->logAgent($agent, $projectId, 'stop', 'Stopped by user.');
+                    throw $e;
                 } catch (Throwable $e) {
                     $result = agent_error($agent, $e->getMessage());
                     $this->db->logAgent($agent, $projectId, 'error', $result);
