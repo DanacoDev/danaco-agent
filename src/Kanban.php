@@ -4,7 +4,7 @@ class Kanban
 {
     private const RESTART_DELAY = 180;
 
-    private array $lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0];
+    private array $lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0];
 
     public function __construct(private Database $db)
     {
@@ -200,7 +200,8 @@ class Kanban
             }
         }
         if ($saved && $steps && $hasInstruction) {
-            $this->addSteps($id, $steps, !$hasSteps, $hasSteps && $this->wantsReplace($args));
+            $taskResult = array_key_exists('result', $args) ? $this->oneLineResult((string)$args['result']) : '';
+            $this->addSteps($id, $steps, !$hasSteps, $hasSteps && $this->wantsReplace($args), $taskResult);
             $saved = $this->db->task($id) ?? $saved;
         }
         return $saved ? $this->db->syncTaskFromSteps($saved) : $saved;
@@ -432,7 +433,7 @@ class Kanban
     {
         $raw = $args['steps'] ?? $args['subtasks'] ?? null;
         $items = [];
-        $add = function (string $title, string $agent, string $description) use (&$items): void {
+        $add = function (string $title, string $agent, string $description, bool $done = false, string $result = '') use (&$items): void {
             $title = trim($title);
             if ($title === '') {
                 return;
@@ -448,6 +449,8 @@ class Kanban
                 'title' => mb_substr($title, 0, 2000),
                 'agent' => $agent,
                 'description' => mb_substr(trim($description), 0, 20000),
+                'done' => $done,
+                'result' => mb_substr(trim($result), 0, 2000),
             ];
         };
         if (is_string($raw)) {
@@ -455,7 +458,7 @@ class Kanban
         } elseif (is_array($raw)) {
             foreach ($raw as $step) {
                 if (is_array($step)) {
-                    $add((string)($step['title'] ?? $step['step'] ?? $step['text'] ?? ''), (string)($step['agent'] ?? $step['assigned_agent'] ?? ''), (string)($step['description'] ?? $step['detail'] ?? ''));
+                    $add((string)($step['title'] ?? $step['step'] ?? $step['text'] ?? ''), (string)($step['agent'] ?? $step['assigned_agent'] ?? ''), (string)($step['description'] ?? $step['detail'] ?? ''), $this->stepMarkedDone($step), $this->stepResultText($step));
                 } else {
                     $add((string)$step, '', '');
                 }
@@ -483,6 +486,9 @@ class Kanban
     private function requireStepDetail(array $steps): void
     {
         foreach ($steps as $step) {
+            if (!empty($step['done'])) {
+                continue;
+            }
             $detail = trim((string)($step['description'] ?? ''));
             if (mb_strlen($detail) >= 80) {
                 continue;
@@ -513,9 +519,9 @@ class Kanban
         return rtrim($clip, '.,;:') . '…';
     }
 
-    private function addSteps(int $taskId, array $items, bool $onlyIfEmpty, bool $replace = false): void
+    private function addSteps(int $taskId, array $items, bool $onlyIfEmpty, bool $replace = false, string $taskResult = ''): void
     {
-        $this->lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0];
+        $this->lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0];
         $task = $this->db->task($taskId);
         if (!$task) {
             return;
@@ -529,44 +535,81 @@ class Kanban
         if ($onlyIfEmpty && $subs) {
             return;
         }
+        $taskResult = $this->oneLineResult($taskResult);
+        $this->closeDuplicateOpenSteps($subs);
         $touched = [];
         foreach ($items as $item) {
             $title = trim((string)($item['title'] ?? ''));
             if ($title === '') {
                 continue;
             }
-            $matchAt = $this->matchingStepIndex($title, $subs, true);
-            if ($matchAt !== null) {
-                $fields = [];
-                $haveTitle = trim((string)($subs[$matchAt]['title'] ?? ''));
-                if (strcasecmp($title, $haveTitle) !== 0) {
-                    $fields['title'] = $title;
+            $markDone = !empty($item['done']);
+            $ownResult = trim((string)($item['result'] ?? ''));
+            $openIndexes = [];
+            if ($markDone) {
+                $openIndexes = $this->exactStepIndexes($title, $subs, true);
+            }
+            if ($openIndexes === []) {
+                $matchAt = $this->matchingStepIndex($title, $subs, true);
+                if ($matchAt !== null) {
+                    $openIndexes = [$matchAt];
                 }
-                $incoming = trim((string)($item['description'] ?? ''));
-                $have = trim((string)($subs[$matchAt]['description'] ?? ''));
-                if ($incoming !== '' && $incoming !== $have) {
-                    $fields['description'] = $incoming;
+            }
+            if ($openIndexes !== []) {
+                foreach ($openIndexes as $matchAt) {
+                    $fields = [];
+                    $haveTitle = trim((string)($subs[$matchAt]['title'] ?? ''));
+                    if (strcasecmp($title, $haveTitle) !== 0) {
+                        $fields['title'] = $title;
+                    }
+                    $incoming = trim((string)($item['description'] ?? ''));
+                    $have = trim((string)($subs[$matchAt]['description'] ?? ''));
+                    $keepInstruction = $markDone && $have !== '' && mb_strlen($incoming) < 80;
+                    if ($incoming !== '' && $incoming !== $have && !$keepInstruction) {
+                        $fields['description'] = $incoming;
+                    }
+                    $agent = (string)($item['agent'] ?? '');
+                    $haveAgent = strtolower(trim((string)($subs[$matchAt]['assigned_agent'] ?? '')));
+                    if ($agent !== '' && $agent !== $haveAgent) {
+                        $fields['assigned_agent'] = $agent;
+                    }
+                    $detailFields = $fields;
+                    if ($markDone && (string)($subs[$matchAt]['status'] ?? '') !== 'done') {
+                        $fields['status'] = 'done';
+                        $existingResult = trim((string)($subs[$matchAt]['result'] ?? ''));
+                        if ($ownResult !== '') {
+                            $fields['result'] = $this->oneLineResult($ownResult);
+                        } elseif ($existingResult === '' && $taskResult !== '') {
+                            $fields['result'] = $taskResult;
+                        }
+                        $this->lastStepWrite['crossed']++;
+                    }
+                    if ($fields) {
+                        $this->db->updateSubtask((int)$subs[$matchAt]['id'], $fields);
+                        $subs[$matchAt] = array_merge($subs[$matchAt], $fields);
+                    }
+                    if ($detailFields) {
+                        $this->lastStepWrite['detailed']++;
+                    }
+                    $touched[] = (int)$subs[$matchAt]['id'];
                 }
-                $agent = (string)($item['agent'] ?? '');
-                $haveAgent = strtolower(trim((string)($subs[$matchAt]['assigned_agent'] ?? '')));
-                if ($agent !== '' && $agent !== $haveAgent) {
-                    $fields['assigned_agent'] = $agent;
-                }
-                if ($fields) {
-                    $this->db->updateSubtask((int)$subs[$matchAt]['id'], $fields);
-                    $subs[$matchAt] = array_merge($subs[$matchAt], $fields);
-                    $this->lastStepWrite['detailed']++;
-                }
-                $touched[] = (int)$subs[$matchAt]['id'];
                 continue;
             }
-            if (!$replace && $this->matchingStepIndex($title, $subs, false) !== null) {
+            if ($this->matchingStepIndex($title, $subs, false) !== null) {
                 continue;
             }
-            $created = $this->db->insertSubtask($taskId, $title, 'in_progress', (string)($item['agent'] ?? ''), (string)($item['description'] ?? ''));
+            $created = $this->db->insertSubtask($taskId, $title, $markDone ? 'done' : 'in_progress', (string)($item['agent'] ?? ''), (string)($item['description'] ?? ''));
+            if ($markDone) {
+                $line = $ownResult !== '' ? $this->oneLineResult($ownResult) : $taskResult;
+                if ($line !== '') {
+                    $created = $this->db->updateSubtask((int)$created['id'], ['result' => $line]) ?? $created;
+                }
+                $this->lastStepWrite['crossed']++;
+            } else {
+                $this->lastStepWrite['added']++;
+            }
             $subs[] = $created;
             $touched[] = (int)($created['id'] ?? 0);
-            $this->lastStepWrite['added']++;
         }
         if (!$replace) {
             return;
@@ -582,6 +625,97 @@ class Kanban
             $this->db->deleteSubtask($id);
             $this->lastStepWrite['removed']++;
         }
+    }
+
+    private function closeDuplicateOpenSteps(array &$subs): void
+    {
+        foreach ($subs as $index => $sub) {
+            if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                continue;
+            }
+            $title = trim((string)($sub['title'] ?? ''));
+            $id = (int)($sub['id'] ?? 0);
+            if ($title === '' || $id <= 0) {
+                continue;
+            }
+            $doneAt = null;
+            foreach ($subs as $otherIndex => $other) {
+                if ($otherIndex === $index || !is_array($other) || (string)($other['status'] ?? '') !== 'done') {
+                    continue;
+                }
+                if (strcasecmp($title, trim((string)($other['title'] ?? ''))) === 0) {
+                    $doneAt = $otherIndex;
+                    break;
+                }
+            }
+            if ($doneAt === null) {
+                continue;
+            }
+            $fields = ['status' => 'done'];
+            $doneResult = trim((string)($subs[$doneAt]['result'] ?? ''));
+            if ($doneResult !== '' && trim((string)($sub['result'] ?? '')) === '') {
+                $fields['result'] = $doneResult;
+            }
+            $this->db->updateSubtask($id, $fields);
+            $subs[$index] = array_merge($sub, $fields);
+            $this->lastStepWrite['crossed']++;
+        }
+    }
+
+    private function stepMarkedDone(array $step): bool
+    {
+        if (array_key_exists('done', $step) && $this->stepFlag($step['done'])) {
+            return true;
+        }
+        $status = strtolower(trim((string)($step['status'] ?? '')));
+        if (in_array($status, ['done', 'complete', 'completed', 'finished'], true)) {
+            return true;
+        }
+        $result = $step['result'] ?? '';
+        if ($result === true || $result === 1) {
+            return true;
+        }
+        return trim((string)$result) !== '';
+    }
+
+    private function stepResultText(array $step): string
+    {
+        $result = $step['result'] ?? '';
+        if (!is_string($result) && !is_numeric($result)) {
+            return '';
+        }
+        $text = trim((string)$result);
+        if ($this->stepFlag($text)) {
+            return '';
+        }
+        return $text;
+    }
+
+    private function stepFlag(mixed $value): bool
+    {
+        if (is_bool($value) || is_int($value) || is_float($value)) {
+            return (int)$value === 1;
+        }
+        return in_array(strtolower(trim((string)$value)), ['1', 'true', 'yes', 'done', 'complete', 'completed', 'finished'], true);
+    }
+
+    private function exactStepIndexes(string $title, array $subs, bool $openOnly): array
+    {
+        $found = [];
+        foreach ($subs as $index => $sub) {
+            if (!is_array($sub)) {
+                continue;
+            }
+            $open = (string)($sub['status'] ?? '') !== 'done';
+            if ($openOnly !== $open) {
+                continue;
+            }
+            $have = trim((string)($sub['title'] ?? ''));
+            if ($have !== '' && strcasecmp($title, $have) === 0) {
+                $found[] = $index;
+            }
+        }
+        return $found;
     }
 
     private function wantsReplace(array $args): bool

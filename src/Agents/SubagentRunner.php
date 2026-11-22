@@ -557,8 +557,12 @@ TXT;
                     if ($removed > 0) {
                         $stepsNote .= ' Removed ' . $removed . ' open ' . ($removed === 1 ? 'step.' : 'steps.');
                     }
+                    $crossed = (int)($write['crossed'] ?? 0);
+                    if ($crossed > 0) {
+                        $stepsNote .= ' Crossed off ' . $crossed . ($crossed === 1 ? ' step.' : ' steps.');
+                    }
                     if ($stepsNote === '') {
-                        $stepsNote = ' That task already has those steps. Change it with update. Do not delete it and do not create a new one.';
+                        $stepsNote = ' Those steps are already on the task. To cross one off, pass that step with result set to done, or to one line of what it produced. Do not replace the steps and do not create a new task.';
                     }
                 }
                 return $board->updatedLine($task) . $held . $stepsNote;
