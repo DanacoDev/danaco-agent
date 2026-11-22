@@ -2072,7 +2072,7 @@ SQL);
     {
         $row['id'] = (int)$row['id'];
         $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
-        return $row;
+        return $this->localLogClock($row);
     }
 
     private function castLoopLog(array $row): array
@@ -2080,6 +2080,15 @@ SQL);
         $row['id'] = (int)$row['id'];
         $row['job_id'] = $row['job_id'] !== null ? (int)$row['job_id'] : null;
         $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
+        return $this->localLogClock($row);
+    }
+
+    private function localLogClock(array $row): array
+    {
+        $stamp = trim((string)($row['created_at'] ?? ''));
+        if ($stamp !== '') {
+            $row['created_at'] = app_local_stamp($stamp, 'Y-m-d H:i:s');
+        }
         return $row;
     }
 }

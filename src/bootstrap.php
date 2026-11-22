@@ -20,7 +20,7 @@ function app_timezone(): void
     }
 }
 
-function app_local_stamp(?string $stored = null): string
+function app_local_stamp(?string $stored = null, string $format = 'l j F Y \a\t H:i'): string
 {
     $zone = new DateTimeZone(date_default_timezone_get());
     $stored = trim((string)$stored);
@@ -31,7 +31,7 @@ function app_local_stamp(?string $stored = null): string
     } catch (Exception $e) {
         $time = new DateTimeImmutable('now', $zone);
     }
-    return $time->setTimezone($zone)->format('l j F Y \a\t H:i');
+    return $time->setTimezone($zone)->format($format);
 }
 
 function error_text(string $message): string
