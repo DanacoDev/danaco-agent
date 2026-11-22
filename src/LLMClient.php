@@ -485,6 +485,46 @@ class LLMClient
         $this->db->loop($agent !== '' ? $agent : 'orchestrator', 'machine', $line);
     }
 
+    private function isSageModel(string $model): bool
+    {
+        $name = strtolower(trim($model));
+        return $name === 'maternion/sage-a1.5' || str_starts_with($name, 'maternion/sage-a1.5:');
+    }
+
+    private function sageMessages(string $model, array $messages): array
+    {
+        if (!$this->isSageModel($model) || $messages === [] || !is_array($messages[0])) {
+            return $messages;
+        }
+        if (($messages[0]['role'] ?? '') !== 'system') {
+            return $messages;
+        }
+        $content = $messages[0]['content'] ?? '';
+        if (!is_string($content) || trim($content) === '') {
+            return $messages;
+        }
+        $tail = 'Verification protocol: enabled';
+        if (str_ends_with(rtrim($content), $tail)) {
+            return $messages;
+        }
+        $messages[0]['content'] = rtrim($content) . "\n\n" . $tail;
+        return $messages;
+    }
+
+    private function sageOptions(string $model, array $options): array
+    {
+        if (!$this->isSageModel($model)) {
+            return $options;
+        }
+        $options['temperature'] = 1.0;
+        $options['top_p'] = 0.95;
+        $options['top_k'] = 20;
+        $options['min_p'] = 0.0;
+        $options['presence_penalty'] = 1.5;
+        $options['repeat_penalty'] = 1.0;
+        return $options;
+    }
+
     private function attempt(array $messages, callable $onToken, ?callable $shouldStop, ?callable $onThinking = null, bool $cloud = false, string $agent = '', bool $failsafe = false): string
     {
         $this->incomplete = false;
@@ -551,6 +591,8 @@ class LLMClient
                 $ask = 'auto · ' . $this->gpuSkip;
             }
         }
+        $options = $this->sageOptions($model, $options);
+        $messages = $this->sageMessages($model, $messages);
         $body = [
             'model' => $model,
             'messages' => $messages,
