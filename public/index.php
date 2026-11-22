@@ -246,7 +246,7 @@ header('X-Danaco: 1');
                     <span>{{ thinkingLabel }}</span>
                   </div>
                 </article>
-                <div v-if="sending && replyPinned" class="thinking-row">
+                <div v-if="(sending && replyPinned) || detachedWorking" class="thinking-row">
                   <span class="spinner" aria-hidden="true"></span>
                   <span>{{ thinkingLabel }}</span>
                 </div>

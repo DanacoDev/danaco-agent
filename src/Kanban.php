@@ -30,6 +30,10 @@ class Kanban
         $description = implode("\n", array_map(fn(array $step): string => $step['title'], $steps));
         $agent = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
         if (!$byUser) {
+            $stepTask = $this->openStepTask($projectId, $title);
+            if ($stepTask) {
+                throw new InvalidArgumentException('Error: Task #' . $stepTask['id'] . ' already has that open step: ' . $title . '. It was not added. Update that task. Do not create a new one.');
+            }
             $duplicate = $this->exactDuplicate($projectId, $title, $description, $agent, $schedule, $recurrence);
             if ($duplicate) {
                 throw new InvalidArgumentException('Error: Task #' . $duplicate['id'] . ' is already on the task list as ' . $this->column($duplicate) . ' and matches this task exactly: ' . $duplicate['title'] . '. It was not added. Use that task.');
@@ -188,6 +192,13 @@ class Kanban
             $fields['held'] = 0;
         }
         $saved = $this->db->updateTask($id, $fields);
+        if ($saved && $byUser && array_key_exists('schedule_time', $args) && !$inactivate && $schedule === null) {
+            $previous = $existing['schedule_time'] ?? null;
+            $wasImmediate = ($previous === null || $previous === '') && (int)($existing['held'] ?? 0) !== 1;
+            if (!$wasImmediate) {
+                $this->db->releaseImmediateRun($id);
+            }
+        }
         if ($saved && $steps && $hasInstruction) {
             $this->addSteps($id, $steps, !$hasSteps, $hasSteps && $this->wantsReplace($args));
             $saved = $this->db->task($id) ?? $saved;
@@ -643,6 +654,29 @@ class Kanban
             }
         }
         return implode("\n", $parts);
+    }
+
+    private function openStepTask(int $projectId, string $title): ?array
+    {
+        $needle = strtolower(trim(preg_replace('/\s+/', ' ', $title) ?? $title));
+        if ($needle === '') {
+            return null;
+        }
+        foreach ($this->db->tasks($projectId) as $task) {
+            if ((string)($task['status'] ?? '') !== 'in_progress') {
+                continue;
+            }
+            foreach ($task['subtasks'] ?? [] as $sub) {
+                if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                    continue;
+                }
+                $step = strtolower(trim(preg_replace('/\s+/', ' ', (string)($sub['title'] ?? '')) ?? ''));
+                if ($step !== '' && $step === $needle) {
+                    return $task;
+                }
+            }
+        }
+        return null;
     }
 
     private function exactDuplicate(int $projectId, string $title, string $description, string $agent, ?string $schedule, string $recurrence): ?array

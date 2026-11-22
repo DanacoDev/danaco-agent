@@ -470,6 +470,14 @@
           const projectId = this.projectId || 0;
           return this.agents.some((agent) => this.agentBusy(agent) && (agent.project_id || 0) === projectId);
         },
+        mainWorking() {
+          const main = this.mainAgent;
+          if (!main || !this.agentBusy(main)) return false;
+          return (main.project_id || 0) === (this.projectId || 0);
+        },
+        detachedWorking() {
+          return this.mainWorking && !this.sending && !this.awaitingModel;
+        },
         workingSubagents() {
           const rows = [];
           const seen = {};
@@ -506,7 +514,10 @@
         thinkingLabel() {
           if (this.waitPhase === 'compressing' || this.compressing || this.compressArmed) return 'Compressing context';
           if (this.toolPending) return 'Calling a tool';
-          if (!this.thinkingSpinner) return 'Working';
+          if (!this.thinkingSpinner) {
+            if (this.detachedWorking) return this.mainAgent.status === 'executing_tool' ? 'Calling a tool' : 'Thinking';
+            return 'Working';
+          }
           if (this.waitPhase === 'scheduled') return 'Waiting (agent busy with scheduled task)';
           if (!this.slowReply) return 'Thinking';
           const waiting = this.awaitingModel || (this.modelLoad && this.modelLoad.ready === false && !this.modelLoad.error);

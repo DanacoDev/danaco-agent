@@ -1,6 +1,6 @@
 ---
 name: write_skill
-description: Creates or updates a custom skill in the Skills library. args name, description, optional source, and the program in script when the skill runs code. The same name updates a custom skill. A system skill cannot be changed.
+description: Creates or updates a custom skill in the Skills library. args name, description, optional source, and the program in script when the skill runs code. Pass overwrite true to change an existing custom skill. Without it, an existing name is left as it is. A system skill cannot be changed.
 version: 1.0.0
 ---
 
@@ -12,9 +12,9 @@ args:
 - source. Optional. Short markdown instructions only: what it does, when to use it, and the arguments. Do not paste the program here. A SKILL.md that starts with --- is accepted, and the text after the frontmatter is still instructions, not code. On an existing custom skill, omit it to keep the current instructions.
 - script. The PHP or Python program, when calling the skill should run code. It reads one JSON object from stdin and prints the result. This is saved as scripts/run.php or scripts/run.py, and that file is what runs. Omit it when the skill is only instructions. On an existing custom skill, omit it to keep the current program.
 - lang. py or php, matching script. php is the default. When lang is omitted, it is taken from the script.
-- overwrite. Not required. The same name updates a custom skill.
+- overwrite. Required to change a skill that already exists. Without it, that name is left as it is. Call the skill by name.
 
-Calling write_skill with the name of a custom skill updates it. Send the fields that change. An omitted description, source, or script stays as it is. A new source replaces the instructions. A new script replaces the program. A system skill cannot be edited or overwritten.
+Calling write_skill with the name of a custom skill updates it only when overwrite is true. Send the fields that change. An omitted description, source, or script stays as it is. A new source replaces the instructions. A new script replaces the program. A system skill cannot be edited or overwritten.
 
 SKILL.md is not the program. Calling the skill runs script. It does not return the source code. If the program is pasted into source and script is empty, the program is moved into script and only the instructions stay in SKILL.md. If both source and script contain the program, the script you sent is kept and the program is removed from the instructions.
 

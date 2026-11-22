@@ -272,8 +272,10 @@ class SkillEngine
         $source = (string)($args['source'] ?? '');
         $before = $name !== '' ? $this->db->skillByName($name) : null;
         $custom = $before && (string)($before['created_by'] ?? '') !== 'system' && !in_array($name, self::SYSTEM, true);
-        if ($custom) {
-            $overwrite = true;
+        if ($before && !$overwrite) {
+            return 'Skill ' . (string)$before['name'] . ' already exists. Call it by name. It was not changed.';
+        }
+        if ($custom && $overwrite) {
             if (trim($description) === '') {
                 $description = (string)$before['description'];
             }
@@ -1463,7 +1465,7 @@ class SkillEngine
     {
         $name = (string)($skill['name'] ?? '');
         $description = $this->oneLine((string)($skill['description'] ?? ''));
-        return 'Skill ' . $name . ' already exists: ' . $description . ' It was not changed. Call write_skill with that name to update a custom skill. A built-in skill cannot be changed.';
+        return 'Skill ' . $name . ' already exists: ' . $description . ' It was not changed. Call it by name. Pass overwrite true to change a custom skill. A built-in skill cannot be changed.';
     }
 
     private function oneLine(string $description): string
