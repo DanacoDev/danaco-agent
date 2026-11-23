@@ -24,6 +24,7 @@ class Api
         $router->add('PATCH', '#^/api/tasks/(?P<id>\d+)$#', $this->guard(fn(array $args) => $this->updateTask((int)$args['id'])));
         $router->add('POST', '#^/api/tasks/(?P<id>\d+)/delete$#', $this->guard(fn(array $args) => $this->deleteTask((int)$args['id'])));
         $router->add('POST', '#^/api/tasks/(?P<id>\d+)/subtasks$#', $this->guard(fn(array $args) => $this->createSubtask((int)$args['id'])));
+        $router->add('POST', '#^/api/tasks/(?P<id>\d+)/subtasks/reorder$#', $this->guard(fn(array $args) => $this->reorderSubtasks((int)$args['id'])));
         $router->add('PATCH', '#^/api/subtasks/(?P<id>\d+)$#', $this->guard(fn(array $args) => $this->updateSubtask((int)$args['id'])));
         $router->add('POST', '#^/api/subtasks/(?P<id>\d+)/delete$#', $this->guard(fn(array $args) => $this->deleteSubtask((int)$args['id'])));
         $router->add('POST', '#^/api/tasks/finished/clear$#', $this->guard(fn() => $this->clearFinishedTasks()));
@@ -358,6 +359,22 @@ class Api
         }
         $this->db->insertSubtask($taskId, $title, $this->subtaskStatus((string)($body['status'] ?? 'in_progress')), $agent, $description);
         $this->json(['task' => $this->db->syncTaskFromSteps($this->db->task($taskId))], 201);
+    }
+
+    private function reorderSubtasks(int $taskId): void
+    {
+        $task = $this->db->task($taskId);
+        if (!$task) {
+            $this->json(['error' => 'Task not found.'], 404);
+            return;
+        }
+        $ids = $this->input()['ids'] ?? null;
+        if (!is_array($ids)) {
+            $this->json(['error' => 'Step order is required.'], 422);
+            return;
+        }
+        $this->db->orderSubtasks($taskId, $ids);
+        $this->json(['task' => $this->db->task($taskId)]);
     }
 
     private function updateSubtask(int $id): void

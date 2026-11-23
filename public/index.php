@@ -311,9 +311,14 @@ header('X-Danaco: 1');
               <label class="field task-title-field">
                 <input ref="taskTitle" v-model="taskEdit.title" placeholder="Title" aria-label="Title" form="task-add-form">
               </label>
-              <ul v-if="newSteps.length" class="subtasks">
-                <li v-for="(sub, index) in newSteps" :key="index" class="subtask">
+              <ul v-if="newSteps.length" class="subtasks" data-step-list="new">
+                <template v-for="(sub, index) in newSteps" :key="sub.key">
+                <li v-if="dragStepKey === stepKey(sub) && dragStepCard" class="step-placeholder" :style="{ height: dragStepCard.height + 'px' }" :data-step-key="stepKey(sub)"></li>
+                <li class="subtask" :class="{ 'is-dragging': dragStepKey === stepKey(sub) }" :data-step-key="stepKey(sub)" :style="stepDragStyle(sub)">
                   <div class="subtask-row">
+                    <button class="step-drag" type="button" aria-label="Drag to reorder" @pointerdown="onStepPointerDown('new', $event)">
+                      <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
+                    </button>
                     <span class="subtask-title">{{ sub.title }}</span>
                     <span class="task-meta">{{ agentLabel(sub.assigned_agent) }}</span>
                     <button class="task-edit" type="button" aria-label="Remove step" @click="removeNewStep(index)">
@@ -322,6 +327,7 @@ header('X-Danaco: 1');
                   </div>
                   <p v-if="sub.description" class="subtask-detail">{{ sub.description }}</p>
                 </li>
+                </template>
               </ul>
               <form class="subtask-add" @submit.prevent="stageNewStep">
                 <div class="subtask-add-row">
@@ -337,8 +343,7 @@ header('X-Danaco: 1');
               <form id="task-add-form" @submit.prevent="addTask">
                 <div class="task-fields">
                   <label class="field">Time
-                    <select v-model="taskEdit.when">
-                      <option value="immediately">immediately</option>
+                    <select v-model="taskEdit.when" @change="onTaskWhen">
                       <option value="at">at a time</option>
                       <option value="never">Never (inactivated)</option>
                     </select>
@@ -391,9 +396,14 @@ header('X-Danaco: 1');
                 </header>
                 <p v-if="taskFailed(task) && task.result && !expandedTasks[task.id]" class="task-fail">{{ task.result }}</p>
                 <label v-if="openTask === task.id" class="field task-title-field">Title<input v-model="taskEdit.title" :form="'task-edit-' + task.id"></label>
-                <ul v-if="expandedTasks[task.id] && (task.subtasks || []).length" class="subtasks">
-                  <li v-for="sub in task.subtasks" :key="sub.id" class="subtask" :class="{ 'is-done': subtaskStatus(sub) === 'done' }">
+                <ul v-if="expandedTasks[task.id] && (task.subtasks || []).length" class="subtasks is-saved" :data-step-list="String(task.id)">
+                  <template v-for="sub in task.subtasks" :key="sub.id">
+                  <li v-if="dragStepKey === stepKey(sub) && dragStepCard" class="step-placeholder" :style="{ height: dragStepCard.height + 'px' }" :data-step-key="stepKey(sub)"></li>
+                  <li class="subtask" :class="{ 'is-done': subtaskStatus(sub) === 'done', 'is-dragging': dragStepKey === stepKey(sub) }" :data-step-key="stepKey(sub)" :style="stepDragStyle(sub)">
                     <div class="subtask-row">
+                      <button class="step-drag" type="button" aria-label="Drag to reorder" @pointerdown="onStepPointerDown(task.id, $event)">
+                        <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
+                      </button>
                       <button class="subtask-check" type="button" :aria-pressed="subtaskStatus(sub) === 'done'" aria-label="Mark step done" @click="toggleSubtaskStatus(task, sub)"></button>
                       <span class="subtask-title">{{ sub.title }}</span>
                       <span class="task-meta">{{ agentLabel(sub.assigned_agent || task.assigned_agent) }}</span>
@@ -427,6 +437,7 @@ header('X-Danaco: 1');
                       </div>
                     </form>
                   </li>
+                  </template>
                 </ul>
                 <p v-if="openTask !== task.id && expandedTasks[task.id] && task.result && (taskFailed(task) || !(task.subtasks || []).length)" class="task-result is-full"><span class="task-result-label">{{ taskFailed(task) ? 'Error:' : 'Results:' }}</span><span class="task-result-line"><template v-for="(part, index) in resultParts(task.result)" :key="index"><a v-if="part.href" :href="part.href" target="_blank" rel="noopener">{{ part.text }}</a><span v-else>{{ part.text }}</span></template></span></p>
                 <form v-if="openTask === task.id" class="subtask-add" @submit.prevent="addSubtask(task)">
@@ -443,8 +454,7 @@ header('X-Danaco: 1');
                 <form v-if="openTask === task.id" :id="'task-edit-' + task.id" @submit.prevent="saveTask(task)">
                   <div class="task-fields">
                     <label class="field">Time
-                      <select v-model="taskEdit.when">
-                        <option value="immediately">immediately</option>
+                      <select v-model="taskEdit.when" @change="onTaskWhen">
                         <option value="at">at a time</option>
                         <option value="never">Never (inactivated)</option>
                       </select>

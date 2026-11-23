@@ -414,6 +414,23 @@ button.task-title.is-finished { color: var(--muted); text-decoration: line-throu
   border: 1px dashed #c5cad3; border-radius: 12px; background: rgba(255, 255, 255, 0.45);
 }
 html.is-task-drag, html.is-task-drag * { cursor: grabbing !important; }
+.subtask .step-drag {
+  width: 28px; height: 28px; flex: 0 0 auto;
+  display: grid; place-items: center; padding: 0; color: var(--muted);
+  background: transparent; border: 0; border-radius: 0; appearance: none;
+  cursor: grab; touch-action: none;
+}
+.subtask .step-drag:active, .subtask.is-dragging .step-drag { cursor: grabbing; }
+.subtask .step-drag .ico { width: 16px; height: 16px; }
+.subtask.is-dragging {
+  position: fixed; z-index: 40; margin: 0; pointer-events: none;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 16px 36px rgba(26, 29, 36, 0.2); list-style: none;
+}
+.step-placeholder {
+  margin-top: 6px; border: 1px dashed #c5cad3; border-radius: 10px; background: rgba(255, 255, 255, 0.45);
+}
+html.is-step-drag, html.is-step-drag * { cursor: grabbing !important; }
 .status-pill { flex: 0 0 auto; display: inline-flex; align-items: center; border-radius: 8px; color: #fff; font-size: 0.75rem; font-weight: 650; line-height: 1; }
 .status-pill.is-in_progress { background: #3b6fd8; }
 .status-pill.is-done { background: #2ea44f; }
@@ -443,15 +460,16 @@ html.is-task-drag, html.is-task-drag * { cursor: grabbing !important; }
 }
 .subtask.is-done .subtask-title { color: var(--muted); text-decoration: line-through; }
 .subtask-detail {
-  margin: 2px 0 0 24px; color: var(--muted); font-size: 0.8rem; white-space: pre-wrap;
+  margin: 2px 0 0 36px; color: var(--muted); font-size: 0.8rem; white-space: pre-wrap;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
-.human-step { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 0 24px; }
+.subtasks.is-saved .subtask-detail { margin-left: 60px; }
+.human-step { display: flex; flex-direction: column; gap: 8px; margin: 6px 0 0 60px; }
 .human-step textarea {
   min-height: 72px; resize: vertical; background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px;
 }
 .human-step .btn { align-self: flex-start; padding: 7px 10px; }
-.step-result { margin: 2px 0 4px 24px; }
+.step-result { margin: 2px 0 4px 60px; }
 .step-result .task-result-line { white-space: pre-wrap; overflow: visible; text-overflow: unset; }
 .task-result a { color: inherit; text-decoration: underline; }
 .subtask-form .field { margin: 10px 0; }

@@ -245,6 +245,10 @@
           dragTaskId: null,
           dragTaskOrder: '',
           dragCard: null,
+          dragStepKey: '',
+          dragStepList: '',
+          dragStepOrder: '',
+          dragStepCard: null,
           taskEdit: {},
           subtaskEdit: { title: '', description: '', assigned_agent: 'orchestrator' },
           subtaskDrafts: {},
@@ -2242,6 +2246,112 @@
             await this.reloadTasks();
           }
         },
+        stepKey(sub) {
+          if (sub && sub.id) return 's' + sub.id;
+          return 'n' + String(sub && sub.key != null ? sub.key : '');
+        },
+        stepList(listName) {
+          if (listName === 'new') return this.newSteps;
+          const task = this.tasks.find((item) => String(item.id) === String(listName));
+          return task && Array.isArray(task.subtasks) ? task.subtasks : null;
+        },
+        stepDragStyle(sub) {
+          if (this.dragStepKey !== this.stepKey(sub) || !this.dragStepCard) return null;
+          const card = this.dragStepCard;
+          return {
+            left: card.x + 'px',
+            top: card.y + 'px',
+            width: card.width + 'px',
+            height: card.height + 'px'
+          };
+        },
+        moveStepList(list, fromKey, toKey, after) {
+          if (!fromKey || fromKey === toKey || !Array.isArray(list)) return;
+          const from = list.findIndex((item) => this.stepKey(item) === fromKey);
+          const to = list.findIndex((item) => this.stepKey(item) === toKey);
+          if (from < 0 || to < 0) return;
+          let dest = after ? to + 1 : to;
+          if (from < dest) dest -= 1;
+          if (dest === from) return;
+          const moved = list.splice(from, 1)[0];
+          list.splice(dest, 0, moved);
+          list.forEach((item, index) => { item.position = index; });
+        },
+        onStepPointerDown(listName, event) {
+          if (event.pointerType === 'mouse' && event.button !== 0) return;
+          const row = event.currentTarget.closest('[data-step-key]');
+          if (!row) return;
+          listName = String(listName);
+          const list = this.stepList(listName);
+          if (!list || list.length < 2) return;
+          const rect = row.getBoundingClientRect();
+          this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+          this.dragStepKey = row.getAttribute('data-step-key') || '';
+          this.dragStepList = listName;
+          this.dragStepOrder = list.map((item) => this.stepKey(item)).join(',');
+          this.dragStepCard = {
+            width: rect.width,
+            height: rect.height,
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+            x: rect.left,
+            y: rect.top
+          };
+          if (!this._stepDragMove) {
+            this._stepDragMove = (ev) => this.onStepPointerMove(ev);
+            this._stepDragStop = () => this.onStepPointerUp();
+          }
+          window.addEventListener('pointermove', this._stepDragMove);
+          window.addEventListener('pointerup', this._stepDragStop);
+          window.addEventListener('pointercancel', this._stepDragStop);
+          document.documentElement.classList.add('is-step-drag');
+          event.preventDefault();
+        },
+        onStepPointerMove(event) {
+          if (!this.dragStepKey || !this.dragStepCard) return;
+          this.dragStepCard.x = event.clientX - this.dragStepCard.offsetX;
+          this.dragStepCard.y = event.clientY - this.dragStepCard.offsetY;
+          const el = document.elementFromPoint(event.clientX, event.clientY);
+          const row = el && el.closest('[data-step-key]');
+          if (!row) return;
+          const listEl = row.closest('[data-step-list]');
+          if (!listEl || listEl.getAttribute('data-step-list') !== this.dragStepList) return;
+          const overKey = row.getAttribute('data-step-key') || '';
+          if (!overKey || overKey === this.dragStepKey) return;
+          const rect = row.getBoundingClientRect();
+          this.moveStepList(this.stepList(this.dragStepList), this.dragStepKey, overKey, event.clientY > rect.top + rect.height / 2);
+        },
+        async onStepPointerUp() {
+          window.removeEventListener('pointermove', this._stepDragMove);
+          window.removeEventListener('pointerup', this._stepDragStop);
+          window.removeEventListener('pointercancel', this._stepDragStop);
+          document.documentElement.classList.remove('is-step-drag');
+          const listName = this.dragStepList;
+          const previous = this.dragStepOrder;
+          const list = this.stepList(listName) || [];
+          const order = list.map((item) => this.stepKey(item));
+          const changed = order.join(',') !== previous;
+          const taskId = listName === 'new' ? 0 : Number(listName);
+          const save = changed && taskId > 0;
+          if (save) this.stepOrderSaving = true;
+          this.dragStepKey = '';
+          this.dragStepList = '';
+          this.dragStepOrder = '';
+          this.dragStepCard = null;
+          if (!save) return;
+          this.taskReloadGen = (this.taskReloadGen || 0) + 1;
+          const generation = this.taskReloadGen;
+          try {
+            const saved = await this.api('/api/tasks/' + taskId + '/subtasks/reorder', { method: 'POST', body: { ids: list.map((item) => item.id) } });
+            if (generation !== this.taskReloadGen) return;
+            this.replaceTask(saved.task);
+          } catch (error) {
+            this.stepOrderSaving = false;
+            if (generation === this.taskReloadGen) await this.reloadTasks();
+          } finally {
+            this.stepOrderSaving = false;
+          }
+        },
         archivedTasks() {
           return this.tasks.filter((task) => task.status === 'archived' && task.project_id === this.projectId)
             .sort((a, b) => String(b.finished_at || b.created_at || '').localeCompare(String(a.finished_at || a.created_at || '')) || (b.id - a.id));
@@ -2258,13 +2368,13 @@
           return !!(el && el.closest && el.closest('.tasks-view input, .tasks-view textarea'));
         },
         async reloadTasks() {
-          if (this.taskLoading || this.taskFieldFocused()) return;
+          if (this.taskLoading || this.taskFieldFocused() || this.dragStepKey || this.stepOrderSaving) return;
           const generation = (this.taskReloadGen || 0) + 1;
           this.taskReloadGen = generation;
           this.taskLoading = true;
           try {
             const data = await this.api('/api/tasks');
-            if (generation !== this.taskReloadGen || this.taskFieldFocused()) return;
+            if (generation !== this.taskReloadGen || this.taskFieldFocused() || this.dragStepKey || this.stepOrderSaving) return;
             if (Array.isArray(data.tasks)) {
               this.tasks = data.tasks;
               data.tasks.forEach((task) => {
@@ -2301,7 +2411,9 @@
         stageNewStep() {
           const title = String(this.newStepTitle || '').trim();
           if (!title) return;
+          this._newStepSeq = (this._newStepSeq || 0) + 1;
           this.newSteps.push({
+            key: this._newStepSeq,
             title: title,
             description: String(this.newStepDetail || '').trim(),
             assigned_agent: this.newStepAgent || 'orchestrator'
@@ -2323,7 +2435,7 @@
           const scheduled = this.taskEdit.when === 'at';
           const stamp = scheduled ? this.taskScheduleStamp(this.taskEdit.schedule_time) : '';
           if (scheduled && !stamp) {
-            this.taskError = 'Choose a time, or set the task to run immediately.';
+            this.taskError = 'Choose a time.';
             return;
           }
           let projectId = this.projectId;
@@ -2367,12 +2479,23 @@
           this.taskError = '';
           if (!this.subtaskAgents[task.id]) this.subtaskAgents[task.id] = task.assigned_agent || 'orchestrator';
           const stamp = String(task.schedule_time || '').replace(' ', 'T').slice(0, 16);
+          const heldOff = Number(task.held) === 1 && !stamp;
           this.taskEdit = {
             title: task.title,
-            when: Number(task.held) === 1 && !stamp ? 'never' : (stamp ? 'at' : 'immediately'),
-            schedule_time: stamp,
+            when: heldOff ? 'never' : 'at',
+            schedule_time: stamp || (heldOff ? '' : this.taskSoonStamp()),
             recurrence_interval: task.recurrence_interval || 'none'
           };
+        },
+        onTaskWhen() {
+          if (this.taskEdit.when === 'at' && !this.taskEdit.schedule_time) {
+            this.taskEdit.schedule_time = this.taskSoonStamp();
+          }
+        },
+        taskSoonStamp() {
+          const when = new Date(Date.now() + 3 * 60 * 1000);
+          const pad = (n) => String(n).padStart(2, '0');
+          return when.getFullYear() + '-' + pad(when.getMonth() + 1) + '-' + pad(when.getDate()) + 'T' + pad(when.getHours()) + ':' + pad(when.getMinutes());
         },
         taskScheduleStamp(value) {
           let text = String(value || '').trim().replace('T', ' ').replace(/\.\d+$/, '');
@@ -2389,7 +2512,7 @@
           const scheduled = this.taskEdit.when === 'at';
           const stamp = scheduled ? this.taskScheduleStamp(this.taskEdit.schedule_time) : '';
           if (scheduled && !stamp) {
-            this.taskError = 'Choose a time, or set the task to run immediately.';
+            this.taskError = 'Choose a time.';
             return;
           }
           const body = {

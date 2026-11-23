@@ -985,7 +985,7 @@ TXT;
                         }
                         if ($note === '') {
                             $this->db->loop('orchestrator', 'process', 'Delegate rejected · no task');
-                            return 'Delegation rejected. The task is not on the list. Create it with tasklist action create, list the tasks and read the new id, then delegate with that id. Do not invent an id.';
+                            return 'Delegation rejected. The task is not on the list. Create it with tasklist action create, list the tasks and read the new id. If the list says scheduled, do not delegate. The scheduler starts it. Do not invent an id.';
                         }
                     }
                     $wait = $this->humanStepWait($note);
@@ -1038,7 +1038,7 @@ TXT;
                 }
                 if ($note === '') {
                     $this->db->loop('orchestrator', 'process', 'Delegate rejected · no task');
-                    return 'Delegation rejected. The task is not on the list. Create it with tasklist action create, list the tasks and read the new id, then delegate with that id. Do not invent an id.';
+                    return 'Delegation rejected. The task is not on the list. Create it with tasklist action create, list the tasks and read the new id. If the list says scheduled, do not delegate. The scheduler starts it. Do not invent an id.';
                 }
                 $wait = $this->humanStepWait($note);
                 if ($wait !== '') {
@@ -1424,6 +1424,7 @@ TXT;
             }
         }
         if ($open !== null) {
+            $this->refuseIfScheduled($board, $open);
             if (!$this->taskHasStep($open)) {
                 $id = (int)$open['id'];
                 throw new InvalidArgumentException('Task #' . $id . ' has no steps. It was not started. Add at least one step with tasklist action update and id ' . $id . ', then delegate again. Pass steps as a list. Each step is an object with title, agent, and description. description names the files, lists, and skills to use, and what to save or return.');
@@ -1442,6 +1443,7 @@ TXT;
             if (in_array($board->column($task), ['done', 'archived'], true)) {
                 continue;
             }
+            $this->refuseIfScheduled($board, $task);
             if (!$this->taskHasStep($task)) {
                 $id = (int)$task['id'];
                 throw new InvalidArgumentException('Task #' . $id . ' has no steps. It was not started. Add at least one step with tasklist action update and id ' . $id . ', then delegate again. Pass steps as a list. Each step is an object with title, agent, and description. description names the files, lists, and skills to use, and what to save or return.');
@@ -1456,7 +1458,17 @@ TXT;
             'status' => 'in_progress',
         ], false);
         $createdTaskIds[] = (int)$saved['id'];
+        $this->refuseIfScheduled($board, $saved);
         return "\nCreated task #" . $saved['id'] . ' in in_progress.';
+    }
+
+    private function refuseIfScheduled(Kanban $board, array $task): void
+    {
+        if (!$board->awaiting($task)) {
+            return;
+        }
+        $when = trim((string)($task['schedule_time'] ?? ''));
+        throw new InvalidArgumentException('Task #' . (int)$task['id'] . ' is scheduled for ' . $when . '. It was not started. The scheduler starts it when that time arrives.');
     }
 
     private function pieceSteps(string $title, array $steps): ?array
@@ -1793,11 +1805,12 @@ TXT;
             if ($createdTaskIds !== null) {
                 $createdTaskIds[] = (int)$saved['id'];
             }
-            $added[] = '#' . $saved['id'] . ' ' . $saved['title'];
+            $when = trim((string)($saved['schedule_time'] ?? ''));
+            $added[] = '#' . $saved['id'] . ' ' . $saved['title'] . ($when !== '' ? ' scheduled for ' . $when : '');
         }
         $lines = [];
         if ($added !== []) {
-            $lines[] = 'Added ' . count($added) . ' ' . (count($added) === 1 ? 'task' : 'tasks') . ' in in_progress: ' . implode('; ', $added) . '.';
+            $lines[] = 'Added ' . count($added) . ' ' . (count($added) === 1 ? 'task' : 'tasks') . ': ' . implode('; ', $added) . '. Do not delegate a scheduled task. The scheduler starts it.';
         }
         if ($duplicates !== []) {
             $lines[] = 'These tasks are already on the task list and were not added. Use those tasks. ' . implode(' ', $duplicates);

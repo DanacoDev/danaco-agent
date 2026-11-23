@@ -563,6 +563,103 @@ class Heartbeat
         $this->db->loopWrite($jobId, $projectId, $agent, 'process', $line);
     }
 
+    public function tasksToRun(): array
+    {
+        $run = [];
+        $overdue = [];
+        foreach ($this->db->dueTasks() as $task) {
+            if (empty($task['project_id'])) {
+                continue;
+            }
+            if ($this->missedRepeat($task)) {
+                $this->skipMissedRepeat($task);
+                continue;
+            }
+            if ($this->overdueOnce($task)) {
+                $overdue[] = $task;
+                continue;
+            }
+            $run[] = $task;
+        }
+        if ($overdue !== [] && $this->catchUpOpen()) {
+            $run[] = array_shift($overdue);
+            if ($overdue !== []) {
+                $this->armCatchUp();
+            }
+        }
+        return $run;
+    }
+
+    private function missedRepeat(array $task): bool
+    {
+        $interval = strtolower(trim((string)($task['recurrence_interval'] ?? 'none')));
+        if (!$this->repeats($interval)) {
+            return false;
+        }
+        $when = trim((string)($task['schedule_time'] ?? ''));
+        $at = $when !== '' ? strtotime($when) : false;
+        if ($at === false || $at > time()) {
+            return false;
+        }
+        $seconds = [
+            '5min' => 300,
+            '15min' => 900,
+            '30min' => 1800,
+            'hourly' => 3600,
+            'daily' => 86400,
+            'weekly' => 604800,
+        ];
+        if (isset($seconds[$interval])) {
+            return time() >= $at + $seconds[$interval];
+        }
+        if ($interval === 'monthly') {
+            $next = strtotime('+1 month', $at);
+            return $next !== false && time() >= $next;
+        }
+        return false;
+    }
+
+    private function skipMissedRepeat(array $task): void
+    {
+        $next = $this->nextSchedule((string)($task['recurrence_interval'] ?? 'none'), (string)($task['schedule_time'] ?? ''));
+        $projectId = (int)($task['project_id'] ?? 0);
+        $id = (int)$task['id'];
+        if (!$next) {
+            $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'heartbeat', 'process', 'Task ' . $id . ' missed · schedule not moved');
+            return;
+        }
+        $this->db->updateTask($id, ['schedule_time' => $next]);
+        $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'heartbeat', 'process', 'Task ' . $id . ' missed · next at ' . $next);
+    }
+
+    private function overdueOnce(array $task): bool
+    {
+        if ($this->repeats((string)($task['recurrence_interval'] ?? 'none'))) {
+            return false;
+        }
+        $when = trim((string)($task['schedule_time'] ?? ''));
+        $at = $when !== '' ? strtotime($when) : false;
+        if ($at === false) {
+            return false;
+        }
+        return $at <= time() - Kanban::RESTART_DELAY;
+    }
+
+    private function catchUpOpen(): bool
+    {
+        $raw = trim((string)$this->db->getSetting('task_catchup_after', '0'));
+        if ($raw === '' || $raw === '0') {
+            return true;
+        }
+        $at = strtotime($raw);
+        return $at === false || $at <= time();
+    }
+
+    private function armCatchUp(): void
+    {
+        $this->db->setSetting('task_catchup_after', date('Y-m-d H:i:s', time() + Kanban::RESTART_DELAY));
+    }
+
     private function nextSchedule(string $interval, string $from): ?string
     {
         $seconds = [

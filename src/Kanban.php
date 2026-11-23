@@ -2,7 +2,7 @@
 
 class Kanban
 {
-    private const RESTART_DELAY = 180;
+    public const RESTART_DELAY = 180;
 
     private array $lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0];
 
@@ -832,7 +832,7 @@ class Kanban
             if ($existingSchedule === '') {
                 $existingSchedule = null;
             }
-            if ($existingSchedule !== $schedule) {
+            if ($existingSchedule !== $schedule && !($this->soonWindow($existingSchedule) && $this->soonWindow($schedule))) {
                 continue;
             }
             $existingRepeat = strtolower(trim((string)($task['recurrence_interval'] ?? '')));
@@ -917,24 +917,39 @@ class Kanban
         return in_array($value, ['none', '5min', '15min', '30min', 'hourly', 'daily', 'weekly', 'monthly'], true) ? $value : 'none';
     }
 
+    private function soon(): string
+    {
+        return date('Y-m-d H:i:s', time() + self::RESTART_DELAY);
+    }
+
+    private function soonWindow(?string $schedule): bool
+    {
+        if ($schedule === null || $schedule === '') {
+            return true;
+        }
+        $at = strtotime($schedule);
+        if ($at === false) {
+            return false;
+        }
+        $now = time();
+        return $at >= $now - self::RESTART_DELAY && $at <= $now + self::RESTART_DELAY;
+    }
+
     private function schedule(mixed $value, bool $strict = false): ?string
     {
         if ($value === null || $value === '') {
-            return null;
+            return $this->soon();
         }
         $value = str_replace('T', ' ', trim((string)$value));
         $value = preg_replace('/\.\d+$/', '', $value) ?? $value;
-        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
-            return null;
-        }
         if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/', $value)) {
             $value .= ':00';
         }
         if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value)) {
             if ($strict) {
-                throw new InvalidArgumentException('Time must be a date and a clock time, or left empty to run immediately.');
+                throw new InvalidArgumentException('Time must be a date and a clock time. Leave it empty to run in 3 minutes.');
             }
-            return null;
+            return $this->soon();
         }
         return $value;
     }

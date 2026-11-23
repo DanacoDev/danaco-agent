@@ -48,7 +48,7 @@ try {
     }
     $heartbeat = new Heartbeat($db);
     $heartbeat->beat();
-    foreach ($db->dueTasks() as $task) {
+    foreach ($heartbeat->tasksToRun() as $task) {
         if (!$task['project_id']) {
             continue;
         }

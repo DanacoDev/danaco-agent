@@ -675,6 +675,42 @@ SQL);
         }
     }
 
+    public function orderSubtasks(int $taskId, array $ids): void
+    {
+        $stmt = $this->pdo->prepare('SELECT id FROM subtasks WHERE task_id = ? ORDER BY position, id');
+        $stmt->execute([$taskId]);
+        $owned = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $owned[(int)$row['id']] = true;
+        }
+        if (!$owned) {
+            return;
+        }
+        $ordered = [];
+        foreach ($ids as $id) {
+            $id = (int)$id;
+            if ($id > 0 && isset($owned[$id]) && !in_array($id, $ordered, true)) {
+                $ordered[] = $id;
+            }
+        }
+        foreach (array_keys($owned) as $id) {
+            if (!in_array($id, $ordered, true)) {
+                $ordered[] = $id;
+            }
+        }
+        $update = $this->pdo->prepare('UPDATE subtasks SET position = ? WHERE id = ? AND task_id = ?');
+        $this->pdo->beginTransaction();
+        try {
+            foreach ($ordered as $position => $id) {
+                $update->execute([$position, $id, $taskId]);
+            }
+            $this->pdo->commit();
+        } catch (Throwable $e) {
+            $this->pdo->rollBack();
+            throw $e;
+        }
+    }
+
     public function deleteTask(int $id): bool
     {
         if (!$this->task($id)) {
