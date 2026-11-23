@@ -41,7 +41,7 @@ class PdfFile
             throw new RuntimeException('That PDF text is too long.');
         }
         if (preg_match('/(?:^|\n)\s*<\s*h[1-6]\b/i', $text) || preg_match('/<\s*(?:h[1-6]|span|font|div|p)\b[^>]*style\s*=/i', $text)) {
-            throw new RuntimeException('That text contains an HTML tag, so the tag would be printed. A large purple title is {size:18}{color:purple}# Scarface (1983). Bold is **word**. Italic is *word*. One purple phrase is {color:purple}word{/color}. Put {size:18} or {color:purple} at the start of a line to change that whole line.');
+            throw new RuntimeException('That text contains an HTML tag, so the tag would be printed. A title is # Scarface (1983). Bold is **word**. Italic is *word*. A color the task asked for is {color:navy}word{/color}. A size the task asked for is {size:18} at the start of that line. An image is its own line, {image:assets/chart.png}.');
         }
         $relative = ltrim(str_replace('\\', '/', trim($path)), '/');
         if (!preg_match('/^(?:[\p{L}0-9][\p{L}0-9._-]{0,40}\/)*[\p{L}0-9][\p{L}0-9._-]{0,80}\.pdf$/u', $relative) || str_contains($relative, '..')) {
@@ -52,7 +52,9 @@ class PdfFile
         }
         $requested = $relative;
         $relative = self::nextPdfPath($relative, fn(string $path): bool => $safety->fileExists($folder, $path));
-        $written = $safety->writeFile($folder, $relative, self::build($text));
+        $written = $safety->writeFile($folder, $relative, self::build($text, static function (string $path) use ($safety, $folder): array {
+            return self::loadProjectImage($safety, $folder, $path);
+        }));
         $note = 'Wrote ' . $written['path'] . '. Put that path alone on a line in your reply so the user can download it.';
         if ($relative !== $requested) {
             $note .= ' ' . $requested . ' was left unchanged. The user can compare the two and delete the old one if this version is better.';
@@ -86,12 +88,20 @@ class PdfFile
         throw new RuntimeException('Could not find a free name for that PDF.');
     }
 
-    public static function build(string $text): string
+    public static function build(string $text, ?callable $loadImage = null): string
     {
-        $runs = self::runs($text);
+        $images = [];
+        $runs = self::runs($text, $loadImage, $images);
         if (count($runs) > 2000) {
             $runs = array_slice($runs, 0, 2000);
         }
+        $used = [];
+        foreach ($runs as $run) {
+            if (isset($run['image'])) {
+                $used[$run['image']['key']] = true;
+            }
+        }
+        $images = array_intersect_key($images, $used);
         if ($runs === []) {
             $runs = [self::blankRun()];
         }
@@ -99,6 +109,12 @@ class PdfFile
         $regularId = 3 + count($pages) * 2;
         $boldId = $regularId + 1;
         $italicId = $boldId + 1;
+        $imageIds = [];
+        $lastId = $italicId;
+        foreach ($images as $path => $item) {
+            $lastId++;
+            $imageIds[$path] = $lastId;
+        }
         $objects = [];
         $objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
         $kids = [];
@@ -106,58 +122,129 @@ class PdfFile
             $pageId = 3 + $index * 2;
             $contentId = $pageId + 1;
             $kids[] = $pageId . ' 0 R';
-            $commands = ['BT', '50 790 Td'];
-            $fill = '0.000 0.000 0.000';
-            foreach ($pageLines as $line) {
-                if ((int)$line['gap'] > 0) {
-                    $commands[] = (int)$line['gap'] . ' TL';
-                    $commands[] = '() Tj';
-                    $commands[] = 'T*';
-                }
-                $commands[] = (int)$line['lead'] . ' TL';
-                foreach ($line['parts'] as $part) {
-                    $next = $part['color'] ?? '0.000 0.000 0.000';
-                    if ($next !== $fill) {
-                        $commands[] = $next . ' rg';
-                        $fill = $next;
-                    }
-                    $point = (int)($part['size'] ?? $line['size']);
-                    $commands[] = '/' . $part['font'] . ' ' . $point . ' Tf';
-                    $commands[] = '(' . self::escape($part['text']) . ') Tj';
-                }
-                $commands[] = 'T*';
-            }
-            $commands[] = 'ET';
-            $stream = implode("\n", $commands);
+            $stream = self::pageCommands($pageLines);
             $objects[$contentId] = "<< /Length " . strlen($stream) . " >>\nstream\n" . $stream . "\nendstream";
-            $objects[$pageId] = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents ' . $contentId . ' 0 R /Resources << /Font << /F1 ' . $regularId . ' 0 R /F2 ' . $boldId . ' 0 R /F3 ' . $italicId . ' 0 R >> >> >>';
+            $xobjects = [];
+            foreach ($pageLines as $line) {
+                if (!isset($line['image'])) {
+                    continue;
+                }
+                $xobjects[$line['image']['name']] = $imageIds[$line['image']['key']];
+            }
+            $extra = '';
+            if ($xobjects !== []) {
+                $bits = [];
+                foreach ($xobjects as $name => $id) {
+                    $bits[] = '/' . $name . ' ' . $id . ' 0 R';
+                }
+                $extra = ' /XObject << ' . implode(' ', $bits) . ' >>';
+            }
+            $objects[$pageId] = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents ' . $contentId . ' 0 R /Resources << /Font << /F1 ' . $regularId . ' 0 R /F2 ' . $boldId . ' 0 R /F3 ' . $italicId . ' 0 R >>' . $extra . ' >> >>';
         }
         $objects[2] = '<< /Type /Pages /Count ' . count($pages) . ' /Kids [' . implode(' ', $kids) . '] >>';
         $objects[$regularId] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>';
         $objects[$boldId] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>';
         $objects[$italicId] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>';
+        foreach ($images as $path => $item) {
+            $objects[$imageIds[$path]] = self::imageObject($item['packed']);
+        }
         ksort($objects);
         $pdf = "%PDF-1.4\n";
         $offsets = [];
-        for ($id = 1; $id <= $italicId; $id++) {
+        for ($id = 1; $id <= $lastId; $id++) {
             $offsets[$id] = strlen($pdf);
             $pdf .= $id . " 0 obj\n" . $objects[$id] . "\nendobj\n";
         }
         $xref = strlen($pdf);
-        $pdf .= "xref\n0 " . ($italicId + 1) . "\n";
+        $pdf .= "xref\n0 " . ($lastId + 1) . "\n";
         $pdf .= "0000000000 65535 f \n";
-        for ($id = 1; $id <= $italicId; $id++) {
+        for ($id = 1; $id <= $lastId; $id++) {
             $pdf .= sprintf("%010d 00000 n \n", $offsets[$id]);
         }
-        $pdf .= "trailer\n<< /Size " . ($italicId + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
+        $pdf .= "trailer\n<< /Size " . ($lastId + 1) . " /Root 1 0 R >>\nstartxref\n" . $xref . "\n%%EOF";
         return $pdf;
     }
 
-    private static function runs(string $text): array
+    private static function pageCommands(array $pageLines): string
+    {
+        $hasImage = false;
+        foreach ($pageLines as $line) {
+            if (isset($line['image'])) {
+                $hasImage = true;
+                break;
+            }
+        }
+        $commands = [];
+        $fill = '0.000 0.000 0.000';
+        $textOpen = false;
+        $cursor = 790;
+        if (!$hasImage) {
+            $commands[] = 'BT';
+            $commands[] = '50 790 Td';
+            $textOpen = true;
+        }
+        foreach ($pageLines as $line) {
+            if (isset($line['image'])) {
+                if ($textOpen) {
+                    $commands[] = 'ET';
+                    $textOpen = false;
+                }
+                $cursor -= (int)$line['gap'];
+                $height = (int)$line['image']['height'];
+                $width = (int)$line['image']['width'];
+                $cursor -= $height;
+                $commands[] = 'q';
+                $commands[] = $width . ' 0 0 ' . $height . ' 50 ' . $cursor . ' cm';
+                $commands[] = '/' . $line['image']['name'] . ' Do';
+                $commands[] = 'Q';
+                $cursor -= (int)$line['lead'] - $height;
+                continue;
+            }
+            if (!$textOpen) {
+                $commands[] = 'BT';
+                $commands[] = '50 ' . $cursor . ' Td';
+                $textOpen = true;
+            }
+            if ((int)$line['gap'] > 0) {
+                $commands[] = (int)$line['gap'] . ' TL';
+                $commands[] = '() Tj';
+                $commands[] = 'T*';
+                if ($hasImage) {
+                    $cursor -= (int)$line['gap'];
+                }
+            }
+            $commands[] = (int)$line['lead'] . ' TL';
+            foreach ($line['parts'] as $part) {
+                $next = $part['color'] ?? '0.000 0.000 0.000';
+                if ($next !== $fill) {
+                    $commands[] = $next . ' rg';
+                    $fill = $next;
+                }
+                $point = (int)($part['size'] ?? $line['size']);
+                $commands[] = '/' . $part['font'] . ' ' . $point . ' Tf';
+                $commands[] = '(' . self::escape($part['text']) . ') Tj';
+            }
+            $commands[] = 'T*';
+            if ($hasImage) {
+                $cursor -= (int)$line['lead'];
+            }
+        }
+        if ($textOpen) {
+            $commands[] = 'ET';
+        }
+        return implode("\n", $commands);
+    }
+
+    private static function runs(string $text, ?callable $loadImage, array &$images): array
     {
         $text = str_replace(["\r\n", "\r"], "\n", $text);
         $runs = [];
         foreach (explode("\n", $text) as $line) {
+            $mark = self::imageMark(trim($line));
+            if ($mark !== null) {
+                self::addImageRun($runs, $images, $mark, $loadImage);
+                continue;
+            }
             $pieces = self::pieces($line);
             $plain = self::pieceText($pieces);
             if (preg_match('/^```/', trim($plain)) || preg_match('/^([-*_])\1{2,}\s*$/', trim($plain))) {
@@ -435,6 +522,249 @@ class PdfFile
         return $saw ? $size : null;
     }
 
+    private static function imageMark(string $line): ?array
+    {
+        if (preg_match('/^\{image:\s*(\S+?)(?:\s+width:\s*(\d{2,4}))?\s*\}$/', $line, $match)) {
+            return [
+                'path' => $match[1],
+                'width' => isset($match[2]) && $match[2] !== '' ? (int)$match[2] : null,
+                'caption' => '',
+            ];
+        }
+        if (preg_match('/^!\[([^\]]*)\]\(([^)\s]+)\)\s*$/', $line, $match)) {
+            return [
+                'path' => $match[2],
+                'width' => null,
+                'caption' => trim($match[1]),
+            ];
+        }
+        return null;
+    }
+
+    private static function imagePath(string $path): string
+    {
+        $path = str_replace('\\', '/', trim($path));
+        if (str_starts_with($path, './')) {
+            $path = substr($path, 2);
+        }
+        if (!preg_match('/^(?:[\p{L}0-9][\p{L}0-9._-]{0,40}\/)*[\p{L}0-9][\p{L}0-9._-]{0,80}\.(?:png|jpe?g|gif|webp)$/iu', $path) || str_contains($path, '..')) {
+            throw new RuntimeException('Name an image inside the project. Use png, jpg, gif, or webp.');
+        }
+        return $path;
+    }
+
+    private static function addImageRun(array &$runs, array &$images, array $mark, ?callable $loadImage): void
+    {
+        $path = self::imagePath($mark['path']);
+        if (!isset($images[$path])) {
+            if (count($images) >= 20) {
+                throw new RuntimeException('That PDF has too many images.');
+            }
+            if ($loadImage === null) {
+                throw new RuntimeException('That image was not found: ' . $path);
+            }
+            $packed = $loadImage($path);
+            if (!is_array($packed) || !isset($packed['width'], $packed['height'], $packed['data'], $packed['filter'])) {
+                throw new RuntimeException('That image could not be placed in the PDF: ' . $path);
+            }
+            $images[$path] = [
+                'name' => 'Im' . (count($images) + 1),
+                'packed' => $packed,
+            ];
+        }
+        [$width, $height] = self::imageBox($images[$path]['packed'], $mark['width']);
+        $runs[] = [
+            'size' => 10,
+            'lead' => $height + 10,
+            'gap' => 8,
+            'parts' => [],
+            'image' => [
+                'name' => $images[$path]['name'],
+                'key' => $path,
+                'width' => $width,
+                'height' => $height,
+            ],
+        ];
+        $caption = trim((string)$mark['caption']);
+        if ($caption === '') {
+            return;
+        }
+        $wrapped = self::wrapSpans(self::markdownSpans($caption), 96);
+        foreach ($wrapped as $index => $parts) {
+            $runs[] = [
+                'size' => 10,
+                'lead' => 13,
+                'gap' => $index === 0 ? 2 : 0,
+                'parts' => $parts,
+            ];
+        }
+    }
+
+    private static function imageBox(array $packed, ?int $requested): array
+    {
+        $maxW = 495;
+        $maxH = 680;
+        $pw = max(1, (int)$packed['width']);
+        $ph = max(1, (int)$packed['height']);
+        $width = $requested ?? $maxW;
+        if ($width < 40) {
+            $width = 40;
+        }
+        if ($width > $maxW) {
+            $width = $maxW;
+        }
+        $height = (int)max(1, round($width * $ph / $pw));
+        if ($height > $maxH) {
+            $height = $maxH;
+            $width = (int)max(40, round($height * $pw / $ph));
+        }
+        return [$width, $height];
+    }
+
+    private static function loadProjectImage(SafetyInterceptor $safety, string $folder, string $path): array
+    {
+        $path = self::imagePath($path);
+        try {
+            $file = $safety->readBytes($folder, $path, 4 * 1024 * 1024);
+        } catch (Throwable $e) {
+            throw new RuntimeException('That image was not found: ' . $path);
+        }
+        $packed = self::packImage($file['bytes']);
+        if ($packed === null) {
+            throw new RuntimeException('That image could not be placed in the PDF: ' . $path);
+        }
+        return $packed;
+    }
+
+    private static function packImage(string $bytes): ?array
+    {
+        $jpeg = self::jpegInfo($bytes);
+        if ($jpeg !== null && $jpeg['components'] === 3) {
+            return [
+                'width' => $jpeg['width'],
+                'height' => $jpeg['height'],
+                'filter' => 'dct',
+                'data' => $bytes,
+            ];
+        }
+        if (!function_exists('imagecreatefromstring')) {
+            return null;
+        }
+        $im = @imagecreatefromstring($bytes);
+        if ($im === false) {
+            return null;
+        }
+        $w = imagesx($im);
+        $h = imagesy($im);
+        if ($w < 1 || $h < 1 || $w > 8000 || $h > 8000) {
+            return null;
+        }
+        $maxPx = 1400;
+        if ($w > $maxPx || $h > $maxPx) {
+            $scale = $maxPx / max($w, $h);
+            $nw = max(1, (int)round($w * $scale));
+            $nh = max(1, (int)round($h * $scale));
+            $scaled = imagecreatetruecolor($nw, $nh);
+            if ($scaled === false) {
+                return null;
+            }
+            imagealphablending($scaled, true);
+            $white = imagecolorallocate($scaled, 255, 255, 255);
+            imagefilledrectangle($scaled, 0, 0, $nw, $nh, $white);
+            imagecopyresampled($scaled, $im, 0, 0, 0, 0, $nw, $nh, $w, $h);
+            $im = $scaled;
+            $w = $nw;
+            $h = $nh;
+        }
+        $flat = imagecreatetruecolor($w, $h);
+        if ($flat === false) {
+            return null;
+        }
+        imagealphablending($flat, true);
+        $white = imagecolorallocate($flat, 255, 255, 255);
+        imagefilledrectangle($flat, 0, 0, $w, $h, $white);
+        imagecopy($flat, $im, 0, 0, 0, 0, $w, $h);
+        $rgb = '';
+        for ($y = 0; $y < $h; $y++) {
+            for ($x = 0; $x < $w; $x++) {
+                $c = imagecolorat($flat, $x, $y);
+                $rgb .= chr(($c >> 16) & 255) . chr(($c >> 8) & 255) . chr($c & 255);
+            }
+        }
+        $data = gzcompress($rgb);
+        if (!is_string($data)) {
+            return null;
+        }
+        return [
+            'width' => $w,
+            'height' => $h,
+            'filter' => 'flate',
+            'data' => $data,
+        ];
+    }
+
+    private static function jpegInfo(string $bytes): ?array
+    {
+        if (!str_starts_with($bytes, "\xFF\xD8")) {
+            return null;
+        }
+        $len = strlen($bytes);
+        $offset = 2;
+        while ($offset + 1 < $len) {
+            if ($bytes[$offset] !== "\xFF") {
+                return null;
+            }
+            while ($offset < $len && $bytes[$offset] === "\xFF") {
+                $offset++;
+            }
+            if ($offset >= $len) {
+                return null;
+            }
+            $marker = ord($bytes[$offset]);
+            $offset++;
+            if ($marker === 0xD9) {
+                return null;
+            }
+            if ($marker === 0x01 || ($marker >= 0xD0 && $marker <= 0xD7)) {
+                continue;
+            }
+            if ($offset + 2 > $len) {
+                return null;
+            }
+            $size = (ord($bytes[$offset]) << 8) + ord($bytes[$offset + 1]);
+            if ($size < 2 || $offset + $size > $len) {
+                return null;
+            }
+            if (in_array($marker, [0xC0, 0xC1, 0xC2], true)) {
+                if ($size < 7) {
+                    return null;
+                }
+                $height = (ord($bytes[$offset + 3]) << 8) + ord($bytes[$offset + 4]);
+                $width = (ord($bytes[$offset + 5]) << 8) + ord($bytes[$offset + 6]);
+                $components = ord($bytes[$offset + 7]);
+                if ($width < 1 || $height < 1) {
+                    return null;
+                }
+                return ['width' => $width, 'height' => $height, 'components' => $components];
+            }
+            if ($marker === 0xDA) {
+                return null;
+            }
+            $offset += $size;
+        }
+        return null;
+    }
+
+    private static function imageObject(array $packed): string
+    {
+        $filter = $packed['filter'] === 'dct' ? '/DCTDecode' : '/FlateDecode';
+        $data = (string)$packed['data'];
+        return '<< /Type /XObject /Subtype /Image /Width ' . (int)$packed['width']
+            . ' /Height ' . (int)$packed['height']
+            . ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter ' . $filter
+            . ' /Length ' . strlen($data) . " >>\nstream\n" . $data . "\nendstream";
+    }
+
     private static function pointSize(string $value): ?int
     {
         $n = (int)$value;
@@ -590,7 +920,7 @@ class PdfFile
             $run['gap'] = $gap;
             $page[] = $run;
             $y -= $need;
-            $previousBlank = self::lineText($run) === '';
+            $previousBlank = !isset($run['image']) && self::lineText($run) === '';
         }
         if ($page !== []) {
             $pages[] = $page;

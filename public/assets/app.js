@@ -241,6 +241,7 @@
           openTask: null,
           openSubtask: null,
           expandedTasks: {},
+          hiddenStepResults: {},
           openArchive: null,
           dragTaskId: null,
           dragTaskOrder: '',
@@ -377,6 +378,7 @@
           projectOpener: null,
           pollTimer: null,
           healthTick: 0,
+          scheduledPoll: 0,
           selectHold: false
         };
       },
@@ -1170,13 +1172,13 @@
           const text = this.scheduledRaw(msg);
           if (!text) return '';
           const first = text.split('\n')[0].replace(/^Scheduled task:\s*/, '').trim();
-          const numbered = first.match(/^#(\d+)\s+(.+)$/);
-          let card = numbered ? ('#' + numbered[1] + ' ' + numbered[2]) : first;
-          if (!numbered) {
+          const numbered = first.match(/^#(\d+)\s+/);
+          let id = numbered ? numbered[1] : '';
+          if (!id) {
             const task = this.scheduledCard(first, text);
-            if (task) card = '#' + task.id + ' ' + (task.title || first);
+            if (task) id = String(task.id);
           }
-          return 'Scheduled task started in the background, which might slow this chat down\n' + card;
+          return id ? ('Task #' + id + ' started in the background') : 'Task started in the background';
         },
         agentLabel(name, markCpu) {
           let label = '';
@@ -2066,10 +2068,11 @@
           return '';
         },
         stepResult(task, sub) {
+          if (this.subtaskStatus(sub) !== 'done') return '';
           const own = String(sub && sub.result || '').trim();
-          if (own) return own;
+          if (own) return this.visibleStepResult(sub, own);
           const shared = String(task && task.result || '').trim();
-          if (!shared || this.subtaskStatus(sub) !== 'done') return '';
+          if (!shared) return '';
           const steps = (task.subtasks || []).filter((item) => this.subtaskStatus(item) === 'done' && !String(item.result || '').trim());
           let owners = [];
           if (/\.pdf\b/i.test(shared)) owners = steps.filter((item) => this.stepKind(item.title) === 'pdf');
@@ -2077,7 +2080,13 @@
           if (!owners.length) owners = steps.filter((item) => this.stepKind(item.title) === 'report');
           if (!owners.length && steps.length) owners = [steps[steps.length - 1]];
           const pick = owners[owners.length - 1];
-          return pick && pick.id === sub.id ? shared : '';
+          return pick && pick.id === sub.id ? this.visibleStepResult(sub, shared) : '';
+        },
+        visibleStepResult(sub, line) {
+          const hidden = this.hiddenStepResults[sub.id];
+          if (hidden && line === hidden) return '';
+          if (hidden) delete this.hiddenStepResults[sub.id];
+          return line;
         },
         stepFileHref(path) {
           const project = (this.projects || []).find((item) => item.id === this.projectId);
@@ -2493,7 +2502,7 @@
           }
         },
         taskSoonStamp() {
-          const when = new Date(Date.now() + 3 * 60 * 1000);
+          const when = new Date(Date.now() + 2 * 60 * 1000);
           const pad = (n) => String(n).padStart(2, '0');
           return when.getFullYear() + '-' + pad(when.getMonth() + 1) + '-' + pad(when.getDate()) + 'T' + pad(when.getHours()) + ':' + pad(when.getMinutes());
         },
@@ -2583,7 +2592,12 @@
             this.finishHumanStep(task, sub);
             return;
           }
-          this.setSubtaskStatus(task, sub, this.subtaskStatus(sub) === 'done' ? 'in_progress' : 'done');
+          const done = this.subtaskStatus(sub) === 'done';
+          if (done) {
+            const shown = String(sub.result || task.result || '').trim();
+            if (shown) this.hiddenStepResults[sub.id] = shown;
+          }
+          this.setSubtaskStatus(task, sub, done ? 'in_progress' : 'done');
         },
         async finishHumanStep(task, sub) {
           const note = String(this.humanNotes[sub.id] || '').trim();
@@ -3718,6 +3732,18 @@
               this.refreshModelLoad(true).then(() => this.maybeSendProjectOpener()).catch(function () {});
               if (this.tab === 'tasks') this.reloadTasks();
               if (this.compressArmed && !this.sending && this.tab === 'chat') this.reloadMessages().catch(function () {});
+              if (this.tab === 'chat' && !this.sending) {
+                const last = this.messages[this.messages.length - 1];
+                if (last && this.scheduledText(last)) {
+                  this.scheduledPoll += 1;
+                  if (this.scheduledPoll >= 3) {
+                    this.scheduledPoll = 0;
+                    this.reloadMessages().catch(function () {});
+                  }
+                } else {
+                  this.scheduledPoll = 0;
+                }
+              }
               if (this.settings && this.settings.hitl_external_actions === '1' && (this.tab === 'chat' || this.sending)) {
                 this.refreshPendingActions().catch(function () {});
               }

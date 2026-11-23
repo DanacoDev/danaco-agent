@@ -469,7 +469,8 @@ html.is-step-drag, html.is-step-drag * { cursor: grabbing !important; }
   min-height: 72px; resize: vertical; background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px;
 }
 .human-step .btn { align-self: flex-start; padding: 7px 10px; }
-.step-result { margin: 2px 0 4px 60px; }
+.step-result { margin: 2px 0 4px 84px; font-style: italic; }
+.step-result .task-result-label { color: var(--muted); font-weight: 450; }
 .step-result .task-result-line { white-space: pre-wrap; overflow: visible; text-overflow: unset; }
 .task-result a { color: inherit; text-decoration: underline; }
 .subtask-form .field { margin: 10px 0; }

@@ -2,7 +2,7 @@
 
 class Kanban
 {
-    public const RESTART_DELAY = 180;
+    public const RESTART_DELAY = 120;
 
     private array $lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0];
 
@@ -281,7 +281,7 @@ class Kanban
             if ((int)($task['held'] ?? 0) === 1 && empty($task['schedule_time'])) {
                 $line .= ' never';
             } elseif ($waiting) {
-                $line .= ' scheduled for ' . $task['schedule_time'];
+                $line .= ' scheduled for ' . $task['schedule_time'] . $this->startWaitNote($task);
             } elseif (!empty($task['schedule_time'])) {
                 $line .= ' at ' . $task['schedule_time'];
             } else {
@@ -348,7 +348,7 @@ class Kanban
         } else {
             $line .= ' in ' . $this->column($task);
         }
-        return $line . ': ' . $task['title'];
+        return $line . ': ' . $task['title'] . $this->reviewNote($task);
     }
 
     public function updatedLine(array $task): string
@@ -359,7 +359,30 @@ class Kanban
         } else {
             $line .= ' to ' . $this->column($task);
         }
-        return $line . ': ' . $task['title'];
+        return $line . ': ' . $task['title'] . $this->reviewNote($task);
+    }
+
+    private function startWaitNote(array $task): string
+    {
+        if (!$this->soonStart($task)) {
+            return '';
+        }
+        return ' 2 minutes ahead so a mistake can be corrected before it runs.';
+    }
+
+    private function soonStart(array $task): bool
+    {
+        if (!$this->awaiting($task)) {
+            return false;
+        }
+        $at = strtotime((string)($task['schedule_time'] ?? ''));
+        return $at !== false && $at <= time() + self::RESTART_DELAY;
+    }
+
+    private function reviewNote(array $task): string
+    {
+        $why = $this->soonStart($task) ? ' The time is 2 minutes ahead so you can correct a mistake before it runs.' : '';
+        return $why . ' List the tasks and review every one. Check that the titles, steps, agents, and times match what was intended. If something is wrong, update that task. Do not delete it to start sooner, and do not delegate.';
     }
 
     public function column(array $task): string
@@ -947,7 +970,7 @@ class Kanban
         }
         if (!preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value)) {
             if ($strict) {
-                throw new InvalidArgumentException('Time must be a date and a clock time. Leave it empty to run in 3 minutes.');
+                throw new InvalidArgumentException('Time must be a date and a clock time. Leave it empty to run in 2 minutes.');
             }
             return $this->soon();
         }

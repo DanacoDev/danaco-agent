@@ -668,7 +668,7 @@ TXT;
             : '';
         $installNote = "Only you may install dependencies on this machine. The chat asks the user before an install runs. Subagents are stopped if they try. If one reports a missing install, run it yourself only after the user agrees.\n";
         $pdfNote = $project !== null
-            ? "A PDF is not written in this chat. Delegate it to the writer with the file name and the brief. The coder does not make PDFs.\n"
+            ? "A PDF is not written in this chat. Delegate it to the writer with the file name and the brief. When the user names no design, tell the writer that every line stays black, including the title. Do not name a color. When the user names a font color, a size, or a picture, put that in the brief. A picture already in the project is named by its path. An illustration that still has to be drawn is make_graphic first, then that file in the PDF. The coder does not make PDFs.\n"
             : '';
         $rules = <<<TXT
 {$context}
@@ -1171,7 +1171,7 @@ TXT;
                 if ($folder === '') {
                     return 'Open a project before creating a PDF.';
                 }
-                return 'Do not write the PDF in this chat. Delegate it to the writer with the file name and the brief. The writer calls create_pdf in its own context, so a long document does not fill this chat. The coder is for software, not for PDFs.';
+                return 'Do not write the PDF in this chat. Delegate it to the writer with the file name and the brief. When the user names no design, say that every line stays black. When the user names a font color, a size, or a picture, put that in the brief. The writer calls create_pdf in its own context, so a long document does not fill this chat. The coder is for software, not for PDFs.';
             },
             'create_project' => function (array $args): string {
                 return 'You cannot create a project. Tell the user to create it manually from the menu.';
@@ -1468,7 +1468,7 @@ TXT;
             return;
         }
         $when = trim((string)($task['schedule_time'] ?? ''));
-        throw new InvalidArgumentException('Task #' . (int)$task['id'] . ' is scheduled for ' . $when . '. It was not started. The scheduler starts it when that time arrives.');
+        throw new InvalidArgumentException('Task #' . (int)$task['id'] . ' is scheduled for ' . $when . '. It was not started. That time is so you can correct a mistake before it runs. List the tasks and review them. If something is wrong, update that task. Do not delete it to start sooner. The scheduler starts it when that time arrives.');
     }
 
     private function pieceSteps(string $title, array $steps): ?array
@@ -1810,7 +1810,7 @@ TXT;
         }
         $lines = [];
         if ($added !== []) {
-            $lines[] = 'Added ' . count($added) . ' ' . (count($added) === 1 ? 'task' : 'tasks') . ': ' . implode('; ', $added) . '. Do not delegate a scheduled task. The scheduler starts it.';
+            $lines[] = 'Added ' . count($added) . ' ' . (count($added) === 1 ? 'task' : 'tasks') . ': ' . implode('; ', $added) . '. The time is 2 minutes ahead so you can correct a mistake before it runs. List the tasks and review every one. Check that the titles, steps, agents, and times match what was intended. If something is wrong, update that task. Do not delete it to start sooner, and do not delegate. The scheduler starts it.';
         }
         if ($duplicates !== []) {
             $lines[] = 'These tasks are already on the task list and were not added. Use those tasks. ' . implode(' ', $duplicates);
