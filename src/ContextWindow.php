@@ -115,6 +115,7 @@ class ContextWindow
     public static function stripLookups(array $messages): array
     {
         $pending = [];
+        $taskLists = [];
         foreach ($messages as $i => $message) {
             if (!is_array($message)) {
                 continue;
@@ -145,6 +146,21 @@ class ContextWindow
             }
             if (!self::isLookup($name, $args, $found, $content)) {
                 continue;
+            }
+            if (self::isTaskList($name, $args)) {
+                $taskLists[] = $i;
+                continue;
+            }
+            $messages[$i]['content'] = 'TOOL RESULT ' . $name . ': listing omitted';
+        }
+        $keep = $taskLists === [] ? null : $taskLists[count($taskLists) - 1];
+        foreach ($taskLists as $i) {
+            if ($i === $keep) {
+                continue;
+            }
+            $name = self::toolResultName((string)($messages[$i]['content'] ?? ''));
+            if ($name === '') {
+                $name = 'tasklist';
             }
             $messages[$i]['content'] = 'TOOL RESULT ' . $name . ': listing omitted';
         }
@@ -258,6 +274,16 @@ class ContextWindow
             return '';
         }
         return trim(substr($rest, 0, $colon));
+    }
+
+    private static function isTaskList(string $name, array $args): bool
+    {
+        $name = strtolower($name);
+        if ($name !== 'kanban' && $name !== 'tasklist') {
+            return false;
+        }
+        $action = strtolower(trim((string)($args['action'] ?? '')));
+        return $action === '' || $action === 'list';
     }
 
     private static function isLookup(string $name, array $args, bool $found, string $content): bool

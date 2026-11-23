@@ -4,7 +4,7 @@ class Kanban
 {
     public const RESTART_DELAY = 120;
 
-    private array $lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0];
+    private array $lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0, 'still_open' => 0, 'already_done' => 0, 'open_titles' => []];
 
     public function __construct(private Database $db)
     {
@@ -506,6 +506,28 @@ class Kanban
         return $this->lastStepWrite;
     }
 
+    public function unchangedStepsNote(): string
+    {
+        $titles = [];
+        foreach ($this->lastStepWrite['open_titles'] ?? [] as $title) {
+            $title = trim((string)$title);
+            if ($title !== '') {
+                $titles[] = $title;
+            }
+        }
+        if ($titles !== []) {
+            $named = '"' . implode('", "', $titles) . '"';
+            if (count($titles) === 1) {
+                return ' Step ' . $named . ' is still open. It was not crossed off. To cross it off, pass that step with result set to one line of what it produced.';
+            }
+            return ' Steps ' . $named . ' are still open. They were not crossed off. To cross one off, pass that step with result set to one line of what it produced.';
+        }
+        if ((int)($this->lastStepWrite['already_done'] ?? 0) > 0) {
+            return ' Those steps are already crossed off. Do not pass result again. List the tasks and delegate the next open step, or stop if none are open.';
+        }
+        return ' Those steps are already on the task. To cross one off, pass that step with result set to done, or to one line of what it produced. Do not replace the steps and do not create a new task.';
+    }
+
     private function requireStepDetail(array $steps): void
     {
         foreach ($steps as $step) {
@@ -544,7 +566,7 @@ class Kanban
 
     private function addSteps(int $taskId, array $items, bool $onlyIfEmpty, bool $replace = false, string $taskResult = ''): void
     {
-        $this->lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0];
+        $this->lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0, 'still_open' => 0, 'already_done' => 0, 'open_titles' => []];
         $task = $this->db->task($taskId);
         if (!$task) {
             return;
@@ -614,11 +636,22 @@ class Kanban
                     if ($detailFields) {
                         $this->lastStepWrite['detailed']++;
                     }
+                    if ((string)($subs[$matchAt]['status'] ?? '') !== 'done') {
+                        $openTitle = trim((string)($subs[$matchAt]['title'] ?? ''));
+                        if ($openTitle === '') {
+                            $openTitle = $title;
+                        }
+                        if ($openTitle !== '' && !in_array($openTitle, $this->lastStepWrite['open_titles'], true)) {
+                            $this->lastStepWrite['open_titles'][] = $openTitle;
+                            $this->lastStepWrite['still_open']++;
+                        }
+                    }
                     $touched[] = (int)$subs[$matchAt]['id'];
                 }
                 continue;
             }
             if ($this->matchingStepIndex($title, $subs, false) !== null) {
+                $this->lastStepWrite['already_done']++;
                 continue;
             }
             $created = $this->db->insertSubtask($taskId, $title, $markDone ? 'done' : 'in_progress', (string)($item['agent'] ?? ''), (string)($item['description'] ?? ''));

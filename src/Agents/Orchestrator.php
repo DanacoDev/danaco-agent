@@ -1697,7 +1697,7 @@ TXT;
                         $stepsNote .= ' Crossed off ' . $crossed . ($crossed === 1 ? ' step.' : ' steps.');
                     }
                     if ($stepsNote === '') {
-                        $stepsNote = ' Those steps are already on the task. To cross one off, pass that step with result set to done, or to one line of what it produced. Do not replace the steps and do not create a new task.';
+                        $stepsNote = $board->unchangedStepsNote();
                     }
                 }
                 return $board->updatedLine($task) . $held . $stepsNote;
