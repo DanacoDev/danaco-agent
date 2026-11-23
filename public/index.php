@@ -414,8 +414,8 @@ header('X-Danaco: 1');
                         <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
                       </button>
                     </div>
-                    <p v-if="openSubtask !== sub.id && sub.description" class="subtask-detail">{{ sub.description }}</p>
-                    <p v-if="openSubtask !== sub.id && stepResult(task, sub)" class="task-result is-full step-result"><span class="task-result-label">Results:</span><span class="task-result-line"><template v-for="(part, index) in resultParts(stepResult(task, sub))" :key="index"><a v-if="part.href" :href="part.href" target="_blank" rel="noopener">{{ part.text }}</a><span v-else>{{ part.text }}</span></template></span></p>
+                    <p v-if="openSubtask !== sub.id && sub.description && !stepResult(task, sub)" class="subtask-detail">{{ sub.description }}</p>
+                    <p v-if="openSubtask !== sub.id && stepResult(task, sub)" class="task-result is-full step-result"><span class="task-result-label">Result:</span><span class="task-result-line"><template v-for="(part, index) in resultParts(stepResult(task, sub))" :key="index"><a v-if="part.href" :href="part.href" target="_blank" rel="noopener">{{ part.text }}</a><span v-else>{{ part.text }}</span></template></span></p>
                     <form v-if="isCurrentHumanStep(task, sub) && openSubtask !== sub.id" class="human-step" @submit.prevent="finishHumanStep(task, sub)">
                       <textarea v-model="humanNotes[sub.id]" rows="3" placeholder="Further instructions" :aria-label="'Further instructions for ' + sub.title"></textarea>
                       <p v-if="humanStepErrorId === sub.id && humanStepError" class="form-error">{{ humanStepError }}</p>
@@ -439,7 +439,7 @@ header('X-Danaco: 1');
                   </li>
                   </template>
                 </ul>
-                <p v-if="openTask !== task.id && expandedTasks[task.id] && task.result && (taskFailed(task) || !(task.subtasks || []).length)" class="task-result is-full"><span class="task-result-label">{{ taskFailed(task) ? 'Error:' : 'Results:' }}</span><span class="task-result-line"><template v-for="(part, index) in resultParts(task.result)" :key="index"><a v-if="part.href" :href="part.href" target="_blank" rel="noopener">{{ part.text }}</a><span v-else>{{ part.text }}</span></template></span></p>
+                <p v-if="openTask !== task.id && expandedTasks[task.id] && task.result && (taskFailed(task) || !(task.subtasks || []).length)" class="task-result is-full"><span class="task-result-label">{{ taskFailed(task) ? 'Error:' : 'Result:' }}</span><span class="task-result-line"><template v-for="(part, index) in resultParts(task.result)" :key="index"><a v-if="part.href" :href="part.href" target="_blank" rel="noopener">{{ part.text }}</a><span v-else>{{ part.text }}</span></template></span></p>
                 <form v-if="openTask === task.id" class="subtask-add" @submit.prevent="addSubtask(task)">
                   <div class="subtask-add-row">
                     <input v-model="subtaskDrafts[task.id]" placeholder="Add step title" aria-label="Add step title">

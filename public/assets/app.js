@@ -1291,9 +1291,17 @@
           return null;
         },
         async reloadMessages() {
-          const kept = this.messages.filter((msg) => this.localReply(msg));
           const data = await this.api('/api/messages?project_id=' + (this.projectId || 0));
           const incoming = Array.isArray(data.messages) ? data.messages : [];
+          const known = {};
+          this.messages.forEach((msg) => {
+            if (Number(msg.id) > 0) known[msg.id] = true;
+          });
+          const localUsers = this.messages.filter((msg) => {
+            const id = String(msg.id || '');
+            return msg.role === 'user' && id.indexOf('local-') === 0 && id !== 'local-opener';
+          });
+          const kept = this.messages.filter((msg) => this.localReply(msg));
           let lastUser = 0;
           incoming.forEach((msg) => {
             if (msg.role === 'user' && Number(msg.id) > lastUser) lastUser = Number(msg.id);
@@ -1301,6 +1309,16 @@
           const saved = incoming.some((msg) => msg.role === 'assistant' && Number(msg.id) > lastUser);
           const finished = this.streamEnded && !this.streamError && saved;
           this.messages = incoming;
+          const fresh = [];
+          incoming.forEach((msg) => {
+            if (msg.role === 'user' && Number(msg.id) > 0 && !known[msg.id]) fresh.push(msg);
+          });
+          localUsers.forEach((msg) => {
+            const text = String(msg.content || '');
+            const index = fresh.findIndex((row) => String(row.content || '') === text);
+            if (index >= 0) fresh.splice(index, 1);
+            else this.messages.push(msg);
+          });
           if (finished) {
             this.replyId = null;
           } else {

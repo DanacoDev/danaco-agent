@@ -469,7 +469,7 @@ html.is-step-drag, html.is-step-drag * { cursor: grabbing !important; }
   min-height: 72px; resize: vertical; background: var(--field); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px;
 }
 .human-step .btn { align-self: flex-start; padding: 7px 10px; }
-.step-result { margin: 2px 0 4px 84px; font-style: italic; }
+.step-result { font-style: italic; }
 .step-result .task-result-label { color: var(--muted); font-weight: 450; }
 .step-result .task-result-line { white-space: pre-wrap; overflow: visible; text-overflow: unset; }
 .task-result a { color: inherit; text-decoration: underline; }
@@ -508,6 +508,7 @@ html.is-step-drag, html.is-step-drag * { cursor: grabbing !important; }
 }
 .task-result-label { display: inline; margin-right: 0.35em; color: var(--text); }
 .task-result-line { display: inline; white-space: pre-wrap; overflow: visible; text-overflow: unset; }
+.task-result.step-result { margin: 2px 0 0 60px; }
 .task-archive { width: 100%; margin-top: 16px; }
 .task-archive > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .task-archive h3 { margin: 0; font-size: 1rem; }
