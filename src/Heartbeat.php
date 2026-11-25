@@ -588,22 +588,6 @@ class Heartbeat
             }
             $due[] = $task;
         }
-        if ($due !== [] && !$this->localModelRunning()) {
-            if ($this->db->getSetting('model_hold', '0') === '1') {
-                $this->db->setSetting('model_hold', '0');
-            }
-            $this->db->loopWrite(null, null, 'heartbeat', 'process', 'Task waiting · model not loaded');
-            $seen = [];
-            foreach ($due as $task) {
-                $projectId = (int)$task['project_id'];
-                if (isset($seen[$projectId])) {
-                    continue;
-                }
-                $seen[$projectId] = true;
-                $this->db->loopWrite(null, $projectId, 'heartbeat', 'process', 'Task waiting · model not loaded');
-            }
-            return [];
-        }
         $run = [];
         $overdue = [];
         foreach ($due as $task) {
@@ -624,24 +608,6 @@ class Heartbeat
             }
         }
         return $run;
-    }
-
-    private function localModelRunning(): bool
-    {
-        $mode = (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
-        if ($mode === 'cloud') {
-            return true;
-        }
-        $model = $mode === 'cpu_failsafe'
-            ? (string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model'])
-            : (string)$this->db->getSetting('local_model', app_config()['local_model']);
-        $llm = app_services()['llm'];
-        foreach ($llm->runningModels() as $row) {
-            if ($llm->modelMatches((string)($row['name'] ?? ''), trim($model))) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private function missedRepeat(array $task): bool

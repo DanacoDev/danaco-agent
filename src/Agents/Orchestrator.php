@@ -26,10 +26,6 @@ class Orchestrator
         if ($shouldStop && $shouldStop()) {
             throw new ChatStopped('Stopped.');
         }
-        $waitingOnTask = !$this->db->parallelWork() && $this->db->taskRunning();
-        if ($waitingOnTask) {
-            $emit(['type' => 'phase', 'phase' => 'scheduled']);
-        }
         $packed = $this->prepare($projectId, $project, !$this->taskIsolate, $shouldStop, false, $emit);
         if (!empty($packed['updated'])) {
             $this->db->addMessage($projectId, 'notice', ContextWindow::NOTICE, 'orchestrator');
@@ -43,11 +39,6 @@ class Orchestrator
         if ($this->endsWithCutOff($messages)) {
             $this->db->loop($agent, 'steer', 'cutoff · carried into this run', $projectId > 0 ? $projectId : null);
             $messages[] = ['role' => 'user', 'content' => 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.'];
-        }
-        if (!$this->db->parallelWork() && $this->db->taskRunning()) {
-            $emit(['type' => 'phase', 'phase' => 'scheduled']);
-        } elseif ($waitingOnTask) {
-            $emit(['type' => 'phase', 'phase' => '']);
         }
         return $this->runtime->run(
             $agent,
@@ -1219,17 +1210,24 @@ TXT;
                     'scheduled' => $scheduled,
                 ]);
                 $this->db->loopPush($jobId, $projectId > 0 ? $projectId : null);
-                $watch = function () use ($shouldStop, $jobId): bool {
+                $watch = function () use ($jobId, $projectId): bool {
                     $this->db->touchJob($jobId);
-                    return $shouldStop && $shouldStop();
+                    return $this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($jobId);
                 };
+                $leave = false;
+                $spoken = '';
                 try {
                     $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' started');
                     try {
                         $result = $this->subagents->run($agent, $folder, $runInstruction, $emit, $projectId, $watch, $scheduled);
                         $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' finished');
                         $this->db->finishJob($jobId);
-                        return $result . $this->freshTaskNote($note);
+                        $spoken = $result . $this->freshTaskNote($note);
+                        if ($shouldStop && $shouldStop()) {
+                            $leave = true;
+                        } else {
+                            return $spoken;
+                        }
                     } catch (ChatStopped $e) {
                         $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' stopped');
                         $this->db->finishJob($jobId);
@@ -1255,6 +1253,13 @@ TXT;
                     }
                 } finally {
                     $this->db->loopPop();
+                }
+                if ($leave) {
+                    $text = trim($spoken);
+                    if ($text !== '') {
+                        $emit(['type' => 'token', 'agent' => 'orchestrator', 'text' => $text]);
+                    }
+                    throw new ChatStopped('Stopped.');
                 }
             },
             'tasklist' => function (array $args) use ($projectId, &$createdTaskIds): string {

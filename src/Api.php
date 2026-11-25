@@ -755,7 +755,7 @@ class Api
             $lastStopCheck = $now;
             try {
                 $this->db->touchJob($jobId);
-                $stopCached = $this->db->chatStopRequested($projectId) || $this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($jobId);
+                $stopCached = $this->db->chatStopRequested($projectId) || $this->db->runStopRequested($projectId) || !$this->db->jobIsRunning($jobId) || $this->db->newerChatRunning($projectId, $jobId);
             } catch (Throwable $e) {
                 return $stopCached;
             }
@@ -788,8 +788,15 @@ class Api
                 $runStop = $this->db->runStopRequested($projectId);
                 $closed = !$this->db->jobIsRunning($jobId);
                 $asked = $this->db->chatStopRequested($projectId);
+                $handedOff = $this->db->newerChatRunning($projectId, $jobId);
                 $this->db->finishJob($jobId);
-                if ($followup && !$runStop) {
+                if ($handedOff && !$runStop) {
+                    $this->db->loop('orchestrator', 'process', 'Chat handed off · job ' . $jobId . ' finished');
+                    if ($text !== '') {
+                        $save($text);
+                    }
+                    $this->sse('stopped', ['text' => 'Stopped.']);
+                } elseif ($followup && !$runStop) {
                     $this->db->loop('orchestrator', 'process', 'Follow-up · answer kept · job ' . $jobId . ' finished');
                     if ($text !== '') {
                         $save($text);
@@ -876,6 +883,9 @@ class Api
 
     private function settlePreviousChat(int $projectId): void
     {
+        if ($this->db->lockFresh('subagent_lock', 900)) {
+            return;
+        }
         $job = $this->db->runningChatJob($projectId);
         if (!$job) {
             return;

@@ -458,10 +458,6 @@
         mainAgent() {
           return this.agents.find((agent) => agent.name === 'orchestrator') || null;
         },
-        taskAgent() {
-          if (!this.parallelWork) return null;
-          return this.agents.find((agent) => agent.name === 'scheduler') || null;
-        },
         consultant() {
           return this.agents.find((agent) => agent.name === 'consultant') || null;
         },
@@ -1470,6 +1466,12 @@
             this.steerText = message;
             return;
           }
+          if (this.sending && this.workingSubagents.length) {
+            this.messages.push({ id: 'local-' + Date.now(), role: 'user', agent_name: 'human', content: message });
+            this.scrollChat(true);
+            await this.runChat(message);
+            return;
+          }
           if (this.sending) {
             this.flushLive();
             this.messages.push({ id: 'local-' + Date.now(), role: 'user', agent_name: 'human', content: message });
@@ -1857,18 +1859,22 @@
           this.slowTimer = null;
         },
         async readSse(body) {
+          const runId = this.chatRun;
           const reader = body.getReader();
           const decoder = new TextDecoder();
           let buf = '';
           while (true) {
             const chunk = await reader.read();
             if (chunk.done) break;
+            if (this.chatRun !== runId) return;
             buf += decoder.decode(chunk.value, { stream: true });
             const parts = buf.split('\n\n');
             buf = parts.pop() || '';
-            parts.forEach((part) => this.applySse(part));
+            parts.forEach((part) => {
+              if (this.chatRun === runId) this.applySse(part);
+            });
           }
-          if (buf.trim()) this.applySse(buf);
+          if (this.chatRun === runId && buf.trim()) this.applySse(buf);
         },
         holdReply() {
           const live = this.live || '';
@@ -1970,6 +1976,7 @@
               if (this.steerText && this.chatAbort && !this.userStop) this.chatAbort.abort();
             }
           } else if (event === 'delegation') {
+            this.toolPending = false;
             this.delegation = {
               agent: data.agent,
               project: data.project || '',
@@ -3226,6 +3233,11 @@
           this.runStopping = !!data.stopping;
           this.heartbeatPaused = !!data.heartbeat_paused;
           this.syncDelegation();
+          const busy = this.workingSubagents.length > 0;
+          if (this.subagentWasBusy && !busy && !this.sending && this.tab === 'chat') {
+            this.reloadMessages().catch(function () {});
+          }
+          this.subagentWasBusy = busy;
         },
         async refreshLogs(quiet) {
           const projectId = this.projectId || 0;

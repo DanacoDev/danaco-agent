@@ -241,12 +241,12 @@ header('X-Danaco: 1');
                   <activity-trace :thinking="liveDetail.thinking" :tools="liveDetail.tools" :open="traceOpen" :cpu="showCpu" prefix="live-" @toggle="toggleTrace"></activity-trace>
                   <div v-if="live" class="md" v-html="md(live)"></div>
                   <div v-if="streamError && !live && !liveDetail.thinking.length && !liveDetail.tools.length" class="form-error">{{ errorText(streamError) }}</div>
-                  <div v-if="thinkingSpinner || (sending && (answerStarted || toolPending))" class="thinking-row">
+                  <div v-if="!workingSubagents.length && (thinkingSpinner || (sending && (answerStarted || toolPending)))" class="thinking-row">
                     <span class="spinner" aria-hidden="true"></span>
                     <span>{{ thinkingLabel }}</span>
                   </div>
                 </article>
-                <div v-if="(sending && replyPinned) || detachedWorking" class="thinking-row">
+                <div v-if="!workingSubagents.length && sending && replyPinned" class="thinking-row">
                   <span class="spinner" aria-hidden="true"></span>
                   <span>{{ thinkingLabel }}</span>
                 </div>
@@ -282,11 +282,11 @@ header('X-Danaco: 1');
                     <button class="attach-btn" type="button" aria-label="Attach a file" title="Attach a file" :disabled="chatLocked" @click="$refs.attachInput.click()">
                       <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M21.4 11.1 12.2 20.3a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
                     </button>
-                    <textarea ref="composer" v-model="draft" rows="1" :placeholder="sending ? 'Send message to steer the agent' : 'Send message'" @input="fitComposer" @keydown.enter.exact.prevent="send"></textarea>
+                    <textarea ref="composer" v-model="draft" rows="1" :placeholder="sending && !workingSubagents.length ? 'Send message to steer the agent' : 'Send message'" @input="fitComposer" @keydown.enter.exact.prevent="send"></textarea>
                   </div>
                   <input ref="attachInput" class="file-input" type="file" multiple @change="onAttach">
                 </div>
-                <button v-if="sending" class="btn btn-gold" type="button" @click="stopRun">Stop</button>
+                <button v-if="sending && !workingSubagents.length" class="btn btn-gold" type="button" @click="stopRun">Stop</button>
                 <button v-else class="btn btn-gold" type="submit" :disabled="chatLocked">{{ chatLocked ? 'Waiting' : 'Send' }}</button>
               </form>
             </div>
@@ -665,23 +665,12 @@ header('X-Danaco: 1');
             <div v-if="mainAgent" class="flow-board">
               <div class="flow">
                 <div class="flow-top">
-                  <article v-if="taskAgent" class="flow-node is-task" :class="['is-' + taskAgent.status, { 'is-picked': logAgent === taskAgent.name }]" @click="pickLogAgent(taskAgent.name)">
-                    <svg class="avatar" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-av-orchestrator"></use></svg>
-                    <div class="flow-copy">
-                      <strong>{{ agentLabel(taskAgent.name) }}</strong>
-                      <p class="flow-status">
-                        <span v-if="agentBusy(taskAgent)" class="spinner"></span>
-                        <span :class="'status-' + taskAgent.status">{{ taskAgent.label }}</span>
-                      </p>
-                      <p class="hint flow-task">{{ agentWork(taskAgent) }}</p>
-                    </div>
-                  </article>
                   <article class="flow-node is-main" :class="['is-' + mainAgent.status, { 'is-picked': logAgent === mainAgent.name }]" @click="pickLogAgent(mainAgent.name)">
                     <svg class="avatar" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-av-orchestrator"></use></svg>
                     <div class="flow-copy">
                       <strong>{{ agentLabel(mainAgent.name) }}</strong>
                       <p class="flow-status">
-                        <span v-if="agentBusy(mainAgent)" class="spinner"></span>
+                        <span v-if="agentBusy(mainAgent) && !workingSubagents.length" class="spinner"></span>
                         <span :class="'status-' + mainAgent.status">{{ mainAgent.label }}</span>
                       </p>
                       <p class="hint flow-task">{{ agentWork(mainAgent) }}</p>

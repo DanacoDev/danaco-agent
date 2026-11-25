@@ -941,7 +941,7 @@ SQL);
     public function startJob(string $kind, ?int $projectId, array $payload, ?int $refId = null): int
     {
         $projectId = $projectId && $projectId > 0 ? $projectId : null;
-        if ($kind === 'chat') {
+        if ($kind === 'chat' && !$this->lockFresh('subagent_lock', 900)) {
             if ($projectId) {
                 $close = $this->pdo->prepare("UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE kind = 'chat' AND project_id = ? AND status IN ('running', 'error')");
                 $close->execute([$projectId]);
@@ -1548,6 +1548,32 @@ SQL);
             return false;
         }
         return $this->getSetting($this->chatAnswerSavedKey($jobId), '0') === '1';
+    }
+
+    public function parallelChatRunning(int $projectId): bool
+    {
+        if ($projectId > 0) {
+            $stmt = $this->pdo->prepare("SELECT COUNT(*) FROM jobs WHERE kind = 'chat' AND project_id = ? AND status = 'running'");
+            $stmt->execute([$projectId]);
+        } else {
+            $stmt = $this->pdo->query("SELECT COUNT(*) FROM jobs WHERE kind = 'chat' AND project_id IS NULL AND status = 'running'");
+        }
+        return (int)$stmt->fetchColumn() > 1;
+    }
+
+    public function newerChatRunning(int $projectId, int $jobId): bool
+    {
+        if ($jobId <= 0) {
+            return false;
+        }
+        if ($projectId > 0) {
+            $stmt = $this->pdo->prepare("SELECT 1 FROM jobs WHERE kind = 'chat' AND project_id = ? AND status = 'running' AND id > ? LIMIT 1");
+            $stmt->execute([$projectId, $jobId]);
+        } else {
+            $stmt = $this->pdo->prepare("SELECT 1 FROM jobs WHERE kind = 'chat' AND project_id IS NULL AND status = 'running' AND id > ? LIMIT 1");
+            $stmt->execute([$jobId]);
+        }
+        return (bool)$stmt->fetchColumn();
     }
 
     public function runningChatJob(int $projectId): ?array
