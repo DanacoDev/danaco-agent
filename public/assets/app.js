@@ -410,15 +410,18 @@
             return String(Math.round(value / 1024));
           };
           const bar = function (label, raw, detail) {
-            const n = Number(raw);
+            const used = detail ? Number(detail.used_mb) : NaN;
+            const total = detail ? Number(detail.total_mb) : NaN;
+            const fromAmounts = Number.isFinite(used) && total > 0;
+            const n = fromAmounts ? (used / total) * 100 : Number(raw);
             const ok = Number.isFinite(n);
             const value = ok ? Math.max(0, Math.min(100, n)) : 0;
             const text = ok ? Math.round(value) + '%' : '—';
             return {
               label: label,
               value: value,
-              text: detail && Number(detail.total_mb) > 0
-                ? number(Number(detail.used_mb)) + '/' + number(Number(detail.total_mb)) + 'GB (' + text + ')'
+              text: fromAmounts
+                ? number(used) + '/' + number(total) + 'GB (' + text + ')'
                 : text
             };
           };
