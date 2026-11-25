@@ -2915,7 +2915,7 @@ class CapabilityTools
     private function yahooPace(): void
     {
         @set_time_limit(0);
-        sleep(random_int(10, 60));
+        sleep(random_int(5, 30));
     }
 
     private function yahooJson(string $url): array|string
