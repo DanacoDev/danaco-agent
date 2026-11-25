@@ -679,6 +679,7 @@ class AgentRuntime
         $repeatTries = 0;
         $fallbackTries = 0;
         $finishChecks = 0;
+        $planSteers = 0;
         $calledTries = 0;
         $skipCompact = false;
         $savedWritePath = '';
@@ -1068,6 +1069,19 @@ class AgentRuntime
                     }
                     continue;
                 }
+                if ($planSteers < 1 && $this->missingPlanReply($agent, $projectId, $messages, $turnText)) {
+                    $planSteers++;
+                    $skipCompact = true;
+                    $this->rewindVisible($visible, $visibleMark, $emit, $agent);
+                    $this->db->loop($agent, 'steer', 'plan not in wiki · 1/1', $projectId);
+                    $replay = trim($turnText);
+                    if ($replay === '') {
+                        $replay = 'The plan was only described in chat.';
+                    }
+                    $messages[] = ['role' => 'assistant', 'content' => $this->modelSaw(strip_chat_tags($replay))];
+                    $messages[] = ['role' => 'user', 'content' => $this->planSteer()];
+                    continue;
+                }
                 if ($this->mainVoice($agent) && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop, $agent)) {
                     if ($finishChecks >= 2) {
                         $this->db->loop($agent, 'steer', 'finish-check · still going', $projectId);
@@ -1171,6 +1185,13 @@ class AgentRuntime
                     $this->db->loop($agent, 'steer', 'tasklist after delegate', $projectId);
                     $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the task list and read the result. If the id you passed is not in that list, the task was never created and nothing was done. Do not tell the user it is finished. An empty delegate result is not a finished piece. Create the task, list the tasks, and read the id. If the list says scheduled, do not delegate. The scheduler starts it. If the task is done, do not delegate it again. If a step is still open, delegate only that step. If that step is assigned to human, ask the user and wait. Do not delegate it. Do not start a finished step over. If the result says the task is not done, do not tell the user the task is finished. Do not set a task to done yourself. A run-once task becomes done when every step is crossed off. Leave a repeating task in progress. Do not archive it. A subagent reports the result and crosses off the step that just finished. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has tasks. Do not explain these steps in place of listing the tasks.'];
                 }
+            }
+            if (!$cutOff && $planSteers < 1 && $this->tasklistWithoutPlan($agent, $projectId, $messages, $tail['tools'])) {
+                $planSteers++;
+                $skipCompact = true;
+                $this->rewindVisible($visible, $visibleMark, $emit, $agent);
+                $this->db->loop($agent, 'steer', 'plan not in wiki · 1/1', $projectId);
+                $messages[] = ['role' => 'user', 'content' => $this->planSteer()];
             }
             if ($cutOff) {
                 $skipCompact = true;
@@ -1618,6 +1639,172 @@ class AgentRuntime
         return implode("\n\n", $lines);
     }
 
+    private function missingPlanReply(string $agent, ?int $projectId, array $messages, string $reply): bool
+    {
+        if ($agent !== 'orchestrator' || $projectId === null || $projectId <= 0) {
+            return false;
+        }
+        if ($this->wikiWriteSucceeded($messages) || !$this->planningChat($messages)) {
+            return false;
+        }
+        return $this->planStepReply($reply);
+    }
+
+    private function tasklistWithoutPlan(string $agent, ?int $projectId, array $messages, array $tools): bool
+    {
+        if ($agent !== 'orchestrator' || $projectId === null || $projectId <= 0) {
+            return false;
+        }
+        if (!$this->onlyTasklist($tools) || $this->wikiWriteSucceeded($messages)) {
+            return false;
+        }
+        return $this->stillOutlining($messages);
+    }
+
+    private function planSteer(): string
+    {
+        return 'The plan is not in the wiki. Call wiki_memory with action write, name plan, and the plan content. Replace content with the plan. Do not leave the example text. Do not ask the user in that same reply. Stop after <<end>>.' . "\n"
+            . '<<tool>>' . "\n"
+            . '{"name":"wiki_memory","args":{"action":"write","name":"plan","content":"the plan text"}}' . "\n"
+            . '<<end>>';
+    }
+
+    private function planStepReply(string $text): bool
+    {
+        $text = trim($this->stripLeakedThink($text));
+        if ($text === '') {
+            return false;
+        }
+        if (preg_match('/\bthis document outlines\b/i', $text)) {
+            return true;
+        }
+        if ($this->asksNowOrScheduled($text)) {
+            return true;
+        }
+        $presents = preg_match('/\bthe plan\b/i', $text) || preg_match('/\bphases\b/i', $text);
+        return $presents && (bool)preg_match('/\b(?:outlines?|document)\b/i', $text);
+    }
+
+    private function asksNowOrScheduled(string $text): bool
+    {
+        if (preg_match('/\bnow (?:or|versus|vs\.?) scheduled\b/i', $text)) {
+            return true;
+        }
+        if (preg_match('/\b(?:run|start) now\b.{0,160}\bschedul/is', $text)) {
+            return true;
+        }
+        return (bool)preg_match('/\b(?:prefer to schedule|schedule them|be scheduled).{0,80}\bnow\b/is', $text);
+    }
+
+    private function planningChat(array $messages): bool
+    {
+        $role = '';
+        $content = '';
+        foreach ($messages as $message) {
+            if (!$this->planMessage($message, $role, $content)) {
+                continue;
+            }
+            if ($role === 'user' && $this->definesMission($content)) {
+                return true;
+            }
+            if ($role === 'assistant' && $this->asksNowOrScheduled($content)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function stillOutlining(array $messages): bool
+    {
+        $latestUser = '';
+        $previousAssistant = '';
+        $role = '';
+        $content = '';
+        foreach ($messages as $message) {
+            if (!$this->planMessage($message, $role, $content)) {
+                continue;
+            }
+            if ($role === 'user') {
+                $latestUser = $content;
+                continue;
+            }
+            if ($this->isToolCallNote($content)) {
+                continue;
+            }
+            $previousAssistant = $content;
+        }
+        return $this->definesMission($latestUser) || $this->asksNowOrScheduled($previousAssistant);
+    }
+
+    private function planMessage(array $message, ?string &$role, ?string &$content): bool
+    {
+        $role = '';
+        $content = '';
+        if (!is_array($message)) {
+            return false;
+        }
+        if (($message['role'] ?? '') !== 'user' && ($message['role'] ?? '') !== 'assistant') {
+            return false;
+        }
+        $role = (string)$message['role'];
+        $content = ltrim((string)($message['content'] ?? ''));
+        if ($content === '' || str_starts_with($content, 'TOOL RESULT ') || $this->isRuntimeSteer($content)) {
+            return false;
+        }
+        return true;
+    }
+
+    private function definesMission(string $text): bool
+    {
+        return (bool)preg_match('/\b(?:new project|outline (?:the|this) project|intended goals|your role in this project|in our plan|detailed plan|project plan|phase\s*1)\b/i', $text);
+    }
+
+    private function isToolCallNote(string $content): bool
+    {
+        $content = trim($content);
+        if ($content === '' || $content === 'The tool already ran.' || $content === 'The previous reply repeated a tool result.') {
+            return true;
+        }
+        return (bool)preg_match('/^[a-z][a-z0-9_]* \{/i', $content);
+    }
+
+    private function onlyTasklist(array $tools): bool
+    {
+        if ($tools === []) {
+            return false;
+        }
+        foreach ($tools as $tool) {
+            if (!is_array($tool)) {
+                return false;
+            }
+            if (strtolower(trim((string)($tool['name'] ?? ''))) !== 'tasklist') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private function wikiWriteSucceeded(array $messages): bool
+    {
+        foreach ($messages as $message) {
+            if (!is_array($message)) {
+                continue;
+            }
+            $content = ltrim((string)($message['content'] ?? ''));
+            if (!str_starts_with($content, 'TOOL RESULT wiki_memory:')) {
+                continue;
+            }
+            $break = strpos($content, "\n");
+            if ($break === false) {
+                continue;
+            }
+            if ($this->writeSucceeded(ltrim(substr($content, $break + 1)))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private function isRuntimeSteer(string $content): bool
     {
         foreach ([
@@ -1631,6 +1818,7 @@ class AgentRuntime
             'That reply used the whole output limit',
             'The delegated job just finished',
             'You described a wiki or file write',
+            'The plan is not in the wiki.',
             'That file is already saved',
             'You wrote the same line',
             'You wrote this line more than five times',
