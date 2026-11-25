@@ -2423,8 +2423,11 @@ class CapabilityTools
                 return $chart;
             }
             $picked = $this->yahooFind($query, $exchange, $type);
-            if (is_string($picked) || (string)$picked['symbol'] === $symbol) {
-                return $chart;
+            if (is_string($picked)) {
+                return $picked;
+            }
+            if ((string)$picked['symbol'] === $symbol) {
+                return $chart . $this->yahooSuffixHint($query);
             }
             $symbol = (string)$picked['symbol'];
             $chart = $this->yahooLoadChart($symbol, $window);
@@ -2592,7 +2595,7 @@ class CapabilityTools
         }
         $quotes = $json['quotes'] ?? null;
         if (!is_array($quotes) || $quotes === []) {
-            return 'Yahoo has no listing for ' . $query . '.';
+            return $this->yahooMiss($query, 'Yahoo has no listing for ' . $query . '.');
         }
         $rows = [];
         foreach ($quotes as $quote) {
@@ -2606,15 +2609,15 @@ class CapabilityTools
             $rows[] = $quote;
         }
         if ($rows === []) {
-            return 'Yahoo has no listing for ' . $query . '.';
+            return $this->yahooMiss($query, 'Yahoo has no listing for ' . $query . '.');
         }
         $pool = $type === '' ? $rows : array_values(array_filter($rows, fn(array $quote): bool => $this->yahooTypeMatch($type, $quote)));
         if ($pool === []) {
             $bits = [];
             foreach (array_slice($rows, 0, 5) as $quote) {
-                $bits[] = strtoupper((string)$quote['symbol']) . ' (' . $this->yahooKind((string)($quote['quoteType'] ?? '')) . ')';
+                $bits[] = $this->yahooQuoteBit($quote);
             }
-            return 'No ' . $type . ' matched ' . $query . '. Yahoo returned: ' . implode(', ', $bits) . '.';
+            return $this->yahooMiss($query, 'No ' . $type . ' matched ' . $query . '. Yahoo returned: ' . implode(', ', $bits) . '.');
         }
         $best = -1;
         $scored = [];
@@ -2660,9 +2663,9 @@ class CapabilityTools
         if ($chosen === null) {
             $bits = [];
             foreach (array_slice($pool, 0, 5) as $quote) {
-                $bits[] = strtoupper((string)$quote['symbol']) . ' (' . $this->yahooKind((string)($quote['quoteType'] ?? '')) . ')';
+                $bits[] = $this->yahooQuoteBit($quote);
             }
-            return 'Yahoo has no listing for ' . $query . '. Nearby: ' . implode(', ', $bits) . '.';
+            return $this->yahooMiss($query, 'Yahoo has no listing for ' . $query . '. Nearby: ' . implode(', ', $bits) . '.');
         }
         $symbol = strtoupper((string)$chosen['quote']['symbol']);
         $alternates = [];
@@ -2684,6 +2687,27 @@ class CapabilityTools
             'note' => $note,
             'rows' => $pool,
         ];
+    }
+
+    private function yahooMiss(string $query, string $text): string
+    {
+        return $text . $this->yahooSuffixHint($query);
+    }
+
+    private function yahooSuffixHint(string $query): string
+    {
+        if ($this->yahooSuffix($query) !== '' || str_contains($query, '=') || str_starts_with($query, '^')) {
+            return '';
+        }
+        return ' A listing outside the US needs its Yahoo suffix: .ST Stockholm, .OL Oslo, .HE Helsinki, .CO Copenhagen, .L London, .DE Xetra, .PA Paris, .AS Amsterdam, .MI Milan, .SW Switzerland, .TO Toronto, .AX Australia, .HK Hong Kong, .T Tokyo. A US listing has none.';
+    }
+
+    private function yahooQuoteBit(array $quote): string
+    {
+        $where = $this->yahooText((string)($quote['exchDisp'] ?? ''));
+        $kind = $this->yahooKind((string)($quote['quoteType'] ?? ''));
+        $label = $where !== '' ? $kind . ', ' . $where : $kind;
+        return strtoupper((string)$quote['symbol']) . ' (' . $label . ')';
     }
 
     private function yahooPrefix(string $query, string $symbol): bool
