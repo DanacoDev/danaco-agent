@@ -186,7 +186,7 @@ class Heartbeat
         if ($this->db->runStopRequested($projectId)) {
             if ($jobId !== null) {
                 $this->db->updateTask($taskId, ['held' => 1]);
-                $this->db->finishJob($jobId);
+                $this->db->interruptJob($jobId);
                 $this->db->acknowledgeRunStop($projectId, $jobId);
                 $this->db->loopWrite($jobId, $projectId, 'heartbeat', 'process', 'Task ' . $taskId . ' stopped · held');
             } else {
@@ -267,7 +267,7 @@ class Heartbeat
                 if ($e instanceof ChatStopped) {
                     $this->db->updateTask((int)$task['id'], ['held' => 1]);
                     $this->db->loop($voice, 'process', 'Stopped by user · job ' . $jobId);
-                    $this->db->finishJob($jobId);
+                    $this->db->interruptJob($jobId);
                     $this->db->acknowledgeRunStop($projectId, $jobId);
                     $this->db->setAgentStatus($voice, 'idle');
                     return;

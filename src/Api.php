@@ -947,16 +947,23 @@ class Api
         }
         $held = [];
         $ids = [];
+        $taskJobs = [];
         foreach ($jobs as $row) {
             $id = (int)$row['id'];
+            $isTask = (string)($row['kind'] ?? '') === 'task';
             if ((string)($row['status'] ?? '') !== 'running') {
-                $this->db->finishJob($id);
+                if ($isTask) {
+                    $this->db->interruptJob($id);
+                } else {
+                    $this->db->finishJob($id);
+                }
                 continue;
             }
             $ids[] = $id;
-            if ((string)$row['kind'] !== 'task') {
+            if (!$isTask) {
                 continue;
             }
+            $taskJobs[$id] = true;
             $taskId = (int)($row['ref_id'] ?? 0);
             if ($taskId <= 0) {
                 $payload = json_decode((string)($row['payload'] ?? ''), true);
@@ -974,7 +981,11 @@ class Api
             $this->db->requestChatStop($projectId, $generation);
         }
         foreach ($ids as $id) {
-            $this->db->finishJob($id);
+            if (!empty($taskJobs[$id])) {
+                $this->db->interruptJob($id);
+            } else {
+                $this->db->finishJob($id);
+            }
         }
         if ($ids && $projectId > 0) {
             $this->db->pauseHeartbeat($projectId);

@@ -807,6 +807,38 @@ SQL);
         return $stmt->rowCount();
     }
 
+    public function reopenStoppedTasks(): array
+    {
+        $stmt = $this->pdo->query("SELECT * FROM tasks WHERE project_id IS NOT NULL AND COALESCE(held, 0) = 1 AND schedule_time IS NOT NULL AND schedule_time != '' AND status IN ('todo', 'backlog', 'in_progress')");
+        $tasks = $this->attachSubtasks(array_map([$this, 'castTask'], $stmt->fetchAll()));
+        $opened = [];
+        foreach ($tasks as $task) {
+            $projectId = (int)($task['project_id'] ?? 0);
+            if ($projectId <= 0 || $this->heartbeatPaused($projectId)) {
+                continue;
+            }
+            if (trim((string)($task['schedule_time'] ?? '')) === '') {
+                continue;
+            }
+            $subs = is_array($task['subtasks'] ?? null) ? $task['subtasks'] : [];
+            $allDone = $subs !== [];
+            foreach ($subs as $sub) {
+                if (!is_array($sub) || (string)($sub['status'] ?? '') !== 'done') {
+                    $allDone = false;
+                    break;
+                }
+            }
+            if ($allDone) {
+                continue;
+            }
+            $id = (int)$task['id'];
+            $this->updateTask($id, ['held' => 0]);
+            $this->releaseImmediateRun($id);
+            $opened[] = $task;
+        }
+        return $opened;
+    }
+
     public function dueTasks(): array
     {
         $stmt = $this->pdo->prepare("SELECT * FROM tasks WHERE project_id IS NOT NULL AND status IN ('todo', 'backlog', 'in_progress') AND COALESCE(held, 0) = 0 AND id NOT IN (SELECT ref_id FROM jobs WHERE kind = 'task' AND status IN ('running', 'error') AND ref_id IS NOT NULL) AND ((schedule_time IS NOT NULL AND schedule_time <= ?) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') NOT IN ('', 'none')) OR (schedule_time IS NULL AND status = 'in_progress' AND COALESCE(recurrence_interval, 'none') IN ('', 'none') AND project_id NOT IN (SELECT project_id FROM jobs WHERE project_id IS NOT NULL AND kind IN ('chat', 'subagent') AND status = 'running' AND updated_at >= datetime('now', '-5 minutes')))) ORDER BY schedule_time");
@@ -984,6 +1016,11 @@ SQL);
     public function finishJob(int $id): void
     {
         $this->pdo->prepare("UPDATE jobs SET status = 'done', last_error = NULL, updated_at = datetime('now') WHERE id = ?")->execute([$id]);
+    }
+
+    public function interruptJob(int $id): void
+    {
+        $this->pdo->prepare("UPDATE jobs SET status = 'interrupted', last_error = NULL, updated_at = datetime('now') WHERE id = ?")->execute([$id]);
     }
 
     public function finishRunningJobs(): void
@@ -1759,7 +1796,11 @@ SQL);
         }
         $id = (int)($job['id'] ?? 0);
         if ($id > 0) {
-            $this->finishJob($id);
+            if ((string)($job['kind'] ?? '') === 'task') {
+                $this->interruptJob($id);
+            } else {
+                $this->finishJob($id);
+            }
             $this->acknowledgeRunStop($projectId, $id);
         }
     }

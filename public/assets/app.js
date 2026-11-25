@@ -3800,13 +3800,6 @@
           try {
             const load = await this.api('/api/model/load', { quiet: !!quiet });
             if (this.selectHold) return;
-            // #region agent log
-            const loadKey = JSON.stringify({ ready: load && load.ready, error: load && load.error, scratch: load && load.scratch, sending: this.sending });
-            if (loadKey !== this._loadDebugKey && load && (load.error || load.ready === false || (this._loadDebugKey && this._loadDebugKey.indexOf('"error":""') === -1))) {
-              this._loadDebugKey = loadKey;
-              fetch('http://127.0.0.1:7804/ingest/b5b3451d-fa02-4c20-810f-d4e9038db205',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f1de3b'},body:JSON.stringify({sessionId:'f1de3b',hypothesisId:'E',location:'app.js:refreshModelLoad',message:'loader-state',data:{ready:load.ready,error:load.error||'',scratch:load.scratch,percent:load.percent,model:load.model,sending:this.sending},timestamp:Date.now()})}).catch(()=>{});
-            }
-            // #endregion
             this.modelLoad = load;
             if (this.modelLoad && typeof this.modelLoad.cpu === 'boolean' && this.settings && this.settings.model_mode !== 'cpu_failsafe') {
               this.settings.cpu_fallback = this.modelLoad.cpu ? '1' : '0';
@@ -3817,9 +3810,6 @@
               this.clearSlowTimer();
             }
           } catch (error) {
-            // #region agent log
-            fetch('http://127.0.0.1:7804/ingest/b5b3451d-fa02-4c20-810f-d4e9038db205',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f1de3b'},body:JSON.stringify({sessionId:'f1de3b',hypothesisId:'E',location:'app.js:refreshModelLoad',message:'load-request-failed',data:{error:String(error && error.message || error),sending:this.sending},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             if (this.selectHold) return;
             if (this.modelLoad && this.modelLoad.ready === true) return;
             this.modelLoad = { ready: false, percent: this.modelLoad ? this.modelLoad.percent : 0, model: this.modelLoad ? this.modelLoad.model : '', error: error.message, scratch: true };

@@ -23,6 +23,10 @@ try {
     if ($purged > 0) {
         $db->loopWrite(null, null, 'heartbeat', 'process', 'Compliance purged · ' . $purged);
     }
+    foreach ($db->reopenStoppedTasks() as $task) {
+        $line = 'Task ' . (int)$task['id'] . ' resumed · heartbeat is running';
+        $db->loopWrite(null, (int)$task['project_id'], 'heartbeat', 'process', $line);
+    }
     $dueJobs = $db->dueJobs(Heartbeat::STALE_SECONDS, Heartbeat::MAX_ATTEMPTS);
     $seenTasks = 0;
     foreach ($db->dueTasks() as $task) {
