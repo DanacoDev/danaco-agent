@@ -491,6 +491,25 @@ class LLMClient
         return $name === 'maternion/sage-a1.5' || str_starts_with($name, 'maternion/sage-a1.5:');
     }
 
+    private function wireMessages(array $messages): array
+    {
+        $out = [];
+        foreach ($messages as $message) {
+            if (!is_array($message)) {
+                continue;
+            }
+            $row = [
+                'role' => (string)($message['role'] ?? 'user'),
+                'content' => $message['content'] ?? '',
+            ];
+            if (array_key_exists('images', $message)) {
+                $row['images'] = $message['images'];
+            }
+            $out[] = $row;
+        }
+        return $out;
+    }
+
     private function sageMessages(string $model, array $messages): array
     {
         if (!$this->isSageModel($model) || $messages === [] || !is_array($messages[0])) {
@@ -595,7 +614,7 @@ class LLMClient
         $messages = $this->sageMessages($model, $messages);
         $body = [
             'model' => $model,
-            'messages' => $messages,
+            'messages' => $this->wireMessages($messages),
             'stream' => true,
             'keep_alive' => '1h',
             'options' => $options,
@@ -656,7 +675,7 @@ class LLMClient
         if ($wire !== 'responses') {
             $request = [
                 'model' => $model,
-                'messages' => $messages,
+                'messages' => $this->wireMessages($messages),
                 'stream' => $stream,
             ];
             if ($maxTokens !== null) {
@@ -1481,7 +1500,7 @@ class LLMClient
         $this->noteMachine('orchestrator');
         $payload = json_encode([
             'model' => $model,
-            'messages' => $messages,
+            'messages' => $this->wireMessages($messages),
             'stream' => false,
             'think' => false,
             'keep_alive' => '1h',

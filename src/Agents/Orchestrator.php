@@ -156,10 +156,15 @@ class Orchestrator
             }
             $messages = [['role' => 'system', 'content' => $system]];
             foreach ($keep as $message) {
-                $messages[] = [
+                $row = [
                     'role' => $message['role'],
                     'content' => $message['content'],
                 ];
+                $id = (int)($message['id'] ?? 0);
+                if ($id > 0) {
+                    $row['id'] = $id;
+                }
+                $messages[] = $row;
             }
             return [
                 'messages' => $messages,
@@ -214,10 +219,15 @@ class Orchestrator
         }
         $messages = [['role' => 'system', 'content' => $system]];
         foreach ($history as $message) {
-            $messages[] = [
+            $row = [
                 'role' => $message['role'],
                 'content' => $message['content'],
             ];
+            $id = (int)($message['id'] ?? 0);
+            if ($id > 0) {
+                $row['id'] = $id;
+            }
+            $messages[] = $row;
         }
         return [
             'messages' => $messages,
@@ -436,7 +446,7 @@ class Orchestrator
         if (ContextWindow::isShort($fresh)) {
             return $this->mechanicalSummary($previous, $fresh);
         }
-        return $this->summarizeForWindow($previous, $fresh, $shouldStop, $this->contextTotal());
+        return $this->summarizeForWindow($previous, ContextWindow::projectForSummary($fresh), $shouldStop, $this->contextTotal());
     }
 
     private function mechanicalSummary(string $previous, array $fresh): string
@@ -481,6 +491,16 @@ class Orchestrator
         if ($buffer !== '') {
             $chunks[] = $buffer;
         }
+        $previous = trim($previous);
+        if ($previous !== '' && ContextWindow::tokens($previous) > $piece) {
+            $previous = clip_text($previous, max(200, $piece * 4));
+        }
+        if (count($chunks) === 1) {
+            if ($shouldStop && $shouldStop()) {
+                throw new ChatStopped('Stopped.');
+            }
+            return trim($this->summarizeChunk($previous, $chunks[0], $shouldStop));
+        }
         $partials = [];
         foreach ($chunks as $chunk) {
             if ($shouldStop && $shouldStop()) {
@@ -489,10 +509,6 @@ class Orchestrator
             $partials[] = $this->summarizeChunk('', $chunk, $shouldStop);
         }
         $summary = $this->mergePartials($partials, $shouldStop, $piece);
-        $previous = trim($previous);
-        if ($previous !== '' && ContextWindow::tokens($previous) > $piece) {
-            $previous = clip_text($previous, max(200, $piece * 4));
-        }
         if ($previous === '') {
             return trim($summary);
         }

@@ -87,10 +87,15 @@ class ContextWindow
             ];
         }
         foreach ($kept as $message) {
-            $messages[] = [
+            $row = [
                 'role' => (string)($message['role'] ?? 'user'),
                 'content' => (string)($message['content'] ?? ''),
             ];
+            $id = (int)($message['id'] ?? 0);
+            if ($id > 0) {
+                $row['id'] = $id;
+            }
+            $messages[] = $row;
         }
         $used = $raw;
         if ($summary !== '') {
@@ -213,6 +218,22 @@ class ContextWindow
         return $out;
     }
 
+    public static function projectForSummary(array $messages): array
+    {
+        $out = [];
+        foreach ($messages as $message) {
+            if (!is_array($message)) {
+                continue;
+            }
+            $content = (string)($message['content'] ?? '');
+            if (str_starts_with(ltrim($content), 'TOOL RESULT ')) {
+                $message['content'] = self::shortToolResult($content);
+            }
+            $out[] = $message;
+        }
+        return $out;
+    }
+
     public static function isShort(array $messages): bool
     {
         return self::messageTokens($messages) < 500;
@@ -274,6 +295,19 @@ class ContextWindow
             return '';
         }
         return trim(substr($rest, 0, $colon));
+    }
+
+    private static function shortToolResult(string $content): string
+    {
+        $limit = 500;
+        if (strlen($content) <= $limit) {
+            return $content;
+        }
+        $marker = "\n… omitted …\n";
+        $room = $limit - strlen($marker);
+        $head = intdiv($room, 2);
+        $tail = $room - $head;
+        return substr($content, 0, $head) . $marker . substr($content, -$tail);
     }
 
     private static function isTaskList(string $name, array $args): bool
