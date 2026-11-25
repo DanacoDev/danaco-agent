@@ -544,6 +544,21 @@ class LLMClient
         return $options;
     }
 
+    private function isGemma4Model(string $model): bool
+    {
+        return (bool)preg_match('/gemma-?4(?!\d)/i', $model);
+    }
+
+    private function gemmaOptions(string $model, array $options): array
+    {
+        if (!$this->isGemma4Model($model)) {
+            return $options;
+        }
+        $options['repeat_penalty'] = 1.08;
+        $options['repeat_last_n'] = 4096;
+        return $options;
+    }
+
     private function attempt(array $messages, callable $onToken, ?callable $shouldStop, ?callable $onThinking = null, bool $cloud = false, string $agent = '', bool $failsafe = false): string
     {
         $this->incomplete = false;
@@ -610,7 +625,7 @@ class LLMClient
                 $ask = 'auto · ' . $this->gpuSkip;
             }
         }
-        $options = $this->sageOptions($model, $options);
+        $options = $this->gemmaOptions($model, $this->sageOptions($model, $options));
         $messages = $this->sageMessages($model, $messages);
         $body = [
             'model' => $model,
@@ -1501,6 +1516,7 @@ class LLMClient
                 $ask = 'auto · ' . $this->gpuSkip;
             }
         }
+        $options = $this->gemmaOptions($model, $options);
         $this->db->loop($agent, 'model', 'yesno · ask ' . $ask . ' · ' . $model . ' · ' . $this->loadedSummary());
         $this->noteMachine($agent);
         $payload = json_encode([
@@ -1614,6 +1630,7 @@ class LLMClient
                 $options['num_ctx'] = $gpu['num_ctx'];
             }
         }
+        $options = $this->gemmaOptions($model, $options);
         $body = [
             'model' => $model,
             'messages' => [[
