@@ -1822,6 +1822,9 @@ class CapabilityTools
             $this->rememberResponse($meta, 0, 'Could not reach the host.');
             return '';
         }
+        if ($this->yahooApiHost($host)) {
+            $extraHeaders = array_merge($this->yahooBrowserHeaders(), $extraHeaders);
+        }
         $ch = curl_init($url);
         if ($ch === false) {
             $this->rememberResponse($meta, 0, 'Could not open a request.');
@@ -1843,6 +1846,9 @@ class CapabilityTools
             $opts[CURLOPT_POSTFIELDS] = $post;
         }
         curl_setopt_array($ch, $opts);
+        if ($this->yahooApiHost($host)) {
+            $this->yahooCurl($ch);
+        }
         $raw = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $headerSize = (int)curl_getinfo($ch, CURLINFO_HEADER_SIZE);
@@ -2862,15 +2868,59 @@ class CapabilityTools
         if ($kind === 'chart') {
             return $json;
         }
-        $why = trim((string)($json['chart']['error']['description'] ?? ''));
-        if ($why === '') {
-            $why = 'Yahoo returned no data for ' . $symbol . '.';
-        }
+        $why = $this->yahooChartError((string)($json['chart']['error']['description'] ?? ''));
         return $symbol . ': ' . $why;
+    }
+
+    private function yahooChartError(string $description): string
+    {
+        $why = trim($description);
+        if ($why === '' || stripos($why, 'delist') !== false) {
+            return 'Could not fetch data.';
+        }
+        return $why;
+    }
+
+    private function yahooApiHost(string $host): bool
+    {
+        $host = strtolower($host);
+        return $host === 'query1.finance.yahoo.com' || $host === 'query2.finance.yahoo.com';
+    }
+
+    private function yahooBrowserHeaders(): array
+    {
+        return [
+            'Accept: application/json,text/plain,*/*',
+            'Accept-Language: en-US,en;q=0.9',
+            'Referer: https://finance.yahoo.com/',
+            'Origin: https://finance.yahoo.com',
+            'Sec-Fetch-Dest: empty',
+            'Sec-Fetch-Mode: cors',
+            'Sec-Fetch-Site: same-site',
+            'Sec-Ch-Ua: "Chromium";v="131", "Google Chrome";v="131", "Not_A Brand";v="24"',
+            'Sec-Ch-Ua-Mobile: ?0',
+            'Sec-Ch-Ua-Platform: "macOS"',
+        ];
+    }
+
+    private function yahooCurl($ch): void
+    {
+        $ciphers = 'TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305';
+        @curl_setopt($ch, CURLOPT_SSL_CIPHER_LIST, $ciphers);
+        if (defined('CURL_HTTP_VERSION_2TLS')) {
+            curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+        }
+    }
+
+    private function yahooPace(): void
+    {
+        @set_time_limit(0);
+        sleep(random_int(10, 60));
     }
 
     private function yahooJson(string $url): array|string
     {
+        $this->yahooPace();
         $meta = [];
         $final = $url;
         $body = $this->request($url, 0, null, $final, $meta, ['Accept: application/json']);
@@ -2933,8 +2983,7 @@ class CapabilityTools
     {
         $result = $chart['chart']['result'][0] ?? null;
         if (!is_array($result)) {
-            $why = trim((string)($chart['chart']['error']['description'] ?? ''));
-            return $why !== '' ? $symbol . ': ' . $why : 'Yahoo returned no data for ' . $symbol . '.';
+            return $symbol . ': ' . $this->yahooChartError((string)($chart['chart']['error']['description'] ?? ''));
         }
         $lead = $this->yahooLead($asked, $symbol, $picked);
         if ($action === 'quote') {

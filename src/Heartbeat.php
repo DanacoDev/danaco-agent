@@ -126,9 +126,24 @@ class Heartbeat
             }
             return ['project_id' => null];
         }
+        if ($name === 'scheduler') {
+            if (!$this->db->parallelWork()) {
+                return null;
+            }
+            foreach ($fresh as $job) {
+                if ((string)$job['kind'] === 'task') {
+                    return $job;
+                }
+            }
+            return null;
+        }
+        $parallel = $this->db->parallelWork();
         foreach ($fresh as $job) {
             $kind = (string)$job['kind'];
-            if ($name === 'orchestrator' && ($kind === 'chat' || $kind === 'task')) {
+            if ($name === 'orchestrator' && $kind === 'chat') {
+                return $job;
+            }
+            if ($name === 'orchestrator' && $kind === 'task' && !$parallel) {
                 return $job;
             }
             if ($kind === 'subagent' && (string)($job['payload']['agent'] ?? '') === $name) {
@@ -219,12 +234,13 @@ class Heartbeat
             $this->db->deleteLatestFailed($projectId);
         }
         $this->db->loopPush($jobId, $projectId);
+        $voice = $this->taskVoice();
         try {
             if ($ownJob) {
-                $this->db->loop('orchestrator', 'process', 'Task ' . (int)$task['id'] . ' started · job ' . $jobId . ' · in progress');
-                $this->db->loop('orchestrator', 'process', 'Recovery counters reset');
+                $this->db->loop($voice, 'process', 'Task ' . (int)$task['id'] . ' started · job ' . $jobId . ' · in progress');
+                $this->db->loop($voice, 'process', 'Recovery counters reset');
             } else {
-                $this->db->loop('orchestrator', 'process', 'Heartbeat retry · task ' . (int)$task['id'] . ' · job ' . $jobId);
+                $this->db->loop($voice, 'process', 'Heartbeat retry · task ' . (int)$task['id'] . ' · job ' . $jobId);
             }
             $saved = false;
             $turn = new ChatTurn();
@@ -243,17 +259,17 @@ class Heartbeat
                 }
                 $spoken = $answer !== '' ? $answer : 'Finished the scheduled task.';
                 $this->db->addMessage($projectId, 'assistant', $spoken, 'orchestrator', false, $detail);
-                $this->db->loop('orchestrator', 'process', 'Answer saved · job ' . $jobId . ' finished');
+                $this->db->loop($voice, 'process', 'Answer saved · job ' . $jobId . ' finished');
                 $this->db->finishJob($jobId);
                 $saved = true;
                 $this->settle($task, $this->withTaskNotes($spoken, $turn->notices), false, $turn->notices !== []);
             } catch (Throwable $e) {
                 if ($e instanceof ChatStopped) {
                     $this->db->updateTask((int)$task['id'], ['held' => 1]);
-                    $this->db->loop('orchestrator', 'process', 'Stopped by user · job ' . $jobId);
+                    $this->db->loop($voice, 'process', 'Stopped by user · job ' . $jobId);
                     $this->db->finishJob($jobId);
                     $this->db->acknowledgeRunStop($projectId, $jobId);
-                    $this->db->setAgentStatus('orchestrator', 'idle');
+                    $this->db->setAgentStatus($voice, 'idle');
                     return;
                 }
                 if ($saved) {
@@ -261,8 +277,8 @@ class Heartbeat
                     return;
                 }
                 $this->db->failJob($jobId, $e->getMessage(), self::MAX_ATTEMPTS);
-                $this->db->logAgent('orchestrator', $projectId, 'error', $e->getMessage());
-                $this->db->setAgentStatus('orchestrator', 'error');
+                $this->db->logAgent($voice, $projectId, 'error', $e->getMessage());
+                $this->db->setAgentStatus($voice, 'error');
                 $current = $this->db->job($jobId);
                 $reason = $e->getMessage();
                 $status = (string)($current['status'] ?? '');
@@ -273,7 +289,7 @@ class Heartbeat
                 } else {
                     $line = 'Failed · job ' . $jobId . ' · ' . $reason;
                 }
-                $this->db->loop('orchestrator', 'process', $line);
+                $this->db->loop($voice, 'process', $line);
                 $this->noteTaskFailure($task, (string)($current['last_error'] ?? $e->getMessage()));
                 if ($ownJob && $status === 'gave_up') {
                     $this->settle($task, $this->withTaskNotes((string)($current['last_error'] ?? $e->getMessage()), $turn->notices), true);
@@ -550,7 +566,7 @@ class Heartbeat
     {
         $projectId = $job['project_id'] !== null ? (int)$job['project_id'] : null;
         $kind = (string)($job['kind'] ?? '');
-        $agent = 'orchestrator';
+        $agent = $kind === 'task' && $this->db->parallelWork() ? 'scheduler' : 'orchestrator';
         if ($kind === 'subagent') {
             $payload = $job['payload'] ?? null;
             if (is_string($payload)) {
@@ -565,12 +581,32 @@ class Heartbeat
 
     public function tasksToRun(): array
     {
-        $run = [];
-        $overdue = [];
+        $due = [];
         foreach ($this->db->dueTasks() as $task) {
             if (empty($task['project_id'])) {
                 continue;
             }
+            $due[] = $task;
+        }
+        if ($due !== [] && !$this->localModelRunning()) {
+            if ($this->db->getSetting('model_hold', '0') === '1') {
+                $this->db->setSetting('model_hold', '0');
+            }
+            $this->db->loopWrite(null, null, 'heartbeat', 'process', 'Task waiting · model not loaded');
+            $seen = [];
+            foreach ($due as $task) {
+                $projectId = (int)$task['project_id'];
+                if (isset($seen[$projectId])) {
+                    continue;
+                }
+                $seen[$projectId] = true;
+                $this->db->loopWrite(null, $projectId, 'heartbeat', 'process', 'Task waiting · model not loaded');
+            }
+            return [];
+        }
+        $run = [];
+        $overdue = [];
+        foreach ($due as $task) {
             if ($this->missedRepeat($task)) {
                 $this->skipMissedRepeat($task);
                 continue;
@@ -588,6 +624,24 @@ class Heartbeat
             }
         }
         return $run;
+    }
+
+    private function localModelRunning(): bool
+    {
+        $mode = (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
+        if ($mode === 'cloud') {
+            return true;
+        }
+        $model = $mode === 'cpu_failsafe'
+            ? (string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model'])
+            : (string)$this->db->getSetting('local_model', app_config()['local_model']);
+        $llm = app_services()['llm'];
+        foreach ($llm->runningModels() as $row) {
+            if ($llm->modelMatches((string)($row['name'] ?? ''), trim($model))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function missedRepeat(array $task): bool
@@ -694,5 +748,10 @@ class Heartbeat
             $guard++;
         } while ($base <= $now && $guard < 240);
         return $base > $now ? date('Y-m-d H:i:s', $base) : null;
+    }
+
+    private function taskVoice(): string
+    {
+        return $this->db->parallelWork() ? 'scheduler' : 'orchestrator';
     }
 }

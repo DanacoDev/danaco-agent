@@ -665,6 +665,17 @@ header('X-Danaco: 1');
             <div v-if="mainAgent" class="flow-board">
               <div class="flow">
                 <div class="flow-top">
+                  <article v-if="taskAgent" class="flow-node is-task" :class="['is-' + taskAgent.status, { 'is-picked': logAgent === taskAgent.name }]" @click="pickLogAgent(taskAgent.name)">
+                    <svg class="avatar" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-av-orchestrator"></use></svg>
+                    <div class="flow-copy">
+                      <strong>{{ agentLabel(taskAgent.name) }}</strong>
+                      <p class="flow-status">
+                        <span v-if="agentBusy(taskAgent)" class="spinner"></span>
+                        <span :class="'status-' + taskAgent.status">{{ taskAgent.label }}</span>
+                      </p>
+                      <p class="hint flow-task">{{ agentWork(taskAgent) }}</p>
+                    </div>
+                  </article>
                   <article class="flow-node is-main" :class="['is-' + mainAgent.status, { 'is-picked': logAgent === mainAgent.name }]" @click="pickLogAgent(mainAgent.name)">
                     <svg class="avatar" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-av-orchestrator"></use></svg>
                     <div class="flow-copy">

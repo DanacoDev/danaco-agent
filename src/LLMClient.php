@@ -355,7 +355,7 @@ class LLMClient
         throw $last ?? new LlmException('The model failed.', false);
     }
 
-    public function yesNo(string $prompt, ?callable $shouldStop = null): ?bool
+    public function yesNo(string $prompt, ?callable $shouldStop = null, string $agent = 'orchestrator'): ?bool
     {
         try {
             if ($shouldStop && $shouldStop()) {
@@ -364,7 +364,7 @@ class LLMClient
         } catch (Throwable $e) {
             return null;
         }
-        $text = $this->askYesNo($prompt, $shouldStop);
+        $text = $this->askYesNo($prompt, $shouldStop, $agent);
         if ($text === null) {
             return null;
         }
@@ -557,11 +557,11 @@ class LLMClient
         $hintKind = (string)$this->db->getSetting('recovery_hint', '0');
         if (!$brief && ($hintKind === '1' || $hintKind === 'think')) {
             if ($hintKind === 'think') {
-                $hint = $agent === 'orchestrator'
+                $hint = $this->mainVoice($agent)
                     ? 'The previous reply wrote no answer. Keep this reply short. Do not restate the plan. Split the remaining work into smaller tasks and delegate the next one. One tool call, then stop.'
                     : 'The previous reply wrote no answer. Keep this reply short. Do one small step and call the tool. Then stop.';
             } else {
-                $hint = $agent === 'orchestrator'
+                $hint = $this->mainVoice($agent)
                     ? 'The reply ran out of room while thinking. Keep this reply short. Do not restate the plan. Split the remaining work into smaller tasks and delegate the next one. One tool call, then stop.'
                     : 'The reply ran out of room while thinking. Keep this reply short. Do one small step and call the tool. Then stop.';
             }
@@ -1464,13 +1464,18 @@ class LLMClient
         return (int)($json['size'] ?? 0);
     }
 
-    private function askYesNo(string $prompt, ?callable $shouldStop): ?string
+    private function mainVoice(string $agent): bool
+    {
+        return $agent === 'orchestrator' || $agent === 'scheduler';
+    }
+
+    private function askYesNo(string $prompt, ?callable $shouldStop, string $agent = 'orchestrator'): ?string
     {
         $failsafe = $this->usingFailsafe;
         $mode = $failsafe ? 'cpu_failsafe' : (string)$this->db->getSetting('model_mode', 'cpu_failsafe');
         $messages = [['role' => 'user', 'content' => $prompt]];
         if (!$failsafe && $mode === 'cloud') {
-            return $this->askYesNoCloud($messages, $shouldStop);
+            return $this->askYesNoCloud($messages, $shouldStop, $agent);
         }
         $model = $mode === 'cpu_failsafe'
             ? (string)$this->db->getSetting('cpu_failsafe_model', app_config()['cpu_failsafe_model'])
@@ -1496,8 +1501,8 @@ class LLMClient
                 $ask = 'auto · ' . $this->gpuSkip;
             }
         }
-        $this->db->loop('orchestrator', 'model', 'yesno · ask ' . $ask . ' · ' . $model . ' · ' . $this->loadedSummary());
-        $this->noteMachine('orchestrator');
+        $this->db->loop($agent, 'model', 'yesno · ask ' . $ask . ' · ' . $model . ' · ' . $this->loadedSummary());
+        $this->noteMachine($agent);
         $payload = json_encode([
             'model' => $model,
             'messages' => $this->wireMessages($messages),
@@ -1522,12 +1527,12 @@ class LLMClient
         return $content !== '' ? $content : null;
     }
 
-    private function askYesNoCloud(array $messages, ?callable $shouldStop): ?string
+    private function askYesNoCloud(array $messages, ?callable $shouldStop, string $agent = 'orchestrator'): ?string
     {
         $key = trim((string)$this->db->getSetting('cloud_api_key', ''));
         $model = (string)$this->db->getSetting('cloud_model', app_config()['cloud_model']);
-        $this->db->loop('orchestrator', 'model', 'yesno · ask cloud · ' . $model . ' · ' . $this->loadedSummary());
-        $this->noteMachine('orchestrator');
+        $this->db->loop($agent, 'model', 'yesno · ask cloud · ' . $model . ' · ' . $this->loadedSummary());
+        $this->noteMachine($agent);
         if ($key === '') {
             return null;
         }

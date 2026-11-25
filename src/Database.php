@@ -377,6 +377,7 @@ SQL);
     {
         return [
             'orchestrator' => 'idle',
+            'scheduler' => 'idle',
             'researcher' => 'idle',
             'writer' => 'idle',
             'coder' => 'idle',
@@ -384,6 +385,20 @@ SQL);
             'marketer' => 'idle',
             'consultant' => 'idle',
         ];
+    }
+
+    public function parallelWork(): bool
+    {
+        $mode = (string)$this->getSetting('model_mode', 'cpu_failsafe');
+        if ($mode !== 'local' && $mode !== 'cpu_failsafe') {
+            return false;
+        }
+        $path = app_config()['data_dir'] . '/ollama.env';
+        if (!is_file($path)) {
+            return false;
+        }
+        $text = (string)file_get_contents($path);
+        return (bool)preg_match('/^OLLAMA_NUM_PARALLEL=2$/m', $text);
     }
 
     public function consultantState(): array
@@ -975,6 +990,7 @@ SQL);
     {
         $this->pdo->exec("UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE status = 'running' AND kind != 'task'");
         $this->pdo->exec("UPDATE jobs SET status = 'interrupted', updated_at = datetime('now') WHERE status = 'running' AND kind = 'task'");
+        $this->pdo->exec("UPDATE settings SET value = '0' WHERE key LIKE 'context_compress_lock_%'");
     }
 
     public function releaseImmediateRun(int $taskId): void
@@ -1124,8 +1140,13 @@ SQL);
 
     public function latestJobProject(string $agent): ?int
     {
+        if ($agent === 'scheduler') {
+            $value = $this->pdo->query("SELECT project_id FROM jobs WHERE kind = 'task' ORDER BY id DESC LIMIT 1")->fetchColumn();
+            return $value !== false && $value !== null ? (int)$value : null;
+        }
         if ($agent === 'orchestrator' || $agent === 'consultant') {
-            $value = $this->pdo->query("SELECT project_id FROM jobs WHERE kind IN ('chat', 'task') ORDER BY id DESC LIMIT 1")->fetchColumn();
+            $kinds = $agent === 'orchestrator' && $this->parallelWork() ? "kind = 'chat'" : "kind IN ('chat', 'task')";
+            $value = $this->pdo->query('SELECT project_id FROM jobs WHERE ' . $kinds . ' ORDER BY id DESC LIMIT 1')->fetchColumn();
             return $value !== false && $value !== null ? (int)$value : null;
         }
         $stmt = $this->pdo->query("SELECT project_id, payload FROM jobs WHERE kind = 'subagent' ORDER BY id DESC");
@@ -1369,14 +1390,35 @@ SQL);
             $agent = is_array($payload) ? trim((string)($payload['agent'] ?? '')) : '';
             return $agent !== '' ? $agent : 'subagent';
         }
+        if ($kind === 'task' && $this->parallelWork()) {
+            return 'scheduler';
+        }
         return 'orchestrator';
     }
 
     public function setAgentStatus(string $agent, string $status): void
     {
-        $all = $this->agentStatus();
-        $all[$agent] = $status;
-        $this->setSetting('agent_status', json_encode($all));
+        $own = !$this->pdo->inTransaction();
+        if ($own) {
+            $this->pdo->exec('BEGIN IMMEDIATE');
+        }
+        try {
+            $decoded = json_decode((string)$this->getSetting('agent_status', '{}'), true);
+            if (!is_array($decoded)) {
+                $decoded = [];
+            }
+            $decoded[$agent] = $status;
+            $json = json_encode($decoded);
+            $this->setSetting('agent_status', is_string($json) ? $json : '{}');
+            if ($own) {
+                $this->pdo->exec('COMMIT');
+            }
+        } catch (Throwable $e) {
+            if ($own) {
+                $this->pdo->exec('ROLLBACK');
+            }
+            throw $e;
+        }
     }
 
     public function agentStatus(): array

@@ -2,6 +2,8 @@
 
 class Orchestrator
 {
+    private bool $taskIsolate = false;
+
     public function __construct(
         private AgentRuntime $runtime,
         private SubagentRunner $subagents,
@@ -17,15 +19,18 @@ class Orchestrator
         if ($projectId > 0 && !$project) {
             throw new RuntimeException('Project not found.');
         }
+        $this->taskIsolate = $scheduled && $this->db->parallelWork();
+        $agent = $this->taskIsolate ? 'scheduler' : 'orchestrator';
+        try {
         $this->db->waitContextCompress($projectId, $shouldStop);
         if ($shouldStop && $shouldStop()) {
             throw new ChatStopped('Stopped.');
         }
-        $waitingOnTask = $this->db->taskRunning();
+        $waitingOnTask = !$this->db->parallelWork() && $this->db->taskRunning();
         if ($waitingOnTask) {
             $emit(['type' => 'phase', 'phase' => 'scheduled']);
         }
-        $packed = $this->prepare($projectId, $project, true, $shouldStop, false, $emit);
+        $packed = $this->prepare($projectId, $project, !$this->taskIsolate, $shouldStop, false, $emit);
         if (!empty($packed['updated'])) {
             $this->db->addMessage($projectId, 'notice', ContextWindow::NOTICE, 'orchestrator');
             $emit(['type' => 'notice', 'text' => ContextWindow::NOTICE]);
@@ -33,19 +38,19 @@ class Orchestrator
         $emit(['type' => 'context', 'used' => $packed['used'], 'total' => $packed['total']]);
         $messages = $packed['messages'];
         if (!empty($packed['updated'])) {
-            $this->db->loop('orchestrator', 'context', count($messages) . ' msgs · summary updated', $projectId > 0 ? $projectId : null);
+            $this->db->loop($agent, 'context', count($messages) . ' msgs · summary updated', $projectId > 0 ? $projectId : null);
         }
         if ($this->endsWithCutOff($messages)) {
-            $this->db->loop('orchestrator', 'steer', 'cutoff · carried into this run', $projectId > 0 ? $projectId : null);
+            $this->db->loop($agent, 'steer', 'cutoff · carried into this run', $projectId > 0 ? $projectId : null);
             $messages[] = ['role' => 'user', 'content' => 'Your last tool call was cut off before it finished. Repeat that same tool call and finish it before doing anything else.'];
         }
-        if ($this->db->taskRunning()) {
+        if (!$this->db->parallelWork() && $this->db->taskRunning()) {
             $emit(['type' => 'phase', 'phase' => 'scheduled']);
         } elseif ($waitingOnTask) {
             $emit(['type' => 'phase', 'phase' => '']);
         }
         return $this->runtime->run(
-            'orchestrator',
+            $agent,
             $messages,
             $this->tools($project, $emit, $projectId, $shouldStop, $scheduled),
             $emit,
@@ -57,6 +62,9 @@ class Orchestrator
             fn(array $running): array => $this->betweenTurns($running, $project, $emit, $projectId, $shouldStop),
             fn(array $running): array => $this->repackForFailsafe($running, $project, $emit, $shouldStop)
         );
+        } finally {
+            $this->taskIsolate = false;
+        }
     }
 
     public function contextUsage(int $projectId): array
@@ -125,6 +133,11 @@ class Orchestrator
                 ];
             }
         }
+        if ($this->taskIsolate) {
+            $history = $this->snapshotTaskHistory($history);
+        } elseif ($this->db->parallelWork() && $this->db->taskRunning()) {
+            $history = $this->withoutOpenTask($history);
+        }
         $history = ContextWindow::stripLookups($history);
         $total = $this->contextTotal();
         $pendingKey = 'context_compress_pending_' . max(0, $projectId);
@@ -173,6 +186,16 @@ class Orchestrator
                 'compressed' => false,
                 'updated' => false,
             ];
+        }
+        if ($this->taskIsolate && !empty($split['compressed'])) {
+            $kept = $this->keepDelegateTail($split['dropped'], $split['kept']);
+            if ($this->skills->usedNames($kept) !== $this->skills->usedNames($live)) {
+                $system = $this->systemPrompt($project, $this->skills->usedNames($kept));
+            }
+            $packed = ContextWindow::apply($system, $summary, $kept, $total, 0);
+            $packed['compressed'] = false;
+            $packed['updated'] = false;
+            return $packed;
         }
         if ($split['compressed'] && $writeSummary) {
             $dropped = $split['dropped'];
@@ -242,7 +265,7 @@ class Orchestrator
     {
         $before = count($messages);
         $pendingKey = 'context_compress_pending_' . max(0, $projectId);
-        $pending = $this->db->getSetting($pendingKey, '0') === '1';
+        $pending = !$this->taskIsolate && $this->db->getSetting($pendingKey, '0') === '1';
         $last = $messages[count($messages) - 1] ?? null;
         if (is_array($last) && $this->toolWasCutOff((string)($last['content'] ?? ''))) {
             return $this->refreshSystem($messages, $project);
@@ -278,6 +301,16 @@ class Orchestrator
             $bare = $this->systemPrompt($project, $this->skills->usedNames($kept));
             $system = $this->withSummaryNotice($bare, $previous);
             $messages[0]['content'] = $system;
+        }
+        if ($this->taskIsolate) {
+            $kept = $this->keepDelegateTail($split['dropped'], $kept);
+            $packed = $this->packKept($system, $kept);
+            $emit(['type' => 'context', 'used' => ContextWindow::measure($system, $kept), 'total' => $total]);
+            $after = count($packed);
+            if ($after !== $before) {
+                $this->db->loop('scheduler', 'context', $before . ' → ' . $after . ' msgs', $projectId > 0 ? $projectId : null);
+            }
+            return $packed;
         }
         $folder = is_array($project) ? (string)$project['folder_name'] : null;
         $packed = $this->finishCompression($projectId, $folder, $bare, $split['dropped'], $kept, $this->memory->readContextSummary($folder), $total, $shouldStop, $emit);
@@ -315,7 +348,17 @@ class Orchestrator
         $kept = $split['kept'];
         if ($this->skills->usedNames($kept) !== $this->skills->usedNames($rest)) {
             $bare = $this->systemPrompt($project, $this->skills->usedNames($kept));
-            $messages[0]['content'] = $this->withSummaryNotice($bare, $previous);
+            $system = $this->withSummaryNotice($bare, $previous);
+            $messages[0]['content'] = $system;
+        }
+        if ($this->taskIsolate) {
+            $packed = $this->packKept($messages[0]['content'], $kept);
+            $emit(['type' => 'context', 'used' => ContextWindow::measure((string)$messages[0]['content'], $kept), 'total' => $total]);
+            $after = count($packed);
+            if ($after !== $before) {
+                $this->db->loop('scheduler', 'context', 'failsafe · ' . $before . ' → ' . $after . ' msgs');
+            }
+            return $packed;
         }
         $folder = is_array($project) ? (string)$project['folder_name'] : null;
         $projectId = is_array($project) ? (int)($project['id'] ?? 0) : 0;
@@ -774,6 +817,112 @@ TXT;
             return;
         }
         $this->db->setSetting('reread_desc_' . $projectId, '0');
+    }
+
+    private function keepDelegateTail(array $dropped, array $kept): array
+    {
+        if ($dropped === [] || $kept === []) {
+            return $kept;
+        }
+        $tailId = (int)($dropped[count($dropped) - 1]['id'] ?? 0);
+        $head = $kept[0];
+        $headText = ltrim((string)($head['content'] ?? ''));
+        if ($tailId > 0 && $tailId === (int)($head['id'] ?? 0) && str_starts_with($headText, 'TOOL RESULT delegate:')) {
+            array_shift($kept);
+        }
+        return $kept;
+    }
+
+    private function packKept(string $system, array $kept): array
+    {
+        $messages = [['role' => 'system', 'content' => $system]];
+        foreach ($kept as $message) {
+            if (!is_array($message)) {
+                continue;
+            }
+            $row = [
+                'role' => (string)($message['role'] ?? 'user'),
+                'content' => (string)($message['content'] ?? ''),
+            ];
+            $id = (int)($message['id'] ?? 0);
+            if ($id > 0) {
+                $row['id'] = $id;
+            }
+            $messages[] = $row;
+        }
+        return $messages;
+    }
+
+    private function snapshotTaskHistory(array $history): array
+    {
+        $cut = 0;
+        foreach ($history as $message) {
+            if (($message['role'] ?? '') !== 'user') {
+                continue;
+            }
+            $text = ltrim((string)($message['content'] ?? ''));
+            if (!str_starts_with($text, 'Scheduled task:')) {
+                continue;
+            }
+            $id = (int)($message['id'] ?? 0);
+            if ($id > $cut) {
+                $cut = $id;
+            }
+        }
+        if ($cut <= 0) {
+            return $history;
+        }
+        $kept = [];
+        foreach ($history as $message) {
+            if ((int)($message['id'] ?? 0) > $cut) {
+                continue;
+            }
+            $kept[] = $message;
+        }
+        return $kept;
+    }
+
+    private function withoutOpenTask(array $history): array
+    {
+        $open = [];
+        $count = count($history);
+        for ($i = 0; $i < $count; $i++) {
+            $message = $history[$i];
+            if (($message['role'] ?? '') !== 'user') {
+                continue;
+            }
+            $text = ltrim((string)($message['content'] ?? ''));
+            if (!str_starts_with($text, 'Scheduled task:')) {
+                continue;
+            }
+            $id = (int)($message['id'] ?? 0);
+            $answered = false;
+            for ($j = $i + 1; $j < $count; $j++) {
+                if ((int)($history[$j]['id'] ?? 0) <= $id) {
+                    continue;
+                }
+                if (($history[$j]['role'] ?? '') === 'assistant') {
+                    $answered = true;
+                    break;
+                }
+            }
+            if (!$answered && $id > 0) {
+                $open[$id] = true;
+            }
+        }
+        if ($open === []) {
+            return $history;
+        }
+        $kept = [];
+        foreach ($history as $message) {
+            $id = (int)($message['id'] ?? 0);
+            $text = ltrim((string)($message['content'] ?? ''));
+            if ($id > 0 && isset($open[$id]) && ($message['role'] ?? '') === 'user' && str_starts_with($text, 'Scheduled task:')) {
+                continue;
+            }
+            $kept[] = $message;
+        }
+        return $kept;
     }
 
     private function stamped(array $row): string

@@ -194,6 +194,7 @@
           stopBusy: false,
           stopError: '',
           runStopping: false,
+          parallelWork: false,
           heartbeatPaused: false,
           startBusy: false,
           toolPending: false,
@@ -457,11 +458,15 @@
         mainAgent() {
           return this.agents.find((agent) => agent.name === 'orchestrator') || null;
         },
+        taskAgent() {
+          if (!this.parallelWork) return null;
+          return this.agents.find((agent) => agent.name === 'scheduler') || null;
+        },
         consultant() {
           return this.agents.find((agent) => agent.name === 'consultant') || null;
         },
         subAgents() {
-          return this.agents.filter((agent) => agent.name !== 'orchestrator' && agent.name !== 'consultant');
+          return this.agents.filter((agent) => agent.name !== 'orchestrator' && agent.name !== 'consultant' && agent.name !== 'scheduler');
         },
         flowInset() {
           const count = Math.max(this.subAgents.length, 1);
@@ -488,12 +493,12 @@
           const rows = [];
           const seen = {};
           this.agents.forEach((agent) => {
-            if (!agent || agent.name === 'orchestrator' || !this.agentBusy(agent)) return;
+            if (!agent || agent.name === 'orchestrator' || agent.name === 'scheduler' || !this.agentBusy(agent)) return;
             seen[agent.name] = true;
             rows.push(agent);
           });
           const hint = this.delegation;
-          if (hint && hint.agent && hint.agent !== 'orchestrator' && !seen[hint.agent]) {
+          if (hint && hint.agent && hint.agent !== 'orchestrator' && hint.agent !== 'scheduler' && !seen[hint.agent]) {
             rows.push({
               name: hint.agent,
               status: 'thinking',
@@ -741,6 +746,7 @@
           this.applySettings(setup);
           this.skills = skills.skills;
           this.agents = status.agents;
+          this.parallelWork = !!status.parallel;
           await this.refreshModelLoad();
           await this.refreshTab();
           this.startPoll();
@@ -1182,13 +1188,14 @@
         },
         agentLabel(name, markCpu) {
           let label = '';
-          if (name === 'orchestrator' || name === 'assistant') label = 'Main agent';
+          if (name === 'scheduler') label = 'Main agent (tasks)';
+          else if (name === 'orchestrator' || name === 'assistant') label = 'Main agent';
           else {
             const text = String(name || '');
             if (!text) return '';
             label = text.charAt(0).toUpperCase() + text.slice(1);
           }
-          if (markCpu && (name === 'orchestrator' || name === 'assistant')) return label + ' (CPU)';
+          if (markCpu && (name === 'orchestrator' || name === 'assistant' || name === 'scheduler')) return label + ' (CPU)';
           return label;
         },
         queueChatSearch(scrollFirst) {
@@ -2015,7 +2022,7 @@
                 stuck: 'Stuck'
               })[data.status] || data.status;
             }
-            if (data.status === 'thinking') {
+            if (data.agent !== 'scheduler' && data.status === 'thinking') {
               this.answerStarted = false;
               this.toolPending = false;
             }
@@ -3215,6 +3222,7 @@
           params.set('project_id', String(this.projectId || 0));
           const data = await this.api('/api/agents/status?' + params.toString(), { quiet: !!quiet });
           this.agents = data.agents;
+          this.parallelWork = !!data.parallel;
           this.runStopping = !!data.stopping;
           this.heartbeatPaused = !!data.heartbeat_paused;
           this.syncDelegation();
@@ -3931,12 +3939,13 @@
       methods: {
         label(name) {
           let label = 'Agent';
-          if (name === 'orchestrator') label = 'Main agent';
+          if (name === 'scheduler') label = 'Main agent (tasks)';
+          else if (name === 'orchestrator') label = 'Main agent';
           else {
             const text = String(name || '');
             if (text) label = text.charAt(0).toUpperCase() + text.slice(1);
           }
-          if (this.cpu && name === 'orchestrator') return label + ' (CPU)';
+          if (this.cpu && (name === 'orchestrator' || name === 'scheduler')) return label + ' (CPU)';
           return label;
         },
         body(tool) {

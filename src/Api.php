@@ -1563,6 +1563,7 @@ class Api
         $projectId = (int)($_GET['project_id'] ?? 0);
         $this->json([
             'agents' => $agents,
+            'parallel' => $this->db->parallelWork(),
             'stopping' => $this->db->runStillStopping($projectId),
             'heartbeat_paused' => $projectId > 0 && $this->db->heartbeatPaused($projectId),
         ]);
@@ -3781,10 +3782,9 @@ class Api
             return ['ready' => false, 'percent' => 0, 'model' => $model, 'error' => '', 'scratch' => false];
         }
         $warm = $this->modelWarm($model);
-        $busy = $this->db->modelInUse();
-        // /api/ps timed out, or the model dropped while a reply is already running.
+        // /api/ps timed out while a reply is already running.
         // A second load restarts the runner and cuts that reply off.
-        if ($busy || ($running === null && $warm)) {
+        if ($running === null && $this->db->modelInUse()) {
             return ['ready' => true, 'percent' => 100, 'model' => $model, 'error' => '', 'scratch' => false];
         }
         $state = $this->ensureModelLoading($model);

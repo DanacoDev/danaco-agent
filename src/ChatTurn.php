@@ -11,7 +11,7 @@ class ChatTurn
         $this->streamed = '';
         $this->detail = ['thinking' => [], 'tools' => []];
         $this->notices = [];
-        $wrapped = function (array $event) use ($emit): void {
+        $wrapped = function (array $event) use ($emit, $scheduled): void {
             $type = (string)($event['type'] ?? '');
             if ($type === 'task_note') {
                 $text = trim((string)($event['text'] ?? ''));
@@ -21,7 +21,8 @@ class ChatTurn
                 return;
             }
             $agent = (string)($event['agent'] ?? '');
-            if ($agent !== '' && $agent !== 'orchestrator' && in_array($type, ['token', 'thinking', 'tool_call', 'tool_result', 'activity', 'trim', 'thinking_trim'], true)) {
+            $voice = $agent === '' || $agent === 'orchestrator' || ($scheduled && $agent === 'scheduler');
+            if (!$voice && in_array($type, ['token', 'thinking', 'tool_call', 'tool_result', 'activity', 'trim', 'thinking_trim'], true)) {
                 return;
             }
             if ($type === 'token') {

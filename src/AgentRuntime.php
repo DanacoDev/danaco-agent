@@ -909,7 +909,7 @@ class AgentRuntime
             if ($wrongTool) {
                 $cutOff = false;
             }
-            if ($agent === 'orchestrator' && !$tail['tools'] && !$cutOff && !$this->llm->incomplete) {
+            if ($this->mainVoice($agent) && !$tail['tools'] && !$cutOff && !$this->llm->incomplete) {
                 $inferred = $this->proseDelegation($turnText);
                 if ($inferred !== null) {
                     $tail['tools'] = [$inferred];
@@ -997,7 +997,7 @@ class AgentRuntime
                         $prompt = $this->claimedWriteRetryPrompt($turnText);
                     }
                 } elseif ($ranOut) {
-                    $prompt = $agent === 'orchestrator'
+                    $prompt = $this->mainVoice($agent)
                         ? 'That reply used the whole output limit while thinking and wrote nothing. Keep this reply short. Do not restate the plan. Split the remaining work into smaller tasks and delegate the next one. One tool call, then stop.'
                         : 'That reply used the whole output limit while thinking and wrote nothing. Keep this reply short. Do one small step and call the tool. Then stop.';
                     $this->llm->keepBrief = true;
@@ -1068,7 +1068,7 @@ class AgentRuntime
                     }
                     continue;
                 }
-                if ($agent === 'orchestrator' && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop)) {
+                if ($this->mainVoice($agent) && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop, $agent)) {
                     if ($finishChecks >= 2) {
                         $this->db->loop($agent, 'steer', 'finish-check · still going', $projectId);
                         $finishChecks = 1;
@@ -1116,7 +1116,7 @@ class AgentRuntime
                     $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
                     return 'Saved ' . $writePath . '.';
                 }
-                if ($agent === 'orchestrator' && ($tool['name'] ?? '') === 'delegate') {
+                if ($this->mainVoice($agent) && ($tool['name'] ?? '') === 'delegate') {
                     if ($delegated) {
                         $skipped = 'Only one subagent can run at a time. This delegation was not started. Wait for the current result, then delegate the next task.';
                         $this->db->loop($agent, 'tool', 'delegate skipped · one at a time', $projectId);
@@ -1192,7 +1192,7 @@ class AgentRuntime
 
     private function kanbanFollowsDelegate(string $agent, string $tool, string $result): bool
     {
-        if ($agent !== 'orchestrator' || $tool !== 'delegate') {
+        if (!$this->mainVoice($agent) || $tool !== 'delegate') {
             return false;
         }
         foreach ([
@@ -1540,21 +1540,26 @@ class AgentRuntime
         return (bool)preg_match('/\b(?:' . $intent . ')\b(?!\s+not\b)[^.\n]{0,160}\b(?:' . $verb . ')\b(?!\s+you\b)/i', $text);
     }
 
-    private function finishCheckSaysContinue(array $messages, string $reply, bool $scheduled, ?callable $shouldStop): bool
+    private function mainVoice(string $agent): bool
+    {
+        return $agent === 'orchestrator' || $agent === 'scheduler';
+    }
+
+    private function finishCheckSaysContinue(array $messages, string $reply, bool $scheduled, ?callable $shouldStop, string $agent = 'orchestrator'): bool
     {
         if ($shouldStop && $shouldStop()) {
             throw new ChatStopped('Stopped.');
         }
         $prompt = $this->finishCheckPrompt($messages, $reply, $scheduled);
-        $this->db->loop('orchestrator', 'model', 'finish-check · ' . strlen($prompt) . ' chars');
-        $verdict = $this->llm->yesNo($prompt, $shouldStop);
+        $this->db->loop($agent, 'model', 'finish-check · ' . strlen($prompt) . ' chars');
+        $verdict = $this->llm->yesNo($prompt, $shouldStop, $agent);
         if ($shouldStop && $shouldStop()) {
             throw new ChatStopped('Stopped.');
         }
         if ($verdict === null) {
-            $this->db->loop('orchestrator', 'process', 'finish-check skipped');
+            $this->db->loop($agent, 'process', 'finish-check skipped');
         } else {
-            $this->db->loop('orchestrator', 'process', $verdict ? 'finish-check done' : 'finish-check not done');
+            $this->db->loop($agent, 'process', $verdict ? 'finish-check done' : 'finish-check not done');
         }
         return $verdict === false;
     }
