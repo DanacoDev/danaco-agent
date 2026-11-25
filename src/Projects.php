@@ -92,6 +92,30 @@ class Projects
         return self::wikiRelative($folder, $name);
     }
 
+    public static function wikiSavedLine(array $args, string $saved): string
+    {
+        $line = 'Updated ' . $saved . '.';
+        $asked = '';
+        foreach (['name', 'path', 'file', 'filepath'] as $key) {
+            $value = trim((string)($args[$key] ?? ''));
+            if ($value !== '') {
+                $asked = str_replace('\\', '/', $value);
+                break;
+            }
+        }
+        $asked = ltrim($asked, '/');
+        if ($asked === '' || $asked === $saved) {
+            return $line;
+        }
+        $savedLeaf = basename($saved);
+        $askedLeaf = basename($asked);
+        $flat = ($asked === $askedLeaf || $asked === 'wiki/' . $askedLeaf) && strcasecmp($askedLeaf, $savedLeaf) === 0;
+        if ($flat && $askedLeaf === $savedLeaf) {
+            return $line;
+        }
+        return $line . ' You asked for ' . $asked . '. That path was not used. This file is ' . $saved . '. Use that path from now on. Do not record the old path in a task or a later read.';
+    }
+
     private static function descBody(string $name, string $description, string $goals, string $limitations, string $role): string
     {
         $sections = [

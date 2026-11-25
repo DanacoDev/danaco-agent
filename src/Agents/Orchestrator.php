@@ -1387,7 +1387,7 @@ TXT;
                         $content = rtrim($existing) . "\n\n" . $content;
                     }
                     $written = $safety->writeFile($folder, $relative, $content);
-                    return 'Updated ' . $written['path'];
+                    return Projects::wikiSavedLine($args, $written['path']);
                 }
                 if ($action === 'reindex') {
                     return $this->memory->update();
@@ -1433,7 +1433,7 @@ TXT;
                     $content = rtrim($existing) . "\n\n" . $content;
                 }
                 $written = $safety->writeFile($folder, $relative, $content);
-                return 'Updated ' . $written['path'];
+                return Projects::wikiSavedLine($args, $written['path']);
             },
             'wiki_reindex' => function (): string {
                 return $this->memory->update();

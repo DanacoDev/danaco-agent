@@ -1025,18 +1025,26 @@ class SafetyInterceptor
     {
         $hints = [];
         $name = basename(str_replace('\\', '/', $relativePath));
-        if ($this->isMarkdown($relativePath) && !str_starts_with($relativePath, 'wiki/')) {
-            $wiki = 'wiki/' . $name;
-            if (preg_match('/^wiki\/[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md$/', $wiki)) {
-                try {
-                    $exists = $this->fileExists($projectFolder, $wiki);
-                } catch (Throwable $e) {
-                    $exists = false;
-                }
-                if ($exists) {
-                    $hints[] = 'That markdown file is ' . $wiki . '. Read that file. Do not write a new copy.';
-                }
+        $wiki = '';
+        if ($this->isMarkdown($relativePath)) {
+            $candidate = 'wiki/' . $name;
+            if (preg_match('/^wiki\/[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md$/', $candidate)) {
+                $wiki = $candidate;
             }
+        }
+        if ($wiki !== '' && $wiki !== $relativePath) {
+            try {
+                $exists = $this->fileExists($projectFolder, $wiki);
+            } catch (Throwable $e) {
+                $exists = false;
+            }
+            if ($exists) {
+                return 'Path not found. That markdown file is ' . $wiki . '. Read that file. Do not restore a backup and do not write a new copy.';
+            }
+        }
+        $wanted = [$relativePath];
+        if ($wiki !== '' && $wiki !== $relativePath) {
+            $wanted[] = $wiki;
         }
         $matches = [];
         foreach (array_merge($this->listBackups(), $this->listTrash()) as $item) {
@@ -1049,8 +1057,7 @@ class SafetyInterceptor
                 continue;
             }
             $itemPath = str_replace('\\', '/', (string)($item['relative_path'] ?? ''));
-            $itemName = basename($itemPath);
-            if ($itemPath !== $relativePath && $itemName !== $name) {
+            if (!in_array($itemPath, $wanted, true)) {
                 continue;
             }
             $matches[] = $item;
@@ -1061,7 +1068,9 @@ class SafetyInterceptor
         foreach (array_slice($matches, 0, 3) as $item) {
             $kind = (string)$item['kind'];
             $stored = (string)$item['stored_as'];
-            $hints[] = 'A ' . $kind . ' copy is stored_as ' . $stored . '. Call restore_file with kind ' . $kind . ' and stored_as ' . $stored . '.';
+            $itemPath = str_replace('\\', '/', (string)($item['relative_path'] ?? ''));
+            $where = $itemPath !== '' && $itemPath !== $relativePath ? ' It restores ' . $itemPath . '.' : '';
+            $hints[] = 'A ' . $kind . ' copy is stored_as ' . $stored . '. Call restore_file with kind ' . $kind . ' and stored_as ' . $stored . '.' . $where;
         }
         if ($hints === []) {
             return 'Path not found.';

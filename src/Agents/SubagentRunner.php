@@ -744,7 +744,7 @@ TXT;
                     $content = rtrim($existing) . "\n\n" . $content;
                 }
                 $written = $this->safety->writeFile($projectFolder, $relative, $content);
-                return 'Updated ' . $written['path'];
+                return Projects::wikiSavedLine($args, $written['path']);
             }
             return 'wiki_memory needs action search or write here. The main agent also uses read and reindex.';
         };
