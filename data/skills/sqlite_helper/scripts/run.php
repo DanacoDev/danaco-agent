@@ -24,6 +24,15 @@ if (!is_array($args)) {
 $root = realpath(getcwd() ?: '.');
 $relativeDir = trim((string)($args['db_dir'] ?? ''));
 $database = str_replace('\\', '/', trim((string)($args['database'] ?? '')));
+if ($database === '') {
+    foreach (['db', 'filename', 'file', 'path', 'filepath', 'db_path', 'database_path', 'database_file', 'database_name'] as $alias) {
+        $candidate = str_replace('\\', '/', trim((string)($args[$alias] ?? '')));
+        if ($candidate !== '' && preg_match('/(?:^|\/)[A-Za-z0-9][A-Za-z0-9_.-]*\.(?:db|sqlite|sqlite3)$/', $candidate)) {
+            $database = $candidate;
+            break;
+        }
+    }
+}
 $action = strtolower(trim((string)($args['action'] ?? '')));
 if ($action === '') {
     $action = strtolower(trim((string)($args['command'] ?? '')));
@@ -55,7 +64,9 @@ if ($action === '' || $action === 'create') {
     $action = $hasDefinition ? 'ensure' : 'init';
 }
 if ($database === '') {
-    echo json_encode(['status' => 'error', 'action' => $action, 'message' => 'Pass database as link_database.db or database/link_database.db. The helper is not locked to one file. Do not use sqlite3.']);
+    $keys = array_keys($args);
+    $listed = $keys === [] ? 'none' : implode(', ', array_map('strval', $keys));
+    echo json_encode(['status' => 'error', 'action' => $action, 'message' => 'Missing database filename. Set database to the .db, .sqlite, or .sqlite3 file, or to database/that-file.db. This call sent keys: ' . $listed . '. Do not use sqlite3.']);
     exit(1);
 }
 

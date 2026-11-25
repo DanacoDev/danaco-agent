@@ -1780,7 +1780,9 @@ class AgentRuntime
         $text = preg_replace('/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*?<\/(?:think|thinking|reasoning|thought)>/i', '', $text) ?? $text;
         if (preg_match_all('/<\/(?:think|thinking|reasoning|thought)>/i', $text, $matches, PREG_OFFSET_CAPTURE) && $matches[0] !== []) {
             $last = $matches[0][count($matches[0]) - 1];
-            $text = substr($text, $last[1] + strlen($last[0]));
+            $end = $last[1] + strlen($last[0]);
+            $after = substr($text, $end);
+            $text = trim($after) !== '' ? $after : substr($text, 0, $last[1]);
         }
         $text = preg_replace('/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*$/i', '', $text) ?? $text;
         $text = preg_replace('/```[^\n]*\n\s*```/', '', $text) ?? $text;

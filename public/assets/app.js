@@ -64,10 +64,14 @@
     let text = String(src || '');
     text = text.replace(/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*?<\/(?:think|thinking|reasoning|thought)>/gi, '');
     const closer = /<\/(?:think|thinking|reasoning|thought)>/gi;
-    let end = -1;
+    let last = null;
     let match;
-    while ((match = closer.exec(text)) !== null) end = match.index + match[0].length;
-    if (end >= 0) text = text.slice(end);
+    while ((match = closer.exec(text)) !== null) last = match;
+    if (last) {
+      const after = text.slice(last.index + last[0].length);
+      const before = text.slice(0, last.index);
+      text = after.trim() ? after : before;
+    }
     text = text.replace(/<(?:think|thinking|reasoning|thought)\b[^>]*>[\s\S]*$/i, '');
     return text;
   }
@@ -199,6 +203,8 @@
           startBusy: false,
           toolPending: false,
           streamEnded: false,
+          unsavedReply: '',
+          unsavedDetail: null,
           steerText: '',
           slowTimer: null,
           slowReply: false,
@@ -1325,24 +1331,32 @@
             if (index >= 0) fresh.splice(index, 1);
             else this.messages.push(msg);
           });
+          const draft = this.openDraft(incoming);
+          const serverReply = draft ? String(draft.content || '') : '';
           if (finished) {
             this.replyId = null;
           } else {
-            const draft = this.openDraft(incoming);
             const local = kept[kept.length - 1] || null;
             if (draft && (this.sending || local)) {
               if (local) {
-                draft.content = local.content || draft.content;
-                if (local.detail) draft.detail = local.detail;
+                const localText = String(local.content || '');
+                const savedText = String(draft.content || '');
+                if (localText.length > savedText.length) draft.content = localText;
+                const localThinking = (local.detail && local.detail.thinking) || [];
+                const localTools = (local.detail && local.detail.tools) || [];
+                if ((localThinking.length || localTools.length) && (localText.length > savedText.length || !draft.detail)) {
+                  draft.detail = local.detail;
+                }
                 draft.agent_name = local.agent_name || draft.agent_name;
               }
               this.replyId = draft.id;
-              if (this.sending) this.holdReply();
+              if (this.sending && String(this.live || '').length > String(draft.content || '').length) this.holdReply();
             } else if (local) {
               kept.forEach((msg) => this.messages.push(msg));
               if (this.sending) this.replyId = local.id;
             }
           }
+          this.applyUnsavedReply(serverReply);
           if (this.messages.some((msg) => this.scheduledRaw(msg))) await this.reloadTasks();
           if (data.context) this.context = { used: Number(data.context.used) || 0, total: Number(data.context.total) || 0 };
           let parked = '';
@@ -1527,6 +1541,8 @@
           this.userStop = false;
           this.toolPending = false;
           this.streamEnded = false;
+          this.unsavedReply = '';
+          this.unsavedDetail = null;
           this.live = '';
           this.liveDetail = { thinking: [], tools: [] };
           this.replyId = null;
@@ -1578,14 +1594,16 @@
               aborted = true;
               if ((this.projectId || 0) === chatProject) this.flushLive();
             } else if (lost && (this.projectId || 0) === chatProject) {
+              const pinned = this.replyId ? this.messages.find((msg) => msg.id === this.replyId) : null;
+              const pinnedText = pinned ? String(pinned.content || '') : '';
+              const liveText = String(this.live || '');
+              const localText = liveText.length >= pinnedText.length ? liveText : pinnedText;
+              const localDetail = pinned && pinned.detail ? pinned.detail : {
+                thinking: (this.liveDetail.thinking || []).slice(),
+                tools: (this.liveDetail.tools || []).slice()
+              };
               this.flushLive();
-              this.messages.push({
-                id: 'fail-' + Date.now(),
-                role: 'assistant',
-                agent_name: 'orchestrator',
-                content: 'The connection dropped before the reply finished.',
-                failed: 1
-              });
+              await this.keepDroppedReply(localText, localDetail);
             } else if ((this.projectId || 0) === chatProject) {
               const text = error.message || 'The request failed.';
               if (/still loading/i.test(text)) {
@@ -1879,11 +1897,80 @@
           }
           if (this.chatRun === runId && buf.trim()) this.applySse(buf);
         },
-        holdReply() {
+        openAssistant() {
+          for (let i = this.messages.length - 1; i >= 0; i--) {
+            const msg = this.messages[i];
+            if (msg.role === 'user') return null;
+            if (msg.role === 'assistant' && !msg.failed) return msg;
+          }
+          return null;
+        },
+        applyUnsavedReply(serverText) {
+          const local = String(this.unsavedReply || '');
+          if (!local.trim()) {
+            this.unsavedReply = '';
+            this.unsavedDetail = null;
+            return;
+          }
+          const server = String(serverText || '');
+          if (server.length >= local.length) {
+            this.unsavedReply = '';
+            this.unsavedDetail = null;
+            return;
+          }
+          const draft = this.openAssistant();
+          const detail = this.unsavedDetail;
+          if (draft) {
+            if (String(draft.content || '').length < local.length) draft.content = local;
+            if (detail && ((detail.thinking && detail.thinking.length) || (detail.tools && detail.tools.length))) draft.detail = detail;
+            return;
+          }
+          if (this.messages.some((msg) => msg.role === 'assistant' && String(msg.content || '') === local)) return;
+          this.messages.push({
+            id: 'live-' + Date.now(),
+            role: 'assistant',
+            agent_name: 'orchestrator',
+            content: local,
+            detail: detail || { thinking: [], tools: [] }
+          });
+        },
+        async keepDroppedReply(localText, localDetail) {
+          const local = String(localText || '');
+          if (local.trim()) {
+            this.unsavedReply = local;
+            this.unsavedDetail = localDetail || null;
+          }
+          try {
+            await this.reloadMessages();
+          } catch (error) {
+            this.applyUnsavedReply('');
+          }
+          let last = null;
+          for (let i = this.messages.length - 1; i >= 0; i--) {
+            const msg = this.messages[i];
+            if (msg.role === 'user') break;
+            if (msg.role === 'assistant') {
+              last = msg;
+              break;
+            }
+          }
+          const body = String((last && last.content) || '').trim();
+          if (body && !/^the connection dropped before the reply finished\.?$/i.test(body)) return;
+          if (last && last.failed && /connection dropped/i.test(body)) return;
+          this.messages.push({
+            id: 'fail-' + Date.now(),
+            role: 'assistant',
+            agent_name: 'orchestrator',
+            content: 'The connection dropped before the reply finished.',
+            failed: 1
+          });
+        },
+        holdReply(allowClear) {
           const live = this.live || '';
           const thinking = this.liveDetail.thinking || [];
           const tools = this.liveDetail.tools || [];
           if (!live && !thinking.length && !tools.length) {
+            if (!allowClear) return;
             const existing = this.replyId ? this.messages.find((msg) => msg.id === this.replyId) : null;
             if (existing) {
               existing.content = '';
@@ -1951,7 +2038,7 @@
             if ((!data.agent || data.agent === 'orchestrator') && cut && this.live.endsWith(cut)) {
               this.live = this.live.slice(0, -cut.length);
             }
-            this.holdReply();
+            this.holdReply(true);
             this.scrollChat();
           } else if (event === 'thinking') {
             this.slowReply = false;
@@ -3713,6 +3800,13 @@
           try {
             const load = await this.api('/api/model/load', { quiet: !!quiet });
             if (this.selectHold) return;
+            // #region agent log
+            const loadKey = JSON.stringify({ ready: load && load.ready, error: load && load.error, scratch: load && load.scratch, sending: this.sending });
+            if (loadKey !== this._loadDebugKey && load && (load.error || load.ready === false || (this._loadDebugKey && this._loadDebugKey.indexOf('"error":""') === -1))) {
+              this._loadDebugKey = loadKey;
+              fetch('http://127.0.0.1:7804/ingest/b5b3451d-fa02-4c20-810f-d4e9038db205',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f1de3b'},body:JSON.stringify({sessionId:'f1de3b',hypothesisId:'E',location:'app.js:refreshModelLoad',message:'loader-state',data:{ready:load.ready,error:load.error||'',scratch:load.scratch,percent:load.percent,model:load.model,sending:this.sending},timestamp:Date.now()})}).catch(()=>{});
+            }
+            // #endregion
             this.modelLoad = load;
             if (this.modelLoad && typeof this.modelLoad.cpu === 'boolean' && this.settings && this.settings.model_mode !== 'cpu_failsafe') {
               this.settings.cpu_fallback = this.modelLoad.cpu ? '1' : '0';
@@ -3723,6 +3817,9 @@
               this.clearSlowTimer();
             }
           } catch (error) {
+            // #region agent log
+            fetch('http://127.0.0.1:7804/ingest/b5b3451d-fa02-4c20-810f-d4e9038db205',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'f1de3b'},body:JSON.stringify({sessionId:'f1de3b',hypothesisId:'E',location:'app.js:refreshModelLoad',message:'load-request-failed',data:{error:String(error && error.message || error),sending:this.sending},timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
             if (this.selectHold) return;
             if (this.modelLoad && this.modelLoad.ready === true) return;
             this.modelLoad = { ready: false, percent: this.modelLoad ? this.modelLoad.percent : 0, model: this.modelLoad ? this.modelLoad.model : '', error: error.message, scratch: true };

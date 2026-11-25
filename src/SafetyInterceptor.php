@@ -144,7 +144,14 @@ class SafetyInterceptor
             return $this->readText($target, $max);
         }
         $relativePath = $this->descriptionPath($projectFolder, $this->projectPath($projectFolder, $relativePath));
-        $target = $this->resolveInside($this->projectRoot($projectFolder), $relativePath, false);
+        try {
+            $target = $this->resolveInside($this->projectRoot($projectFolder), $relativePath, false);
+        } catch (RuntimeException $e) {
+            if ($e->getMessage() !== 'Path not found.') {
+                throw $e;
+            }
+            throw new RuntimeException($this->missingFileMessage($projectFolder, $relativePath));
+        }
         if (!is_file($target)) {
             throw new RuntimeException('File not found.');
         }
@@ -550,7 +557,28 @@ class SafetyInterceptor
         if (!is_file($file)) {
             throw new RuntimeException('File not found.');
         }
-        return $this->readText($file, $max);
+        try {
+            return $this->readText($file, $max);
+        } catch (RuntimeException $e) {
+            if ($e->getMessage() !== 'This file is not text.') {
+                throw $e;
+            }
+        }
+        $original = $storedAs;
+        $metaPath = $file . '.json';
+        if (is_file($metaPath)) {
+            $meta = json_decode((string)file_get_contents($metaPath), true);
+            if (is_array($meta)) {
+                $path = trim((string)($meta['original'] ?? ''));
+                if ($path === '') {
+                    $path = trim((string)($meta['relative_path'] ?? ''));
+                }
+                if ($path !== '') {
+                    $original = $path;
+                }
+            }
+        }
+        return 'This file is not text. It is the saved copy of ' . $original . '. Call restore_file with kind ' . $kind . ' and stored_as ' . $storedAs . ' to put that copy back.';
     }
 
     public function vaultListing(): string
@@ -683,6 +711,10 @@ class SafetyInterceptor
             @unlink($metaPath);
             $this->reindexWiki();
             return ['restored' => $relative, 'project_folder' => $folder, 'kind' => $kind];
+        }
+        $relative = $this->cleanRelative((string)$meta['relative_path']);
+        if ($this->isDatabaseFile($relative)) {
+            return $this->restoreDatabase($meta, $file, $metaPath, $kind, $relative);
         }
         $content = (string)file_get_contents($file);
         $written = $this->writeFile((string)$meta['project_folder'], (string)$meta['relative_path'], $content);
@@ -971,6 +1003,10 @@ class SafetyInterceptor
             return;
         }
         if (!preg_match('/^wiki\/[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md$/', $relativePath)) {
+            $leaf = basename(str_replace('\\', '/', $relativePath));
+            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md$/', $leaf)) {
+                throw new RuntimeException('Markdown files belong in wiki/' . $leaf . '. Read that file if it already exists. Do not write a new copy.');
+            }
             throw new RuntimeException('Markdown files belong in the project wiki folder.');
         }
     }
@@ -978,6 +1014,59 @@ class SafetyInterceptor
     private function isMarkdown(string $relativePath): bool
     {
         return str_ends_with(strtolower(basename(str_replace('\\', '/', $relativePath))), '.md');
+    }
+
+    private function isDatabaseFile(string $relativePath): bool
+    {
+        return (bool)preg_match('/\.(?:db|sqlite|sqlite3)$/i', basename(str_replace('\\', '/', $relativePath)));
+    }
+
+    private function missingFileMessage(string $projectFolder, string $relativePath): string
+    {
+        $hints = [];
+        $name = basename(str_replace('\\', '/', $relativePath));
+        if ($this->isMarkdown($relativePath) && !str_starts_with($relativePath, 'wiki/')) {
+            $wiki = 'wiki/' . $name;
+            if (preg_match('/^wiki\/[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.md$/', $wiki)) {
+                try {
+                    $exists = $this->fileExists($projectFolder, $wiki);
+                } catch (Throwable $e) {
+                    $exists = false;
+                }
+                if ($exists) {
+                    $hints[] = 'That markdown file is ' . $wiki . '. Read that file. Do not write a new copy.';
+                }
+            }
+        }
+        $matches = [];
+        foreach (array_merge($this->listBackups(), $this->listTrash()) as $item) {
+            if ((string)($item['project_folder'] ?? '') !== $projectFolder) {
+                continue;
+            }
+            $stored = (string)($item['stored_as'] ?? '');
+            $kind = (string)($item['kind'] ?? '');
+            if ($stored === '' || ($kind !== 'backup' && $kind !== 'trash')) {
+                continue;
+            }
+            $itemPath = str_replace('\\', '/', (string)($item['relative_path'] ?? ''));
+            $itemName = basename($itemPath);
+            if ($itemPath !== $relativePath && $itemName !== $name) {
+                continue;
+            }
+            $matches[] = $item;
+        }
+        usort($matches, static function (array $a, array $b): int {
+            return strcmp((string)($b['deleted_at'] ?? $b['backed_up_at'] ?? ''), (string)($a['deleted_at'] ?? $a['backed_up_at'] ?? ''));
+        });
+        foreach (array_slice($matches, 0, 3) as $item) {
+            $kind = (string)$item['kind'];
+            $stored = (string)$item['stored_as'];
+            $hints[] = 'A ' . $kind . ' copy is stored_as ' . $stored . '. Call restore_file with kind ' . $kind . ' and stored_as ' . $stored . '.';
+        }
+        if ($hints === []) {
+            return 'Path not found.';
+        }
+        return 'Path not found. ' . implode(' ', $hints);
     }
 
     private function reindexWiki(): void
@@ -1315,6 +1404,43 @@ class SafetyInterceptor
             }
         }
         return $items;
+    }
+
+    private function restoreDatabase(array $meta, string $file, string $metaPath, string $kind, string $relative): array
+    {
+        if (!is_file($file) || is_link($file)) {
+            throw new RuntimeException('Restore item not found.');
+        }
+        $folder = (string)$meta['project_folder'];
+        $dest = $this->resolveInside($this->projectRoot($folder), $relative, true);
+        $parent = dirname($dest);
+        if (!is_dir($parent) && !mkdir($parent, 0775, true) && !is_dir($parent)) {
+            throw new RuntimeException('Could not create directory.');
+        }
+        if (is_link($dest) || is_dir($dest)) {
+            throw new RuntimeException('Something already exists at that path.');
+        }
+        if (is_file($dest)) {
+            $this->backupExisting($folder, $relative, $dest);
+        }
+        $temp = $parent . '/.' . basename($dest) . '.restore';
+        if (!copy($file, $temp)) {
+            @unlink($temp);
+            throw new RuntimeException('Could not restore that file.');
+        }
+        if (!rename($temp, $dest)) {
+            @unlink($temp);
+            throw new RuntimeException('Could not restore that file.');
+        }
+        foreach (['-wal', '-shm'] as $suffix) {
+            $side = $dest . $suffix;
+            if (is_file($side) && !is_link($side)) {
+                @unlink($side);
+            }
+        }
+        @unlink($file);
+        @unlink($metaPath);
+        return ['restored' => $relative, 'project_folder' => $folder, 'kind' => $kind];
     }
 
     private function restoreMachine(array $meta, string $file, string $metaPath, string $kind): array

@@ -4,7 +4,7 @@ description: Creates or changes a SQLite file in database/. Pass the filename. d
 version: 1.0.0
 ---
 
-database is the filename or the path, such as link_database.db or database/link_database.db. action, or command, is count, inspect, insert, query, drop, ensure, execute, or init.
+database is the argument name and the filename or the path, such as name.db or database/name.db. link_database.db in the examples below is only an example. Any .db, .sqlite, or .sqlite3 file in database/ is valid. action, or command, is count, inspect, insert, query, drop, ensure, execute, or init.
 
 Create workflow: always check the database and table first. If either already exists, do not recreate it. The schema is returned so you can compare columns.
 
