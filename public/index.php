@@ -527,6 +527,12 @@ header('X-Danaco: 1');
           <section v-else-if="tab==='research'" class="view research-view">
             <div class="view-head">
               <h2>Research</h2>
+              <label v-if="researchMissions.length" class="research-pick">
+                <span>Mission</span>
+                <select :value="researchSlug" aria-label="Research mission" :disabled="researchBusy" @change="openResearch($event.target.value)">
+                  <option v-for="mission in researchMissions" :key="mission.name" :value="mission.name">{{ mission.name }}{{ mission.active ? ' · On' : '' }}</option>
+                </select>
+              </label>
               <div class="view-actions">
                 <button class="btn" type="button" @click="researchFormOpen = !researchFormOpen">New mission</button>
                 <button v-if="researchBoard && researchBoard.active" class="btn btn-stop" type="button" :disabled="researchBusy" @click="stopResearch">Stop</button>
@@ -542,12 +548,6 @@ header('X-Danaco: 1');
             </form>
             <p v-if="researchError" class="form-error">{{ researchError }}</p>
             <div v-if="researchBoard" class="research-body">
-              <aside class="research-missions panel">
-                <button v-for="mission in researchMissions" :key="mission.name" type="button" class="research-mission" :class="{ active: researchSlug === mission.name }" @click="openResearch(mission.name)">
-                  <span>{{ mission.name }}</span>
-                  <span v-if="mission.active" class="research-on">On</span>
-                </button>
-              </aside>
               <div class="research-main">
                 <ol class="research-cycle">
                   <li v-for="step in researchSteps()" :key="step.id" :class="{ 'is-now': step.now, 'is-done': step.done }">{{ step.label }}</li>

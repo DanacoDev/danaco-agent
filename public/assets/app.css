@@ -768,26 +768,25 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .research-view { display: flex; flex-direction: column; overflow: hidden; }
-.research-view .view-head { flex-wrap: wrap; gap: 8px; }
-.research-view .view-actions { flex: none; }
+.research-view .view-head { flex-wrap: wrap; gap: 8px; justify-content: flex-start; }
+.research-view .view-actions { flex: none; margin-left: auto; }
+.research-pick { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 220px; max-width: 420px; color: var(--muted); font-size: 0.88rem; }
+.research-pick span { flex: none; }
+.research-pick select {
+  width: 100%; min-width: 0; background: var(--field); border: 1px solid var(--line);
+  border-radius: 12px; padding: 8px 12px;
+}
 .research-form { display: grid; grid-template-columns: 1fr 1.4fr 1fr auto; gap: 12px; align-items: end; margin-bottom: 12px; }
 .research-form .field { margin: 0; }
 .research-form .btn { margin-bottom: 14px; }
 .research-body {
   flex: 1; min-height: 0; display: grid;
-  grid-template-columns: 180px minmax(0, 1fr) 300px; gap: 12px;
+  grid-template-columns: minmax(0, 1fr) 300px; gap: 12px;
 }
-.research-missions, .research-detail { min-height: 0; min-width: 0; overflow: auto; padding: 12px; }
+.research-detail { min-height: 0; min-width: 0; overflow: auto; padding: 12px; }
 .research-detail, .research-detail h3, .research-detail p, .research-best, .research-best-line, .research-chain button, .research-lessons span {
   overflow-wrap: anywhere;
 }
-.research-mission {
-  display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 8px;
-  text-align: left; padding: 8px 10px; border-radius: 10px;
-  background: transparent; border: 0; color: inherit;
-}
-.research-on { color: var(--ok); font-size: 0.72rem; }
-.research-mission.active { background: rgba(232, 184, 109, 0.28); }
 .research-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .research-cycle { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .research-cycle li {
