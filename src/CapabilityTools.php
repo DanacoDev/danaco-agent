@@ -252,6 +252,7 @@ class CapabilityTools
         $sawEmpty = false;
         $sawRows = false;
         $partial = null;
+        $partialMissing = PHP_INT_MAX;
         $terms = $this->queryTerms($query);
         foreach (['DuckDuckGo', 'Bing', 'Google'] as $name) {
             if ($name === 'Bing') {
@@ -268,12 +269,12 @@ class CapabilityTools
             }
             if ($found['results']) {
                 $sawRows = true;
-                if ($partial === null) {
-                    $ranked = $this->partialResults($terms, $found['results']);
-                    $rankedBlocks = $this->searchBlocks($ranked['rows']);
-                    if ($rankedBlocks) {
-                        $partial = $this->searchAnswer($query, $name, $locale, $rankedBlocks, true, $ranked['missing']);
-                    }
+                $ranked = $this->partialResults($terms, $found['results']);
+                $rankedBlocks = $this->searchBlocks($ranked['rows']);
+                $missingCount = count($ranked['missing']);
+                if ($rankedBlocks && !$this->partialMissesLaterTerms($terms, $ranked['missing']) && $missingCount < $partialMissing) {
+                    $partial = $this->searchAnswer($query, $name, $locale, $rankedBlocks, true, $ranked['missing']);
+                    $partialMissing = $missingCount;
                 }
                 $found['status'] = 'empty';
             } elseif ($found['status'] === 'results') {
@@ -300,7 +301,7 @@ class CapabilityTools
             return "No search hits for that query. Opened {$home} instead.\n\n" . $this->fetchUrl($home);
         }
         if ($sawRows) {
-            return 'Query: ' . $query . "\nThe provider returned pages, and none contained these words. Open a URL you already have with fetch_url. Do not search again.";
+            return 'Query: ' . $query . "\nThe provider returned pages that did not use the whole query. Search once more with: " . $this->suggestedQuery($query) . '.';
         }
         return $this->emptySearchMessage($query);
     }
@@ -429,6 +430,20 @@ class CapabilityTools
             unset($row['_hit']);
         }
         return $kept;
+    }
+
+    private function partialMissesLaterTerms(array $terms, array $missing): bool
+    {
+        $later = array_slice($terms, 1);
+        if ($later === []) {
+            return false;
+        }
+        foreach ($later as $term) {
+            if (!in_array($term, $missing, true)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private function partialResults(array $terms, array $results): array
