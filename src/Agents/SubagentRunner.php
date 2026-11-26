@@ -166,7 +166,7 @@ class SubagentRunner
 Team. Delegate by the kind of work. Every subagent can use: {$shared}.
 Those skills cover any file in the project, including the wiki. {$scope} A new or replaced skill goes to the coder through write_skill. That registers it in the Skills library, outside the project, so later runs and scheduled tasks can call it by name. You have write_skill when the coder cannot finish it. A skill already in the list is called by name. Do not call write_skill for it. test_skill runs a skill and returns what it printed. You have that too. Do not write a skill into the project.
 {$capLine}
-- researcher: find and check facts with web_search, fetch_url, and browse_url, and use yahoo_finance for trading research across stocks, bonds, commodities, crypto, currencies, indexes, and futures, parse documents, then log them with research_pipeline in their own wiki file. Do not put research in the project description.
+- researcher: find and check facts with web_search, fetch_url, and browse_url, and use yahoo_finance for trading research across stocks, bonds, commodities, crypto, currencies, indexes, and futures, parse documents, then log a lookup with research_pipeline in its own wiki file. A research mission uses research_loop and database/research-<slug>.db, one task titled Research: and the short title. Do not put research in the project description, and do not create a wiki file per finding.
 - writer: draft long-form text, documentation, and communication copy, and save it in the wiki. A poem, book, web content, or article runs write_article and follows every step, including humanizer and a spelling pass. A PDF is the last step of that skill, and only the file path comes back. Pass a font color, a size, or a picture only when the user named one. Otherwise every line stays black. A figure, icon, or infographic runs make_graphic, then the file is written and its path comes back. Delegate the brief and the file name. Do not give a PDF to the coder.
 - coder: write and debug software in PHP, run code_verifier on each changed file, and use download_large for a download over 100 MB. Use Python only when a Python library is required, and run that file with run_python. If run_python says a library is missing, stop and name it. Do not install it. Do not use run_command for Python, and do not ask for full system control to run a script. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A skill program is PHP. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
@@ -233,12 +233,15 @@ TXT;
         if ($brief !== '') {
             $identity .= "\n\n" . $brief;
         }
+        $researchRule = $agent === 'researcher'
+            ? ' A research mission is research_loop and one database/research-<slug>.db per question. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db.'
+            : '';
         $taskRule = $agent === 'consultant'
             ? 'When the assignment names a task, list it with the tasklist tool first. Update the named task so its open steps match the plan. Do not delete it and create another. Delete only when the assignment says to remove that task. Each step needs a description that names the files, lists, and skills, and what to save or return. A title alone is rejected. To replace the open steps, pass replace_steps true and the full new list. Done steps stay. Do not do the research or file work unless the assignment asks for that. End with the task id and the open steps.'
             : 'You cannot create, update, or delete a task. When the instruction names a task, add a short result to it with the tasklist tool before you finish. The main agent checks that work and then updates the task.';
         $rules = <<<TXT
 {$identity}
-Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task. {$taskRule} If the task includes a previous run, that record is what you already found, wrote, or returned. Continue from it. Do not start that work over. A plan, a rule, a decision, or a conclusion from this run is written with wiki_memory before you reply. Read the matching file first. Do not wait to be asked, and do not copy the whole chat into the wiki. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
+Stay inside {$projectFolder}/. You can read, edit, delete, and move any file there, including the wiki. Paths are relative to {$projectFolder}/. Store every project markdown file in {$projectFolder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. Deep research, findings, and specific data get their own markdown file there, or a SQLite database in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task. {$taskRule}{$researchRule} If the task includes a previous run, that record is what you already found, wrote, or returned. Continue from it. Do not start that work over. A plan, a rule, a decision, or a conclusion from this run is written with wiki_memory before you reply. Read the matching file first. Do not wait to be asked, and do not copy the whole chat into the wiki. After a tool result says the file was written, do not write that path again unless a later tool changed the text. Then reply with the path. You may read and restore backups and trash. You cannot delete anything in those folders. When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat. A download over 100 MB uses download_large so the chat is not held up.
 
 Do not install software or dependencies. If something is missing, say what it is and stop. The main agent asks the user and installs it.
 
@@ -693,8 +696,11 @@ TXT;
 
     private function tools(string $agent, string $projectFolder, int $projectId, callable $emit, ?callable $shouldStop = null): array
     {
-        $files = function (array $args) use ($projectFolder): string {
+        $files = function (array $args) use ($projectFolder, $agent): string {
             $action = strtolower(trim((string)($args['action'] ?? '')));
+            if ($action === 'write' && $agent === 'researcher' && $this->researchStoreExists($projectFolder) && $this->newWikiMarkdown($projectFolder, (string)($args['path'] ?? ''))) {
+                return 'This project keeps research in database/research-<slug>.db. Call research_loop. Do not create a wiki markdown.';
+            }
             if ($action === 'list') {
                 $tree = $this->safety->listFiles($projectFolder, (string)($args['path'] ?? ''));
                 return json_encode($tree, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: '[]';
@@ -720,8 +726,11 @@ TXT;
             }
             return 'filesystem needs action list, read, write, delete, move, or copy.';
         };
-        $wiki = function (array $args) use ($projectFolder): string {
+        $wiki = function (array $args) use ($projectFolder, $agent): string {
             $action = strtolower(trim((string)($args['action'] ?? '')));
+            if ($action === 'write' && $agent === 'researcher' && $this->researchStoreExists($projectFolder)) {
+                return 'This project keeps research in database/research-<slug>.db. Call research_loop. Do not write a wiki file for a finding.';
+            }
             if ($action === 'search') {
                 return $this->memory->search((string)($args['query'] ?? ''), $projectFolder);
             }
@@ -924,8 +933,35 @@ TXT;
         return $wrapped;
     }
 
+    private function researchStoreExists(string $projectFolder): bool
+    {
+        $dir = Projects::root($projectFolder) . '/database';
+        if (!is_dir($dir)) {
+            return false;
+        }
+        foreach (scandir($dir) ?: [] as $name) {
+            if (preg_match('/^research(?:-[a-z0-9-]{1,40})?\.db$/', strtolower($name)) === 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function newWikiMarkdown(string $projectFolder, string $path): bool
+    {
+        $path = str_replace('\\', '/', trim($path));
+        if (preg_match('#(^|/)wiki/.+\.md$#i', $path) !== 1) {
+            return false;
+        }
+        $full = Projects::root($projectFolder) . '/' . ltrim($path, '/');
+        return !is_file($full);
+    }
+
     private function withPriorRun(int $projectId, string $agent, string $user): string
     {
+        if (preg_match('/\bresearch_loop\b/', $user) === 1) {
+            return $user;
+        }
         $prior = trim((string)$this->db->getSetting($this->runKey($projectId, $agent), ''));
         if ($prior === '') {
             return $user;

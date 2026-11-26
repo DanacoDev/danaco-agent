@@ -570,9 +570,18 @@ class Heartbeat
 
     private function settle(array $task, string $result, bool $failed = false, bool $noted = false): void
     {
+        $fresh = $this->db->task((int)$task['id']);
+        if ($fresh) {
+            $task = $fresh;
+        }
+        $projectId = (int)($task['project_id'] ?? 0);
+        $when = trim((string)($task['schedule_time'] ?? ''));
+        if ((int)($task['held'] ?? 0) === 1 && $when === '') {
+            $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'orchestrator', 'process', 'Task ' . (int)$task['id'] . ' left inactivated');
+            return;
+        }
         $board = new Kanban($this->db);
         $next = $this->nextSchedule((string)($task['recurrence_interval'] ?? 'none'), (string)($task['schedule_time'] ?? ''));
-        $projectId = (int)($task['project_id'] ?? 0);
         if ($next) {
             $line = 'Task ' . (int)$task['id'] . ' rescheduled · ' . $next;
             if ($failed || $noted) {

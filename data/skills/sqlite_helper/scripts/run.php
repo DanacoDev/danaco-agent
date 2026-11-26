@@ -97,6 +97,10 @@ if ($action !== 'inspect' || $database !== 'all') {
         echo json_encode(['status' => 'error', 'message' => 'Database must be a .db, .sqlite, or .sqlite3 file, such as link_database.db or database/link_database.db.']);
         exit(1);
     }
+    if (preg_match('/^research(?:-[a-z0-9-]{1,40}|[0-9]+)?\.db$/', strtolower($database)) === 1) {
+        echo json_encode(['status' => 'error', 'message' => 'database/' . $database . ' is reserved. Use research_loop. Do not query, create, or drop it here.']);
+        exit(1);
+    }
 }
 
 if ($action !== 'inspect' && !is_dir($dbDir) && !mkdir($dbDir, 0775, true) && !is_dir($dbDir)) {

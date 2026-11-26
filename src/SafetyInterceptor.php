@@ -12,6 +12,7 @@ class SafetyInterceptor
         if ($this->machinePath($relativePath)) {
             return $this->writeMachine($relativePath, $content);
         }
+        $this->rejectResearchStore($relativePath);
         $relativePath = $this->descriptionPath($projectFolder, $this->projectPath($projectFolder, $relativePath));
         $this->rejectProjectSkill($relativePath);
         if (!str_starts_with($relativePath, 'uploads/')) {
@@ -60,9 +61,13 @@ class SafetyInterceptor
             return $this->deleteMachine($relativePath);
         }
         $relativePath = $this->projectPath($projectFolder, $relativePath);
+        $this->rejectResearchStore($relativePath);
         $projectRoot = $this->projectRoot($projectFolder);
         $target = $this->resolveInside($projectRoot, $relativePath, false);
         $isDir = is_dir($target) && !is_link($target);
+        if ($isDir && $this->directoryHoldsResearchStore($target)) {
+            throw new RuntimeException('That folder holds a research database. Use research_loop. It cannot be deleted.');
+        }
         if (!$isDir && !is_file($target)) {
             throw new RuntimeException('File not found.');
         }
@@ -103,6 +108,8 @@ class SafetyInterceptor
         }
         $from = $this->projectPath($projectFolder, $from);
         $to = $this->projectPath($projectFolder, $to);
+        $this->rejectResearchStore($from);
+        $this->rejectResearchStore($to);
         if ($from === $to || (is_dir($this->projectRoot($projectFolder) . '/' . $from) && str_starts_with($to, $from . '/'))) {
             throw new RuntimeException($copy ? 'Cannot copy that onto itself.' : 'Cannot move a folder into itself.');
         }
@@ -114,6 +121,9 @@ class SafetyInterceptor
         $source = $this->resolveInside($root, $from, false);
         if (!file_exists($source) || is_link($source)) {
             throw new RuntimeException('File not found.');
+        }
+        if (is_dir($source) && $this->directoryHoldsResearchStore($source)) {
+            throw new RuntimeException('That folder holds a research database. Use research_loop. It cannot be moved.');
         }
         $dest = $this->resolveInside($root, $to, true);
         if (file_exists($dest)) {
@@ -713,6 +723,7 @@ class SafetyInterceptor
             return ['restored' => $relative, 'project_folder' => $folder, 'kind' => $kind];
         }
         $relative = $this->cleanRelative((string)$meta['relative_path']);
+        $this->rejectResearchStore($relative);
         if ($this->isDatabaseFile($relative)) {
             return $this->restoreDatabase($meta, $file, $metaPath, $kind, $relative);
         }
@@ -1019,6 +1030,40 @@ class SafetyInterceptor
     private function isDatabaseFile(string $relativePath): bool
     {
         return (bool)preg_match('/\.(?:db|sqlite|sqlite3)$/i', basename(str_replace('\\', '/', $relativePath)));
+    }
+
+    private function rejectResearchStore(string $relativePath): void
+    {
+        $name = strtolower(basename(str_replace('\\', '/', $relativePath)));
+        if (preg_match('/^(research(?:-[a-z0-9-]{1,40}|[0-9]+)?\.db)(?:-wal|-shm)?$/', $name) !== 1) {
+            return;
+        }
+        throw new RuntimeException('That research database is reserved. Use research_loop. It cannot be written, deleted, moved, or restored.');
+    }
+
+    private function directoryHoldsResearchStore(string $dir): bool
+    {
+        if (!is_dir($dir)) {
+            return false;
+        }
+        $items = @scandir($dir);
+        if (!is_array($items)) {
+            return false;
+        }
+        foreach ($items as $name) {
+            if ($name === '.' || $name === '..') {
+                continue;
+            }
+            $full = $dir . '/' . $name;
+            if (is_dir($full) && !is_link($full) && $this->directoryHoldsResearchStore($full)) {
+                return true;
+            }
+            $base = strtolower($name);
+            if (preg_match('/^research(?:-[a-z0-9-]{1,40}|[0-9]+)?\.db$/', $base) === 1) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function missingFileMessage(string $projectFolder, string $relativePath): string
