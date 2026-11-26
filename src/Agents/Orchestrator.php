@@ -1608,6 +1608,16 @@ TXT;
                         };
                         continue;
                     }
+                    if ($name === 'research_loop') {
+                        $tools[$name] = function (array $args) use ($handler): string {
+                            $action = strtolower(trim((string)($args['action'] ?? '')));
+                            if (in_array($action, ['add', 'next', 'commit'], true)) {
+                                return 'The researcher does this pass. Delegate the open step. Do not call research_loop action ' . $action . '.';
+                            }
+                            return $handler($args);
+                        };
+                        continue;
+                    }
                     $tools[$name] = $handler;
                 }
             }

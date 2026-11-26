@@ -277,9 +277,9 @@ class SkillEngine
         }
         $step = "Slug: {$slug}\n"
             . "Delegate this single step to the researcher. Do not create a task. Do not add or rewrite steps.\n"
-            . "The researcher calls research_loop with name {$slug}. One call, then stop. Do not fetch a batch of sources first. Do not write a wiki file. Do not open the database with sqlite_helper.\n"
+            . "The researcher calls research_loop with name {$slug}. The main agent does not. One call, then stop. Do not fetch a batch of sources first. Do not write a wiki file. Do not open the database with sqlite_helper.\n"
             . "1. Call action status.\n"
-            . "2. If there are no hypotheses, call action commit, kind reflect, with at most three hypotheses, each status proposed. Stop. Say awaiting approval. Do not call tasklist result.\n"
+            . "2. If there are no hypotheses, call action commit, kind reflect. hypotheses is a list of at most three. Each item is {\"statement\":\"one sentence\",\"status\":\"proposed\"}. statement is the sentence. Stop. Say awaiting approval. Do not call tasklist result.\n"
             . "3. If a hypothesis is still proposed and none are testing, stop. Say awaiting approval. Do not ingest. Do not call tasklist result.\n"
             . "4. Otherwise call action next once. If the stage is idle, stop without tasklist result. Otherwise judge that one packet, call action commit, then call tasklist result with one line: the stage, the id, and the queue depths. Do not take another packet.";
         try {

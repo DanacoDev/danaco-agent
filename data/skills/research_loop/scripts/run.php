@@ -211,7 +211,7 @@ function research_next(PDO $db, string $slug): void
         research_out([
             'name' => $slug,
             'stage' => 'propose',
-            'message' => 'No hypotheses yet. Commit kind reflect with at most three, each status proposed. Do not ingest.',
+            'message' => 'No hypotheses yet. Commit kind reflect with hypotheses, a list of at most three. Each item is {"statement":"one sentence","status":"proposed"}. Do not ingest.',
         ]);
     }
     if ((int)$view['proposed'] > 0 && (int)$view['approved'] === 0) {
@@ -500,11 +500,29 @@ function research_commit_topic(PDO $db, array $args): array
     ];
 }
 
+function research_hypothesis_text(array $item): string
+{
+    foreach (['statement', 'claim', 'text', 'hypothesis'] as $key) {
+        $text = trim((string)($item[$key] ?? ''));
+        if ($text !== '') {
+            return $text;
+        }
+    }
+    return '';
+}
+
 function research_commit_reflect(PDO $db, array $args): array
 {
-    $items = $args['hypotheses'] ?? null;
+    $items = $args['hypotheses'] ?? $args['hypothesis'] ?? null;
+    if (is_string($items)) {
+        $decoded = json_decode($items, true);
+        $items = is_array($decoded) ? $decoded : null;
+    }
+    if (is_array($items) && !array_is_list($items)) {
+        $items = [$items];
+    }
     if (!is_array($items)) {
-        throw new InvalidArgumentException('Pass hypotheses, a list.');
+        throw new InvalidArgumentException('Pass hypotheses, a list. Each item is {"statement":"one sentence","status":"proposed"}.');
     }
     if (count($items) > 3 && research_count($db, 'hypotheses') === 0) {
         throw new InvalidArgumentException('The first pass proposes at most three hypotheses.');
@@ -514,7 +532,7 @@ function research_commit_reflect(PDO $db, array $args): array
         if (!is_array($item)) {
             throw new InvalidArgumentException('Each hypothesis is an object.');
         }
-        $statement = trim((string)($item['statement'] ?? ''));
+        $statement = research_hypothesis_text($item);
         $status = strtolower(trim((string)($item['status'] ?? 'proposed')));
         $confidence = strtolower(trim((string)($item['confidence'] ?? 'low')));
         if (!in_array($status, ['proposed', 'testing', 'supported', 'narrowed', 'refuted', 'parked'], true)) {
@@ -523,8 +541,11 @@ function research_commit_reflect(PDO $db, array $args): array
         if (!in_array($confidence, ['low', 'moderate', 'high'], true)) {
             throw new InvalidArgumentException('Confidence is low, moderate, or high.');
         }
-        if ($statement === '' || strlen($statement) > 400) {
-            throw new InvalidArgumentException('A hypothesis is one statement, at most 400 characters.');
+        if ($statement === '') {
+            throw new InvalidArgumentException('Pass statement, one sentence. Each hypothesis is {"statement":"one sentence","status":"proposed"}.');
+        }
+        if (strlen($statement) > 400) {
+            throw new InvalidArgumentException('Shorten the statement to 400 characters.');
         }
         $claimIds = research_id_list($item['claim_ids'] ?? []);
         $falseText = trim((string)($item['falsification'] ?? ''));
@@ -688,7 +709,7 @@ function research_status_text(PDO $db, string $slug): string
     $view = research_status_view($db);
     $lines = ['Mission: ' . $view['title'], 'Question: ' . $view['question'], 'Slug: ' . $slug];
     if ($view['lines'] === []) {
-        $lines[] = 'Hypotheses: none yet';
+        $lines[] = 'Hypotheses: none yet. The researcher commits kind reflect. Each item is {"statement":"one sentence","status":"proposed"}. At most three.';
     } else {
         $lines[] = 'Hypotheses:';
         foreach ($view['lines'] as $line) {

@@ -887,6 +887,16 @@ TXT;
                 };
                 continue;
             }
+            if ($name === 'research_loop' && $agent !== 'researcher') {
+                $tools[$name] = function (array $args) use ($handler): string {
+                    $action = strtolower(trim((string)($args['action'] ?? '')));
+                    if (in_array($action, ['add', 'next', 'commit'], true)) {
+                        return 'The researcher does this pass. Do not call research_loop action ' . $action . '.';
+                    }
+                    return $handler($args);
+                };
+                continue;
+            }
             if (!isset($tools[$name])) {
                 $tools[$name] = $handler;
             }

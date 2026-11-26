@@ -25,7 +25,7 @@ The fixed step is this, and nothing more:
 
 - Call status with name set to the slug.
 - If there is no mission, stop. The result line is need mission.
-- If there are no hypotheses yet, commit kind reflect with at most three hypotheses, each status proposed, then stop. The result line is awaiting approval. Do not call tasklist result, so the step stays open.
+- If there are no hypotheses yet, commit kind reflect with at most three hypotheses. Each item is {"statement":"one sentence","status":"proposed"}. statement is the sentence. Then stop. The result line is awaiting approval. Do not call tasklist result, so the step stays open. The researcher makes this commit. The main agent delegates the step.
 - If a hypothesis is still proposed and none are testing, stop. The result line is awaiting approval. Do not ingest. Do not call tasklist result.
 - Otherwise call next once. If the stage is idle, the result line is idle and you stop without a step result. Otherwise judge that one packet, call commit, then call tasklist result with one line: the stage, the chunk or topic id, and the queue depths. Put needs_review on that line when the commit says so. Do not take another packet.
 
