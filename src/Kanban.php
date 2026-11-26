@@ -279,6 +279,10 @@ class Kanban
         }
         $lines = [];
         foreach ($this->db->tasks($projectId) as $task) {
+            if ($this->isResearchTask($task)) {
+                $this->retireResearch($task);
+                continue;
+            }
             if ($this->column($task) === 'archived' || (string)($task['status'] ?? '') === 'archived') {
                 continue;
             }
@@ -976,6 +980,38 @@ class Kanban
             $blob .= is_string($args[$key]) ? $args[$key] : (json_encode($args[$key]) ?: '');
         }
         return preg_match('/research_loop/i', $blob) === 1;
+    }
+
+    public function isResearchTask(array $task): bool
+    {
+        return $this->researchCard($task);
+    }
+
+    public function retireResearch(array $task): void
+    {
+        if (!$this->researchCard($task)) {
+            return;
+        }
+        $recurrence = strtolower(trim((string)($task['recurrence_interval'] ?? 'none')));
+        if ((string)($task['status'] ?? '') === 'done' && ($recurrence === '' || $recurrence === 'none')) {
+            return;
+        }
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                continue;
+            }
+            $this->db->updateSubtask((int)$sub['id'], [
+                'status' => 'done',
+                'result' => 'Research moved to the Research tab.',
+            ]);
+        }
+        $this->db->updateTask((int)$task['id'], [
+            'status' => 'done',
+            'recurrence_interval' => 'none',
+            'schedule_time' => null,
+            'finished_at' => date('Y-m-d H:i:s'),
+            'result' => 'Research moved to the Research tab.',
+        ]);
     }
 
     private function researchCard(array $task): bool

@@ -5,15 +5,15 @@ if (!is_array($args)) {
     $args = [];
 }
 
-const RESEARCH_SCHEMA = 1;
+const RESEARCH_SCHEMA = 4;
 
 const RESEARCH_TABLES = [
-    'meta' => ['id', 'schema_version', 'title', 'question', 'scope', 'cycle', 'last_reflect_cycle', 'last_lint_cycle', 'ingest_since_reflect'],
+    'meta' => ['id', 'schema_version', 'title', 'question', 'scope', 'cycle', 'last_reflect_cycle', 'last_lint_cycle', 'ingest_since_reflect', 'active'],
     'sources' => ['id', 'title', 'year', 'authors', 'path', 'url', 'kind', 'status', 'skip_reason', 'dedupe'],
     'chunks' => ['id', 'source_id', 'section', 'text', 'position'],
     'topics' => ['id', 'title', 'title_key', 'synthesis', 'status', 'updated_cycle'],
     'claims' => ['id', 'text', 'norm', 'status', 'topic_id', 'chunk_ids', 'superseded_by', 'cycle'],
-    'hypotheses' => ['id', 'statement', 'status', 'confidence', 'claim_ids', 'falsification', 'needs_review'],
+    'hypotheses' => ['id', 'statement', 'status', 'confidence', 'claim_ids', 'falsification', 'needs_review', 'parent_id', 'insight', 'direction', 'inherited'],
     'contradictions' => ['id', 'summary', 'claim_ids', 'chunk_ids', 'settle_note', 'status', 'topic_id'],
     'deltas' => ['id', 'chunk_id', 'kind', 'claim_ids', 'cycle', 'note'],
     'queue' => ['id', 'kind', 'priority', 'payload', 'status', 'leased_at', 'ref'],
@@ -26,8 +26,8 @@ foreach (['sql', 'table', 'columns', 'database', 'filename'] as $banned) {
 }
 
 $action = strtolower(trim((string)($args['action'] ?? '')));
-if (!in_array($action, ['mission', 'add', 'next', 'commit', 'review', 'status'], true)) {
-    research_out(['message' => 'action is mission, add, next, commit, review, or status.'], 1);
+if (!in_array($action, ['mission', 'add', 'next', 'commit', 'review', 'status', 'board', 'active'], true)) {
+    research_out(['message' => 'action is mission, add, next, commit, review, status, board, or active.'], 1);
 }
 
 if ($action === 'mission') {
@@ -47,6 +47,7 @@ if (!is_file($path)) {
     research_out(['message' => 'No mission named ' . $slug . '. Call mission first. Do not create the database yourself.'], 1);
 }
 $db = research_connect($path);
+research_migrate($db);
 research_assert_schema($db);
 
 if ($action === 'add') {
@@ -60,6 +61,12 @@ if ($action === 'commit') {
 }
 if ($action === 'review') {
     research_review($db, $slug, $args);
+}
+if ($action === 'board') {
+    research_out(research_board($db, $slug));
+}
+if ($action === 'active') {
+    research_active($db, $slug, $args);
 }
 research_out(['name' => $slug, 'message' => research_status_text($db, $slug), 'view' => research_status_view($db)]);
 
@@ -90,6 +97,7 @@ function research_mission(array $args): void
     $path = research_db_path($slug);
     if (is_file($path)) {
         $db = research_connect($path);
+        research_migrate($db);
         research_assert_schema($db);
         $meta = research_meta($db);
         if (research_key($meta['title']) !== research_key($title)) {
@@ -112,7 +120,7 @@ function research_mission(array $args): void
     research_out([
         'name' => $slug,
         'existing' => false,
-        'message' => 'Mission ' . $slug . ' is database/research-' . $slug . '.db. The task is created with this call. Do not create a task and do not write steps.',
+        'message' => 'Mission ' . $slug . ' is database/research-' . $slug . '.db. It is on the Research tab. Do not create a task and do not write steps.',
     ]);
 }
 
@@ -211,16 +219,20 @@ function research_next(PDO $db, string $slug): void
         research_out([
             'name' => $slug,
             'stage' => 'propose',
-            'message' => 'No hypotheses yet. Commit kind reflect with hypotheses, a list of at most three. Each item is {"statement":"one sentence","status":"proposed"}. Do not ingest.',
+            'message' => 'No hypotheses yet. Commit kind reflect with hypotheses, a list of at most three. Each item is {"statement":"one sentence","status":"proposed","parent_id":0}. Do not ingest.',
         ]);
     }
-    if ((int)$view['proposed'] > 0 && (int)$view['approved'] === 0) {
+    if ((int)$view['proposed'] > 0 && (int)$view['testing'] === 0) {
         research_out([
             'name' => $slug,
             'stage' => 'awaiting',
             'message' => 'Awaiting approval. Do not ingest. The result line is awaiting approval.',
             'view' => $view,
         ]);
+    }
+    $directed = research_open_direction($db);
+    if ($directed) {
+        research_out(research_direction_packet($db, $slug, $directed));
     }
     $row = research_queue_row($db, 'reevaluate');
     if ($row) {
@@ -287,26 +299,40 @@ function research_review(PDO $db, string $slug, array $args): void
     $id = (int)($args['id'] ?? 0);
     $decision = strtolower(trim((string)($args['decision'] ?? '')));
     $statement = trim((string)($args['statement'] ?? ''));
+    $hasDirection = array_key_exists('direction', $args);
+    $direction = $hasDirection ? trim((string)$args['direction']) : null;
     if ($id <= 0) {
         research_out(['message' => 'Pass the hypothesis id.'], 1);
     }
-    if (!in_array($decision, ['testing', 'parked', ''], true) || ($decision === '' && $statement === '')) {
-        research_out(['message' => 'decision is testing or parked, or pass statement for an edited wording.'], 1);
+    if (!in_array($decision, ['testing', 'parked', 'noted', ''], true) || ($decision === '' && $statement === '' && !$hasDirection)) {
+        research_out(['message' => 'decision is testing, parked, or noted, or pass statement or direction.'], 1);
     }
     $row = research_one($db, 'SELECT * FROM hypotheses WHERE id = ?', [$id]);
     if (!$row) {
         research_out(['message' => 'No hypothesis #' . $id . '.'], 1);
     }
-    $status = $decision !== '' ? $decision : (string)$row['status'];
+    $status = $decision === '' || $decision === 'noted' ? (string)$row['status'] : $decision;
     $text = $statement !== '' ? $statement : (string)$row['statement'];
     if (strlen($text) > 400) {
         research_out(['message' => 'The hypothesis statement is too long.'], 1);
     }
-    $db->prepare('UPDATE hypotheses SET status = ?, statement = ?, needs_review = 0 WHERE id = ?')->execute([$status, $text, $id]);
+    $note = $decision === 'parked' ? '' : ($hasDirection ? (string)$direction : (string)$row['direction']);
+    if (strlen($note) > 300) {
+        research_out(['message' => 'Shorten the direction to 300 characters.'], 1);
+    }
+    $flag = $decision === '' && $statement === '' ? (int)$row['needs_review'] : 0;
+    $db->prepare('UPDATE hypotheses SET status = ?, statement = ?, direction = ?, needs_review = ? WHERE id = ?')->execute([$status, $text, $note, $flag, $id]);
+    $closed = $decision === 'parked' ? research_park_branch($db, $id) : 0;
+    $message = 'Hypothesis #' . $id . ' is ' . $status . '.';
+    if ($closed === 1) {
+        $message .= ' One open node on that branch is parked too.';
+    } elseif ($closed > 1) {
+        $message .= ' ' . $closed . ' open nodes on that branch are parked too.';
+    }
     research_out([
         'name' => $slug,
         'id' => $id,
-        'message' => 'Hypothesis #' . $id . ' is ' . $status . '.',
+        'message' => $message,
         'view' => research_status_view($db),
     ]);
 }
@@ -524,10 +550,18 @@ function research_commit_reflect(PDO $db, array $args): array
     if (!is_array($items)) {
         throw new InvalidArgumentException('Pass hypotheses, a list. Each item is {"statement":"one sentence","status":"proposed"}.');
     }
-    if (count($items) > 3 && research_count($db, 'hypotheses') === 0) {
-        throw new InvalidArgumentException('The first pass proposes at most three hypotheses.');
+    $fresh = 0;
+    foreach ($items as $item) {
+        if (is_array($item) && (int)($item['id'] ?? 0) <= 0) {
+            $fresh++;
+        }
+    }
+    if ($fresh > 3) {
+        throw new InvalidArgumentException('A reflect proposes at most three hypotheses.');
     }
     $review = false;
+    $parents = [];
+    $rootsOk = research_count($db, 'hypotheses') === 0;
     foreach ($items as $item) {
         if (!is_array($item)) {
             throw new InvalidArgumentException('Each hypothesis is an object.');
@@ -549,13 +583,36 @@ function research_commit_reflect(PDO $db, array $args): array
         }
         $claimIds = research_id_list($item['claim_ids'] ?? []);
         $falseText = trim((string)($item['falsification'] ?? ''));
+        $insight = trim((string)($item['insight'] ?? ''));
+        if (strlen($insight) > 500) {
+            throw new InvalidArgumentException('Shorten the insight to 500 characters.');
+        }
         $id = (int)($item['id'] ?? 0);
         if ($id <= 0) {
             if ($status !== 'proposed') {
                 throw new InvalidArgumentException('A new hypothesis is proposed. Review sets it to testing.');
             }
-            $db->prepare('INSERT INTO hypotheses (statement, status, confidence, claim_ids, falsification, needs_review) VALUES (?, ?, ?, ?, ?, 1)')
-                ->execute([$statement, 'proposed', $confidence, $claimIds, $falseText]);
+            $parentId = (int)($item['parent_id'] ?? 0);
+            if ($parentId < 0) {
+                throw new InvalidArgumentException('parent_id is the parent hypothesis, or 0 for a root.');
+            }
+            research_lesson_clash($db, $statement, $falseText, $parentId);
+            if ($parentId > 0) {
+                $parent = research_one($db, 'SELECT * FROM hypotheses WHERE id = ?', [$parentId]);
+                if (!$parent) {
+                    throw new InvalidArgumentException('No parent hypothesis #' . $parentId . '.');
+                }
+                if (!in_array((string)$parent['status'], ['testing', 'supported', 'narrowed'], true)) {
+                    throw new InvalidArgumentException('A child hangs from a hypothesis that is testing, supported, or narrowed.');
+                }
+            } elseif (!$rootsOk) {
+                throw new InvalidArgumentException('A new hypothesis needs parent_id. A root is only the first three.');
+            }
+            $db->prepare('INSERT INTO hypotheses (statement, status, confidence, claim_ids, falsification, needs_review, parent_id, insight, direction, inherited) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)')
+                ->execute([$statement, 'proposed', $confidence, $claimIds, $falseText, $parentId, '', '', '']);
+            if ($parentId > 0) {
+                $parents[$parentId] = true;
+            }
             $review = true;
             continue;
         }
@@ -563,14 +620,24 @@ function research_commit_reflect(PDO $db, array $args): array
         if (!$current) {
             throw new InvalidArgumentException('No hypothesis #' . $id . '.');
         }
+        if ($insight === '') {
+            $insight = (string)$current['insight'];
+        }
+        if (in_array($status, ['supported', 'narrowed', 'refuted'], true) && $insight === '') {
+            throw new InvalidArgumentException('A settled hypothesis needs insight, one or two sentences.');
+        }
         $flag = (int)$current['needs_review'];
-        if ((string)$current['status'] === 'testing' && in_array($status, ['refuted', 'narrowed'], true)) {
+        if ((string)$current['status'] === 'testing' && in_array($status, ['supported', 'refuted', 'narrowed'], true)) {
             $flag = 1;
             $review = true;
         }
-        $db->prepare('UPDATE hypotheses SET statement = ?, status = ?, confidence = ?, claim_ids = ?, falsification = ?, needs_review = ? WHERE id = ?')
-            ->execute([$statement, $status, $confidence, $claimIds, $falseText, $flag, $id]);
+        $db->prepare('UPDATE hypotheses SET statement = ?, status = ?, confidence = ?, claim_ids = ?, falsification = ?, needs_review = ?, insight = ? WHERE id = ?')
+            ->execute([$statement, $status, $confidence, $claimIds, $falseText, $flag, $insight, $id]);
     }
+    foreach (array_keys($parents) as $parentId) {
+        $db->prepare("UPDATE hypotheses SET direction = '' WHERE id = ?")->execute([$parentId]);
+    }
+    research_propagate($db);
     $queries = $args['queries'] ?? [];
     $added = 0;
     if (is_array($queries)) {
@@ -675,14 +742,16 @@ function research_reflect_packet(PDO $db, string $slug): array
     return [
         'name' => $slug,
         'stage' => 'reflect',
+        'phase' => 'ideate',
         'hypotheses' => $view['lines'],
+        'constraints' => research_constraints($db),
         'contradictions' => $view['open_contradictions'],
         'counts' => [
             'sources_left' => $view['ingest'],
             'open_contradictions' => count($view['open_contradictions']),
             'cycle' => $view['cycle'],
         ],
-        'message' => 'Reflect on the hypotheses only. Commit kind reflect. Do not read a paper in this pass.',
+        'message' => 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A root is a direction. A child refines, corrects, or extends its parent and is a claim a source can check. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That lesson is carried up the tree. Do not read a paper in this pass.',
     ];
 }
 
@@ -709,17 +778,44 @@ function research_status_text(PDO $db, string $slug): string
     $view = research_status_view($db);
     $lines = ['Mission: ' . $view['title'], 'Question: ' . $view['question'], 'Slug: ' . $slug];
     if ($view['lines'] === []) {
-        $lines[] = 'Hypotheses: none yet. The researcher commits kind reflect. Each item is {"statement":"one sentence","status":"proposed"}. At most three.';
+        $lines[] = 'Hypotheses: none yet. The researcher commits kind reflect. Each item is {"statement":"one sentence","status":"proposed","parent_id":0}. At most three.';
     } else {
         $lines[] = 'Hypotheses:';
         foreach ($view['lines'] as $line) {
-            $lines[] = '- #' . $line['id'] . ' [' . $line['status'] . '] ' . $line['statement'];
+            $parent = (int)($line['parent_id'] ?? 0);
+            $lines[] = '- #' . $line['id'] . ' parent ' . $parent . ' [' . $line['status'] . ' ' . $line['confidence'] . '] ' . $line['statement'];
+            if (trim((string)($line['insight'] ?? '')) !== '') {
+                $lines[] = '  insight: ' . $line['insight'];
+            }
+            if (trim((string)($line['direction'] ?? '')) !== '') {
+                $lines[] = '  direction: ' . $line['direction'];
+            }
+            if (trim((string)($line['inherited'] ?? '')) !== '') {
+                $lines[] = '  inherited: ' . $line['inherited'];
+            }
+        }
+    }
+    $constraints = research_constraints($db);
+    $lines[] = 'Tree: ' . $constraints['shape'];
+    if ($constraints['lessons'] !== []) {
+        $lines[] = 'Lessons, do not restate these:';
+        foreach ($constraints['lessons'] as $lesson) {
+            $text = trim((string)$lesson['insight']) !== '' ? (string)$lesson['insight'] : (string)$lesson['statement'];
+            $lines[] = '- #' . $lesson['id'] . ' ' . $lesson['status'] . ': ' . $text;
+        }
+    }
+    if ($constraints['findings'] !== []) {
+        $lines[] = 'Findings, build on these:';
+        foreach ($constraints['findings'] as $finding) {
+            $text = trim((string)$finding['insight']) !== '' ? (string)$finding['insight'] : (string)$finding['statement'];
+            $lines[] = '- #' . $finding['id'] . ' ' . $finding['status'] . ': ' . $text;
         }
     }
     $lines[] = 'Open contradictions: ' . count($view['open_contradictions']);
     $lines[] = 'Queue: ingest ' . $view['ingest'] . ', reevaluate ' . $view['reevaluate'];
     $lines[] = 'Cycle: ' . $view['cycle'];
-    if ((int)$view['proposed'] > 0 && (int)$view['approved'] === 0) {
+    $lines[] = 'Switch: ' . (!empty($view['active']) ? 'on' : 'off');
+    if ((int)$view['proposed'] > 0 && (int)$view['testing'] === 0) {
         $lines[] = 'awaiting approval';
     }
     if ((int)$view['needs_review'] > 0) {
@@ -731,14 +827,18 @@ function research_status_text(PDO $db, string $slug): string
 function research_status_view(PDO $db): array
 {
     $meta = research_meta($db);
-    $lines = $db->query('SELECT id, statement, status, confidence, needs_review FROM hypotheses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    $lines = $db->query('SELECT id, parent_id, statement, status, confidence, insight, direction, inherited, needs_review FROM hypotheses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
     $open = $db->query("SELECT id, summary, claim_ids, chunk_ids, topic_id FROM contradictions WHERE status = 'open' ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
     $proposed = 0;
     $approved = 0;
+    $testing = 0;
     $needs = 0;
     foreach ($lines as $line) {
         if ((string)$line['status'] === 'proposed') {
             $proposed++;
+        }
+        if ((string)$line['status'] === 'testing') {
+            $testing++;
         }
         if (in_array((string)$line['status'], ['testing', 'supported', 'narrowed', 'refuted'], true)) {
             $approved++;
@@ -756,8 +856,10 @@ function research_status_view(PDO $db): array
         'open_contradictions' => $open,
         'hypotheses' => count($lines),
         'proposed' => $proposed,
+        'testing' => $testing,
         'approved' => $approved,
         'needs_review' => $needs,
+        'active' => (int)($meta['active'] ?? 0) === 1,
         'ingest' => research_count_where($db, "SELECT COUNT(*) FROM queue WHERE kind = 'ingest' AND status != 'done'"),
         'reevaluate' => research_count_where($db, "SELECT COUNT(*) FROM queue WHERE kind = 'reevaluate' AND status != 'done'"),
     ];
@@ -768,9 +870,24 @@ function research_slug_list(array $slugs): array
     if ($slugs === []) {
         return ['message' => 'No mission yet. Call mission with the question.'];
     }
+    $missions = [];
+    $on = '';
+    foreach ($slugs as $slug) {
+        $flag = research_file_active(getcwd() . '/database/research-' . $slug . '.db');
+        $missions[] = ['name' => $slug, 'active' => $flag];
+        if ($flag) {
+            $on = $slug;
+        }
+    }
+    $message = "Several missions. Pass name.\n- " . implode("\n- ", $slugs);
+    if ($on !== '') {
+        $message .= "\nOn: " . $on . '. Starting another pauses this one.';
+    }
     return [
         'names' => $slugs,
-        'message' => "Several missions. Pass name.\n- " . implode("\n- ", $slugs),
+        'missions' => $missions,
+        'active' => $on,
+        'message' => $message,
     ];
 }
 
@@ -817,6 +934,85 @@ function research_slugify(string $title): string
     return $slug;
 }
 
+function research_active(PDO $db, string $slug, array $args): void
+{
+    $on = $args['on'] ?? null;
+    if (is_string($on)) {
+        $on = strtolower(trim($on));
+    }
+    $flag = -1;
+    if (in_array($on, [1, '1', true, 'true', 'on', 'yes'], true)) {
+        $flag = 1;
+    } elseif (in_array($on, [0, '0', false, 'false', 'off', 'no'], true)) {
+        $flag = 0;
+    }
+    if ($flag < 0) {
+        research_out(['message' => 'Pass on as 1 or 0.'], 1);
+    }
+    $path = research_db_path($slug);
+    if ($flag === 1) {
+        research_pause_others($path);
+    }
+    $db->prepare('UPDATE meta SET active = ? WHERE id = 1')->execute([$flag]);
+    research_out([
+        'name' => $slug,
+        'active' => $flag === 1,
+        'message' => $flag === 1
+            ? 'Mission ' . $slug . ' is on. Every other research mission is paused. It keeps running until it is turned off.'
+            : 'Mission ' . $slug . ' is off.',
+    ]);
+}
+
+function research_pause_others(string $keep): void
+{
+    $keepReal = realpath($keep) ?: $keep;
+    $paths = glob(dirname(getcwd()) . '/*/database/research-*.db') ?: [];
+    foreach ($paths as $path) {
+        $real = realpath($path) ?: $path;
+        if ($real === $keepReal) {
+            continue;
+        }
+        try {
+            $other = research_connect($path);
+            research_ensure_active_column($other);
+            $other->exec('UPDATE meta SET active = 0 WHERE id = 1');
+        } catch (Throwable $e) {
+            continue;
+        }
+    }
+}
+
+function research_ensure_active_column(PDO $db): void
+{
+    $have = [];
+    foreach ($db->query('PRAGMA table_info(meta)') as $col) {
+        $have[] = (string)$col['name'];
+    }
+    if (!in_array('active', $have, true)) {
+        $db->exec('ALTER TABLE meta ADD COLUMN active INTEGER NOT NULL DEFAULT 0');
+    }
+}
+
+function research_file_active(string $path): bool
+{
+    if (!is_file($path)) {
+        return false;
+    }
+    try {
+        $db = research_connect($path);
+        $have = [];
+        foreach ($db->query('PRAGMA table_info(meta)') as $col) {
+            $have[] = (string)$col['name'];
+        }
+        if (!in_array('active', $have, true)) {
+            return false;
+        }
+        return (int)$db->query('SELECT active FROM meta WHERE id = 1')->fetchColumn() === 1;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
 function research_db_path(string $slug): string
 {
     return getcwd() . '/database/research-' . $slug . '.db';
@@ -842,7 +1038,8 @@ function research_create_schema(PDO $db): void
         cycle INTEGER NOT NULL DEFAULT 0,
         last_reflect_cycle INTEGER NOT NULL DEFAULT 0,
         last_lint_cycle INTEGER NOT NULL DEFAULT 0,
-        ingest_since_reflect INTEGER NOT NULL DEFAULT 0
+        ingest_since_reflect INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 0
     )');
     $db->exec("CREATE TABLE sources (
         id INTEGER PRIMARY KEY,
@@ -888,7 +1085,11 @@ function research_create_schema(PDO $db): void
         confidence TEXT NOT NULL DEFAULT 'low',
         claim_ids TEXT NOT NULL DEFAULT '',
         falsification TEXT NOT NULL DEFAULT '',
-        needs_review INTEGER NOT NULL DEFAULT 0
+        needs_review INTEGER NOT NULL DEFAULT 0,
+        parent_id INTEGER NOT NULL DEFAULT 0,
+        insight TEXT NOT NULL DEFAULT '',
+        direction TEXT NOT NULL DEFAULT '',
+        inherited TEXT NOT NULL DEFAULT ''
     )");
     $db->exec("CREATE TABLE contradictions (
         id INTEGER PRIMARY KEY,
@@ -918,6 +1119,449 @@ function research_create_schema(PDO $db): void
     )");
     $db->exec('CREATE INDEX idx_queue_status ON queue(status, priority, id)');
     $db->exec('CREATE INDEX idx_claims_norm ON claims(norm)');
+}
+
+function research_open_direction(PDO $db): ?array
+{
+    $rows = $db->query("SELECT * FROM hypotheses WHERE direction != '' AND status IN ('testing', 'supported', 'narrowed') ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($rows as $row) {
+        $child = research_one($db, "SELECT id FROM hypotheses WHERE parent_id = ? AND status = 'proposed'", [(int)$row['id']]);
+        if (!$child) {
+            return $row;
+        }
+    }
+    return null;
+}
+
+function research_direction_packet(PDO $db, string $slug, array $row): array
+{
+    $view = research_status_view($db);
+    return [
+        'name' => $slug,
+        'stage' => 'reflect',
+        'phase' => 'ideate',
+        'parent_id' => (int)$row['id'],
+        'direction' => (string)$row['direction'],
+        'hypotheses' => $view['lines'],
+        'constraints' => research_constraints($db),
+        'priors' => research_priors($db, (int)$row['id']),
+        'contradictions' => $view['open_contradictions'],
+        'message' => 'Operator direction on hypothesis #' . (int)$row['id'] . ': ' . $row['direction'] . '. That note is where to look, not evidence. ' . research_ideate_message((int)$row['id']),
+    ];
+}
+
+function research_migrate(PDO $db): void
+{
+    $tables = [];
+    foreach ($db->query("SELECT name FROM sqlite_master WHERE type = 'table'") as $row) {
+        $tables[] = (string)$row['name'];
+    }
+    if (!in_array('hypotheses', $tables, true) || !in_array('meta', $tables, true)) {
+        return;
+    }
+    $have = [];
+    foreach ($db->query('PRAGMA table_info(hypotheses)') as $col) {
+        $have[] = (string)$col['name'];
+    }
+    $add = [
+        'parent_id' => 'INTEGER NOT NULL DEFAULT 0',
+        'insight' => "TEXT NOT NULL DEFAULT ''",
+        'direction' => "TEXT NOT NULL DEFAULT ''",
+        'inherited' => "TEXT NOT NULL DEFAULT ''",
+    ];
+    $changed = false;
+    foreach ($add as $name => $ddl) {
+        if (!in_array($name, $have, true)) {
+            $db->exec('ALTER TABLE hypotheses ADD COLUMN ' . $name . ' ' . $ddl);
+            $changed = true;
+        }
+    }
+    $metaHave = [];
+    foreach ($db->query('PRAGMA table_info(meta)') as $col) {
+        $metaHave[] = (string)$col['name'];
+    }
+    if (!in_array('active', $metaHave, true)) {
+        $db->exec('ALTER TABLE meta ADD COLUMN active INTEGER NOT NULL DEFAULT 0');
+        $changed = true;
+    }
+    $version = (int)$db->query('SELECT schema_version FROM meta WHERE id = 1')->fetchColumn();
+    if ($version > 0 && $version < RESEARCH_SCHEMA) {
+        $db->prepare('UPDATE meta SET schema_version = ? WHERE id = 1')->execute([RESEARCH_SCHEMA]);
+        $changed = true;
+    }
+    if ($changed) {
+        research_propagate($db);
+    }
+}
+
+function research_board(PDO $db, string $slug): array
+{
+    $view = research_status_view($db);
+    $claims = [];
+    foreach ($db->query('SELECT id, text, status FROM claims') as $claim) {
+        $claims[(int)$claim['id']] = [
+            'id' => (int)$claim['id'],
+            'text' => (string)$claim['text'],
+            'status' => (string)$claim['status'],
+        ];
+    }
+    $rows = $db->query('SELECT id, parent_id, statement, status, confidence, claim_ids, falsification, needs_review, insight, direction, inherited FROM hypotheses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    $nodes = [];
+    foreach ($rows as $row) {
+        $linked = [];
+        foreach (explode(',', (string)$row['claim_ids']) as $claimId) {
+            $claimId = (int)$claimId;
+            if ($claimId > 0 && isset($claims[$claimId])) {
+                $linked[] = $claims[$claimId];
+            }
+        }
+        $nodes[(int)$row['id']] = [
+            'id' => (int)$row['id'],
+            'parent_id' => (int)$row['parent_id'],
+            'statement' => (string)$row['statement'],
+            'status' => (string)$row['status'],
+            'confidence' => (string)$row['confidence'],
+            'falsification' => (string)$row['falsification'],
+            'needs_review' => (int)$row['needs_review'] === 1,
+            'insight' => (string)$row['insight'],
+            'direction' => (string)$row['direction'],
+            'inherited' => (string)$row['inherited'],
+            'claims' => $linked,
+            'children' => [],
+        ];
+    }
+    $childrenOf = [];
+    $roots = [];
+    foreach ($nodes as $id => $node) {
+        $parentId = $node['parent_id'];
+        if ($parentId > 0 && isset($nodes[$parentId]) && $parentId !== $id) {
+            $childrenOf[$parentId][] = $id;
+            continue;
+        }
+        $roots[] = $id;
+    }
+    $build = static function (int $id) use (&$build, $nodes, $childrenOf): array {
+        $node = $nodes[$id];
+        $node['children'] = [];
+        foreach ($childrenOf[$id] ?? [] as $childId) {
+            $node['children'][] = $build($childId);
+        }
+        return $node;
+    };
+    $tree = [];
+    foreach ($roots as $id) {
+        $tree[] = $build($id);
+    }
+    $best = research_best($nodes);
+    $directed = research_open_direction($db);
+    $waiting = (int)$view['proposed'] > 0 || (int)$view['needs_review'] > 0;
+    $idle = !$waiting && $directed === null && (int)$view['ingest'] === 0 && (int)$view['reevaluate'] === 0 && count($nodes) > 0;
+    $backpropagated = false;
+    foreach ($nodes as $node) {
+        if (trim((string)$node['inherited']) !== '') {
+            $backpropagated = true;
+            break;
+        }
+    }
+    return [
+        'name' => $slug,
+        'title' => $view['title'],
+        'question' => $view['question'],
+        'scope' => $view['scope'],
+        'cycle' => $view['cycle'],
+        'phase' => research_phase($view, $directed),
+        'backpropagated' => $backpropagated,
+        'ingest' => $view['ingest'],
+        'reevaluate' => $view['reevaluate'],
+        'proposed' => $view['proposed'],
+        'testing' => $view['testing'],
+        'needs_review' => $view['needs_review'],
+        'active' => !empty($view['active']),
+        'waiting' => $waiting,
+        'idle' => $idle,
+        'direction' => $directed ? ['id' => (int)$directed['id'], 'text' => (string)$directed['direction']] : null,
+        'constraints' => research_constraints($db),
+        'best' => $best,
+        'tree' => $tree,
+        'message' => research_status_text($db, $slug),
+    ];
+}
+
+function research_phase(array $view, ?array $directed): string
+{
+    if ((int)$view['hypotheses'] === 0) {
+        return 'ideate';
+    }
+    if ((int)$view['proposed'] > 0 && (int)$view['testing'] === 0) {
+        return 'select';
+    }
+    if ((int)$view['needs_review'] > 0) {
+        return 'decide';
+    }
+    if ($directed !== null) {
+        return 'ideate';
+    }
+    if ((int)$view['ingest'] > 0 || (int)$view['reevaluate'] > 0) {
+        return 'test';
+    }
+    return 'observe';
+}
+
+function research_ideate_message(int $parentId): string
+{
+    return 'Propose at most three child hypotheses under #' . $parentId . '. Each item is {"statement":"one sentence","status":"proposed","parent_id":' . $parentId . '}. A child refines, corrects, or extends that parent. It is a claim a source can check, not a repeat of the parent or of a sibling. Read constraints.lessons. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. Then stop. Do not ingest.';
+}
+
+function research_park_branch(PDO $db, int $id): int
+{
+    $rows = $db->query('SELECT id, parent_id, status FROM hypotheses')->fetchAll(PDO::FETCH_ASSOC);
+    $childrenOf = [];
+    foreach ($rows as $row) {
+        $childrenOf[(int)$row['parent_id']][] = $row;
+    }
+    $closed = 0;
+    $walk = static function (int $parentId) use (&$walk, $childrenOf, $db, &$closed): void {
+        foreach ($childrenOf[$parentId] ?? [] as $child) {
+            $childId = (int)$child['id'];
+            if (in_array((string)$child['status'], ['proposed', 'testing'], true)) {
+                $db->prepare("UPDATE hypotheses SET status = 'parked', needs_review = 0, direction = '' WHERE id = ?")->execute([$childId]);
+                $closed++;
+            }
+            $walk($childId);
+        }
+    };
+    $walk($id);
+    return $closed;
+}
+
+function research_propagate(PDO $db): void
+{
+    $rows = $db->query('SELECT id, parent_id, status, insight FROM hypotheses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    if ($rows === []) {
+        return;
+    }
+    $byId = [];
+    $childrenOf = [];
+    foreach ($rows as $row) {
+        $id = (int)$row['id'];
+        $byId[$id] = $row;
+        $childrenOf[(int)$row['parent_id']][] = $id;
+    }
+    $memo = [];
+    $rollup = static function (int $id) use (&$rollup, &$memo, $childrenOf, $byId): string {
+        if (isset($memo[$id])) {
+            return $memo[$id];
+        }
+        $parts = [];
+        foreach ($childrenOf[$id] ?? [] as $childId) {
+            $child = $byId[$childId];
+            $own = trim((string)$child['insight']);
+            $below = $rollup($childId);
+            $bits = [];
+            if ($own !== '') {
+                $bits[] = $own;
+            }
+            if ($below !== '') {
+                $bits[] = $below;
+            }
+            $text = implode(' ', $bits);
+            if ($text === '') {
+                continue;
+            }
+            $text = research_clip($text, 180);
+            $parts[] = '#' . $childId . ' ' . $child['status'] . ': ' . $text;
+        }
+        $joined = research_clip(implode(' ', $parts), 500);
+        $memo[$id] = $joined;
+        return $joined;
+    };
+    $update = $db->prepare('UPDATE hypotheses SET inherited = ? WHERE id = ?');
+    foreach (array_keys($byId) as $id) {
+        $update->execute([$rollup($id), $id]);
+    }
+}
+
+function research_constraints(PDO $db): array
+{
+    $rows = $db->query('SELECT id, parent_id, statement, status, insight FROM hypotheses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    $children = [];
+    $byId = [];
+    foreach ($rows as $row) {
+        $id = (int)$row['id'];
+        $byId[$id] = $row;
+        $children[(int)$row['parent_id']][] = $id;
+    }
+    $depthOf = [];
+    $walk = static function (int $id, int $depth) use (&$walk, &$depthOf, $children): void {
+        $depthOf[$id] = $depth;
+        foreach ($children[$id] ?? [] as $childId) {
+            $walk($childId, $depth + 1);
+        }
+    };
+    foreach ($children[0] ?? [] as $rootId) {
+        $walk($rootId, 0);
+    }
+    $shapeCounts = [];
+    $lessons = [];
+    $findings = [];
+    $frontier = [];
+    foreach ($byId as $id => $row) {
+        $status = (string)$row['status'];
+        $depth = $depthOf[$id] ?? 0;
+        if (!isset($shapeCounts[$depth])) {
+            $shapeCounts[$depth] = [];
+        }
+        $shapeCounts[$depth][$status] = ($shapeCounts[$depth][$status] ?? 0) + 1;
+        $item = [
+            'id' => $id,
+            'parent_id' => (int)$row['parent_id'],
+            'status' => $status,
+            'statement' => research_clip((string)$row['statement'], 160),
+            'insight' => research_clip((string)$row['insight'], 200),
+        ];
+        if (in_array($status, ['refuted', 'parked'], true)) {
+            $lessons[] = $item;
+        } elseif (in_array($status, ['supported', 'narrowed'], true)) {
+            $findings[] = $item;
+        } elseif ($status === 'proposed') {
+            $frontier[] = $item;
+        }
+    }
+    $parts = [];
+    ksort($shapeCounts);
+    foreach ($shapeCounts as $depth => $counts) {
+        $bits = [];
+        foreach ($counts as $status => $count) {
+            $bits[] = $count . ' ' . $status;
+        }
+        $parts[] = 'depth ' . $depth . ': ' . implode(', ', $bits);
+    }
+    return [
+        'shape' => $parts === [] ? 'empty' : implode(' | ', $parts),
+        'lessons' => array_slice($lessons, -8),
+        'findings' => array_slice($findings, -8),
+        'frontier' => array_slice($frontier, 0, 8),
+    ];
+}
+
+function research_priors(PDO $db, int $id): array
+{
+    $rows = $db->query('SELECT id, parent_id, statement, status, insight, inherited, direction FROM hypotheses')->fetchAll(PDO::FETCH_ASSOC);
+    $byId = [];
+    foreach ($rows as $row) {
+        $byId[(int)$row['id']] = $row;
+    }
+    $out = [];
+    $cursor = $id;
+    $guard = 0;
+    while ($cursor > 0 && isset($byId[$cursor]) && $guard < 40) {
+        $row = $byId[$cursor];
+        $out[] = [
+            'id' => (int)$row['id'],
+            'status' => (string)$row['status'],
+            'statement' => research_clip((string)$row['statement'], 160),
+            'insight' => research_clip((string)$row['insight'], 200),
+            'inherited' => research_clip((string)$row['inherited'], 240),
+            'direction' => research_clip((string)$row['direction'], 200),
+        ];
+        $cursor = (int)$row['parent_id'];
+        $guard++;
+    }
+    return array_reverse($out);
+}
+
+function research_lesson_clash(PDO $db, string $statement, string $falsification, int $parentId): void
+{
+    $words = research_words($statement);
+    $norm = strtolower(trim(preg_replace('/\s+/', ' ', $statement) ?? $statement));
+    $rows = $db->query('SELECT id, parent_id, statement, status FROM hypotheses')->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($rows as $row) {
+        $id = (int)$row['id'];
+        $status = (string)$row['status'];
+        $theirs = strtolower(trim(preg_replace('/\s+/', ' ', (string)$row['statement']) ?? ''));
+        $same = $theirs === $norm;
+        $theirWords = research_words((string)$row['statement']);
+        $shared = count(array_intersect($words, $theirWords));
+        $base = min(count($words), count($theirWords));
+        $close = $same || ($shared >= 4 && $base > 0 && ($shared / $base) >= 0.75);
+        if (!$close) {
+            continue;
+        }
+        if (in_array($status, ['refuted', 'parked'], true)) {
+            if (!$same && preg_match('/\bcounter\s*#?' . $id . '\b/i', $falsification) === 1) {
+                continue;
+            }
+            throw new InvalidArgumentException('This restates hypothesis #' . $id . ', which is ' . $status . '. Propose a different mechanism, or put counter #' . $id . ' in falsification.');
+        }
+        if ($id === $parentId) {
+            throw new InvalidArgumentException('A child has to refine hypothesis #' . $id . ', not repeat it.');
+        }
+        $sameParent = ($parentId > 0 && (int)$row['parent_id'] === $parentId) || ($parentId === 0 && (int)$row['parent_id'] === 0);
+        if ($sameParent) {
+            throw new InvalidArgumentException('Hypothesis #' . $id . ' is already a sibling on that branch. Propose a different mechanism.');
+        }
+        if (in_array($status, ['supported', 'narrowed'], true)) {
+            throw new InvalidArgumentException('This restates finding #' . $id . '. Build on it as a parent, or propose a different mechanism.');
+        }
+    }
+}
+
+function research_clip(string $text, int $max): string
+{
+    $text = trim($text);
+    if (strlen($text) <= $max) {
+        return $text;
+    }
+    return substr($text, 0, $max - 3) . '...';
+}
+
+function research_best(array $nodes): ?array
+{
+    $rank = ['high' => 3, 'moderate' => 2, 'low' => 1];
+    $cands = [];
+    foreach ($nodes as $node) {
+        if (!in_array($node['status'], ['supported', 'narrowed'], true)) {
+            continue;
+        }
+        $cands[] = $node;
+    }
+    if ($cands === []) {
+        return null;
+    }
+    usort($cands, static function (array $a, array $b) use ($rank): int {
+        $score = ($rank[$b['confidence']] ?? 0) <=> ($rank[$a['confidence']] ?? 0);
+        if ($score !== 0) {
+            return $score;
+        }
+        return $b['id'] <=> $a['id'];
+    });
+    $node = $cands[0];
+    $chain = [];
+    $guard = 0;
+    $cursor = $node;
+    while ($guard < 40) {
+        $chain[] = [
+            'id' => $cursor['id'],
+            'statement' => $cursor['statement'],
+            'insight' => $cursor['insight'],
+            'status' => $cursor['status'],
+        ];
+        $parentId = (int)$cursor['parent_id'];
+        if ($parentId <= 0 || !isset($nodes[$parentId])) {
+            break;
+        }
+        $cursor = $nodes[$parentId];
+        $guard++;
+    }
+    $chain = array_reverse($chain);
+    return [
+        'id' => $node['id'],
+        'statement' => $node['statement'],
+        'confidence' => $node['confidence'],
+        'insight' => $node['insight'],
+        'status' => $node['status'],
+        'chain' => $chain,
+    ];
 }
 
 function research_assert_schema(PDO $db): void

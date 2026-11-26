@@ -52,6 +52,7 @@ try {
     }
     $heartbeat = new Heartbeat($db);
     $heartbeat->beat();
+    $heartbeat->resumeResearch();
     foreach ($heartbeat->tasksToRun() as $task) {
         if (!$task['project_id']) {
             continue;

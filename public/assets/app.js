@@ -172,6 +172,7 @@
           nav: [
             { id: 'chat', label: 'Chat', icon: 'i-chat' },
             { id: 'tasks', label: 'Tasks', icon: 'i-tasks' },
+            { id: 'research', label: 'Research', icon: 'i-research' },
             { id: 'workspace', label: 'Files', icon: 'i-workspace' },
             { id: 'agents', label: 'Activity', icon: 'i-agents' },
             { id: 'skills', label: 'Skills', icon: 'i-skills' },
@@ -179,6 +180,19 @@
           ],
           projects: [],
           projectId: Number(localStorage.getItem('projectId') || 0),
+          researchMissions: [],
+          researchSlug: '',
+          researchBoard: null,
+          researchError: '',
+          researchBusy: false,
+          researchFormOpen: false,
+          researchForm: { title: '', question: '', scope: '' },
+          researchSelected: 0,
+          researchDirection: '',
+          researchDirectionFocused: false,
+          researchZoom: 1,
+          researchPanning: null,
+          researchPoll: 0,
           messages: [],
           context: { used: 0, total: 0 },
           compressing: false,
@@ -774,6 +788,7 @@
             await this.reloadMessages();
           }
           if (this.tab === 'tasks') await this.reloadTasks();
+          if (this.tab === 'research') await this.loadResearch();
           if (this.tab === 'workspace') await this.loadTree();
           if (this.tab === 'agents') {
             await this.refreshLogs();
@@ -797,6 +812,286 @@
           }
           await this.refreshStatus();
         },
+        async loadResearch() {
+          this.researchError = '';
+          if (!this.projectId) {
+            this.researchMissions = [];
+            this.researchBoard = null;
+            return;
+          }
+          try {
+            const data = await this.api('/api/research?project_id=' + this.projectId);
+            this.researchMissions = (data.missions || []).map((mission) => (
+              mission && typeof mission === 'object'
+                ? { name: mission.name, active: !!mission.active }
+                : { name: String(mission), active: false }
+            )).filter((mission) => mission.name);
+            if (!this.researchMissions.length) {
+              this.researchSlug = '';
+              this.researchBoard = null;
+              this.researchFormOpen = true;
+              return;
+            }
+            if (!this.researchMissions.some((mission) => mission.name === this.researchSlug)) {
+              this.researchSlug = this.researchMissions[0].name;
+            }
+            await this.loadResearchBoard();
+          } catch (error) {
+            this.researchError = error.message;
+          }
+        },
+        async loadResearchBoard(quiet) {
+          if (!this.projectId || !this.researchSlug) return;
+          try {
+            const data = await this.api('/api/research/board?project_id=' + this.projectId + '&name=' + encodeURIComponent(this.researchSlug));
+            this.researchBoard = data;
+            const ids = this.researchMap().nodes.map((node) => node.id);
+            if (!ids.includes(this.researchSelected)) {
+              this.researchSelected = (data.best && data.best.id) || ids[0] || 0;
+            }
+            if (!this.researchDirectionFocused) {
+              const node = this.researchMap().nodes.find((item) => item.id === this.researchSelected);
+              this.researchDirection = node ? (node.direction || '') : '';
+            }
+          } catch (error) {
+            if (!quiet) this.researchError = error.message;
+          }
+        },
+        async openResearch(name) {
+          this.researchSlug = name;
+          this.researchSelected = 0;
+          this.researchDirection = '';
+          await this.loadResearchBoard();
+        },
+        async createResearch() {
+          if (this.researchBusy || !this.projectId) return;
+          this.researchError = '';
+          this.researchBusy = true;
+          try {
+            const data = await this.api('/api/research/mission', {
+              method: 'POST',
+              body: {
+                project_id: this.projectId,
+                title: this.researchForm.title,
+                question: this.researchForm.question,
+                scope: this.researchForm.scope
+              }
+            });
+            this.researchForm = { title: '', question: '', scope: '' };
+            this.researchFormOpen = false;
+            this.researchSlug = data.name || '';
+            await this.loadResearch();
+          } catch (error) {
+            this.researchError = error.message;
+          } finally {
+            this.researchBusy = false;
+          }
+        },
+        async runResearch() {
+          if (this.researchBusy || !this.researchSlug) return;
+          this.researchError = '';
+          this.researchBusy = true;
+          try {
+            await this.api('/api/research/run', {
+              method: 'POST',
+              body: { project_id: this.projectId, name: this.researchSlug }
+            });
+            this.researchPoll = 0;
+            await this.loadResearch();
+          } catch (error) {
+            this.researchError = error.message;
+          } finally {
+            this.researchBusy = false;
+          }
+        },
+        async stopResearch() {
+          if (this.researchBusy || !this.researchSlug) return;
+          this.researchError = '';
+          this.researchBusy = true;
+          try {
+            await this.api('/api/research/stop', {
+              method: 'POST',
+              body: { project_id: this.projectId, name: this.researchSlug }
+            });
+            await this.loadResearch();
+          } catch (error) {
+            this.researchError = error.message;
+          } finally {
+            this.researchBusy = false;
+          }
+        },
+        async deleteResearch() {
+          if (this.researchBusy || !this.researchSlug) return;
+          if (!window.confirm('Delete the research mission ' + this.researchSlug + '? The tree and its sources are removed.')) return;
+          this.researchError = '';
+          this.researchBusy = true;
+          const slug = this.researchSlug;
+          try {
+            await this.api('/api/research/delete', {
+              method: 'POST',
+              body: { project_id: this.projectId, name: slug }
+            });
+            this.researchSlug = '';
+            this.researchBoard = null;
+            this.researchSelected = 0;
+            await this.loadResearch();
+          } catch (error) {
+            this.researchError = error.message;
+          } finally {
+            this.researchBusy = false;
+          }
+        },
+        async reviewResearch(decision, withDirection) {
+          if (this.researchBusy || !this.researchSelected) return;
+          this.researchError = '';
+          this.researchBusy = true;
+          try {
+            const body = {
+              project_id: this.projectId,
+              name: this.researchSlug,
+              id: this.researchSelected
+            };
+            if (decision) body.decision = decision;
+            if (withDirection) body.direction = this.researchDirection;
+            await this.api('/api/research/review', { method: 'POST', body });
+            this.researchDirectionFocused = false;
+            await this.loadResearchBoard();
+          } catch (error) {
+            this.researchError = error.message;
+          } finally {
+            this.researchBusy = false;
+          }
+        },
+        researchMap() {
+          const tree = (this.researchBoard && this.researchBoard.tree) || [];
+          const nodes = [];
+          const width = 232;
+          const height = 96;
+          const gapX = 84;
+          const gapY = 36;
+          const pad = 28;
+          let row = 0;
+          const place = (node, depth) => {
+            const children = node.children || [];
+            if (!children.length) {
+              const at = row;
+              row += 1;
+              nodes.push(Object.assign({}, node, { depth: depth, row: at }));
+              return at;
+            }
+            const rows = children.map((child) => place(child, depth + 1));
+            const at = (rows[0] + rows[rows.length - 1]) / 2;
+            nodes.push(Object.assign({}, node, { depth: depth, row: at }));
+            return at;
+          };
+          tree.forEach((node) => place(node, 0));
+          let maxDepth = 0;
+          nodes.forEach((node) => {
+            node.x = pad + node.depth * (width + gapX);
+            node.y = pad + node.row * (height + gapY);
+            node.w = width;
+            node.h = height;
+            if (node.depth > maxDepth) maxDepth = node.depth;
+          });
+          const byId = {};
+          nodes.forEach((node) => { byId[node.id] = node; });
+          const edges = [];
+          nodes.forEach((node) => {
+            const parent = byId[node.parent_id];
+            if (!parent) return;
+            const x1 = parent.x + parent.w;
+            const y1 = parent.y + parent.h / 2;
+            const x2 = node.x;
+            const y2 = node.y + node.h / 2;
+            const bend = Math.max(28, (x2 - x1) / 2);
+            edges.push({
+              id: parent.id + '-' + node.id,
+              d: 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + bend) + ' ' + y1 + ', ' + (x2 - bend) + ' ' + y2 + ', ' + x2 + ' ' + y2
+            });
+          });
+          return {
+            nodes: nodes,
+            edges: edges,
+            width: pad + (maxDepth + 1) * (width + gapX) + pad,
+            height: Math.max(pad * 2 + height, pad + row * (height + gapY))
+          };
+        },
+        researchCurrent() {
+          return this.researchMap().nodes.find((node) => node.id === this.researchSelected) || null;
+        },
+        researchRunDisabled() {
+          if (this.researchBusy || !this.researchSlug || !this.researchBoard) return true;
+          if (this.researchBoard.running || this.researchBoard.waiting || this.researchBoard.idle) return true;
+          return false;
+        },
+        researchStateLabel() {
+          const board = this.researchBoard;
+          if (!board) return '';
+          if (!board.active && !board.running) return 'Off';
+          if (board.phase === 'select') return 'On · waiting on you to choose a branch';
+          if (board.phase === 'decide') return 'On · waiting on you to keep or park a result';
+          if (board.phase === 'ideate') return 'On · ready to branch';
+          if (board.phase === 'test') return 'On · reading sources';
+          if (board.phase === 'observe') return 'On · watching for the next step';
+          if (board.running) return 'On · working';
+          return 'On · starting';
+        },
+        researchSteps() {
+          const order = [
+            ['observe', 'Observe'],
+            ['ideate', 'Ideate'],
+            ['select', 'Select'],
+            ['test', 'Test'],
+            ['backpropagate', 'Backpropagate'],
+            ['decide', 'Decide']
+          ];
+          const phase = (this.researchBoard && this.researchBoard.phase) || '';
+          const index = order.findIndex((step) => step[0] === phase);
+          const back = !!(this.researchBoard && this.researchBoard.backpropagated);
+          return order.map((step, at) => ({
+            id: step[0],
+            label: step[1],
+            now: step[0] === phase,
+            done: step[0] === 'backpropagate' ? back && phase !== 'backpropagate' : index > at
+          }));
+        },
+        researchLessons() {
+          const list = (this.researchBoard && this.researchBoard.constraints && this.researchBoard.constraints.lessons) || [];
+          return list.slice(-4);
+        },
+        selectResearchNode(node) {
+          this.researchSelected = node.id;
+          if (!this.researchDirectionFocused) this.researchDirection = node.direction || '';
+        },
+        selectResearchNodeId(id) {
+          const node = this.researchMap().nodes.find((item) => item.id === id);
+          if (node) this.selectResearchNode(node);
+        },
+        researchPanStart(event) {
+          if (event.button !== 0) return;
+          if (event.target.closest('.research-node, button, a, input, textarea')) return;
+          const board = this.$refs.researchCanvas;
+          if (!board) return;
+          this.researchPanning = {
+            x: event.clientX,
+            y: event.clientY,
+            left: board.scrollLeft,
+            top: board.scrollTop,
+            id: event.pointerId
+          };
+          board.setPointerCapture(event.pointerId);
+        },
+        researchPanMove(event) {
+          if (!this.researchPanning || this.researchPanning.id !== event.pointerId) return;
+          const board = this.$refs.researchCanvas;
+          if (!board) return;
+          board.scrollLeft = this.researchPanning.left - (event.clientX - this.researchPanning.x);
+          board.scrollTop = this.researchPanning.top - (event.clientY - this.researchPanning.y);
+        },
+        researchPanEnd(event) {
+          if (this.researchPanning && event && this.researchPanning.id !== event.pointerId) return;
+          this.researchPanning = null;
+        },
         async onProjectChange() {
           localStorage.setItem('projectId', String(this.projectId || 0));
           this.messages = [];
@@ -818,6 +1113,12 @@
           this.compressError = '';
           this.live = '';
           this.liveDetail = { thinking: [], tools: [] };
+          this.researchSlug = '';
+          this.researchBoard = null;
+          this.researchMissions = [];
+          this.researchSelected = 0;
+          this.researchError = '';
+          this.researchFormOpen = false;
           this.replyId = null;
           this.streamError = '';
           clearTimeout(this._chatSearchTimer);
@@ -3912,6 +4213,13 @@
             if (!document.hidden) {
               this.refreshModelLoad(true).then(() => this.maybeSendProjectOpener()).catch(function () {});
               if (this.tab === 'tasks') this.reloadTasks();
+              if (this.tab === 'research' && this.researchBoard && (this.researchBoard.active || this.researchBoard.running)) {
+                this.researchPoll += 1;
+                if (this.researchPoll >= 3) {
+                  this.researchPoll = 0;
+                  this.loadResearchBoard(true).catch(function () {});
+                }
+              }
               if (this.compressArmed && !this.sending && this.tab === 'chat') this.reloadMessages().catch(function () {});
               if (this.tab === 'chat' && !this.sending) {
                 const last = this.messages[this.messages.length - 1];

@@ -166,12 +166,12 @@ class SubagentRunner
 Team. Delegate by the kind of work. Every subagent can use: {$shared}.
 Those skills cover any file in the project, including the wiki. {$scope} A new or replaced skill goes to the coder through write_skill. That registers it in the Skills library, outside the project, so later runs and scheduled tasks can call it by name. You have write_skill when the coder cannot finish it. A skill already in the list is called by name. Do not call write_skill for it. test_skill runs a skill and returns what it printed. You have that too. Do not write a skill into the project.
 {$capLine}
-- researcher: find and check facts with web_search, fetch_url, and browse_url, and use yahoo_finance for trading research across stocks, bonds, commodities, crypto, currencies, indexes, and futures, parse documents, then save a lookup with wiki_memory. A research mission is research_loop action mission. That call creates database/research-<slug>.db and the one task. Do not create the task. Do not put research in the project description, and do not create a wiki file per finding.
+- researcher: find and check facts with web_search, fetch_url, and browse_url, and use yahoo_finance for trading research across stocks, bonds, commodities, crypto, currencies, indexes, and futures, parse documents, then save a lookup with wiki_memory. A research mission is research_loop action mission. That call creates database/research-<slug>.db. It shows on the Research tab. action active, on 1 or 0, turns it on or off and pauses every other mission. action status answers how it is going. Do not create a task. Do not call add, next, commit, or review. Do not delete a mission. Do not put research in the project description, and do not create a wiki file per finding.
 - writer: draft long-form text, documentation, and communication copy, and save it in the wiki. A poem, book, web content, or article runs write_article and follows every step, including humanizer and a spelling pass. A PDF is the last step of that skill, and only the file path comes back. Pass a font color, a size, or a picture only when the user named one. Otherwise every line stays black. A figure, icon, or infographic runs make_graphic, then the file is written and its path comes back. Delegate the brief and the file name. Do not give a PDF to the coder.
 - coder: write and debug software in PHP, run code_verifier on each changed file, and use download_large for a download over 100 MB. Use Python only when a Python library is required, and run that file with run_python. If run_python says a library is missing, stop and name it. Do not install it. Do not use run_command for Python, and do not ask for full system control to run a script. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A skill program is PHP. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
 - marketer: campaigns, press copy, brand, and visual direction. An icon or infographic runs make_graphic.
-- consultant: a subagent for a hard multi-step problem. Delegate with agent consultant. It uses an external paid model and the same project file skills. It can list, create, update, and delete tasks. It can call research_loop action mission. That call creates the database and the one task. It does not write the task steps. It has no write_skill or test_skill. When it returns, delegate the first open step. Delegate only when the note says the Consultant is on.
+- consultant: a subagent for a hard multi-step problem. Delegate with agent consultant. It uses an external paid model and the same project file skills. It can list, create, update, and delete tasks. It can call research_loop action mission. That call creates the database. It shows on the Research tab. It does not create a task. It has no write_skill or test_skill. Delegate only when the note says the Consultant is on.
 TXT;
     }
 
@@ -235,8 +235,8 @@ TXT;
             $identity .= "\n\n" . $brief;
         }
         $researchRule = match ($agent) {
-            'researcher' => ' A research mission is research_loop and one database/research-<slug>.db per question. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db.',
-            'consultant' => ' You can see research_loop. Its instructions are written out below. To set a mission up, call research_loop with action mission, title, and question. That call creates the database and the one task. Do not create the task and do not write its steps. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db. Do not add a second task for the same slug. Do not run the research packets.',
+            'researcher' => ' A research mission is research_loop and one database/research-<slug>.db per question. Read the lessons before a new hypothesis. A child refines its parent and does not restate a lesson, a finding, or a sibling. A later hypothesis has parent_id. A settled hypothesis has insight, and that lesson moves up the tree. Do not call action active or review. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db.',
+            'consultant' => ' You can see research_loop. Its instructions are written out below. To set a mission up, call research_loop with action mission, title, and question. That call creates the database. It shows on the Research tab. action active, on 1 or 0, turns it on or off and pauses every other mission. action status answers how it is going. Do not create a task. Do not call add, next, commit, or review. Do not delete a mission. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db. Do not run the research packets.',
             default => '',
         };
         $skillLead = $agent === 'consultant'
@@ -890,8 +890,18 @@ TXT;
             if ($name === 'research_loop' && $agent !== 'researcher') {
                 $tools[$name] = function (array $args) use ($handler): string {
                     $action = strtolower(trim((string)($args['action'] ?? '')));
-                    if (in_array($action, ['add', 'next', 'commit'], true)) {
-                        return 'The researcher does this pass. Do not call research_loop action ' . $action . '.';
+                    if (in_array($action, ['add', 'next', 'commit', 'review'], true)) {
+                        return 'The research loop runs this pass. Do not call research_loop action ' . $action . '. Use status to answer how it is going, or active to turn it on or off.';
+                    }
+                    return $handler($args);
+                };
+                continue;
+            }
+            if ($name === 'research_loop' && $agent === 'researcher') {
+                $tools[$name] = function (array $args) use ($handler): string {
+                    $action = strtolower(trim((string)($args['action'] ?? '')));
+                    if (in_array($action, ['active', 'review'], true)) {
+                        return 'The switch and the steering stay outside this pass. Do not call research_loop action ' . $action . '.';
                     }
                     return $handler($args);
                 };

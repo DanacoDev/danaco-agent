@@ -964,7 +964,7 @@ SQL);
 
     public function modelInUse(): bool
     {
-        $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE kind IN ('chat', 'subagent', 'task') AND status = 'running' AND updated_at >= datetime('now', '-5 minutes') LIMIT 1");
+        $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE kind IN ('chat', 'subagent', 'task', 'research') AND status = 'running' AND updated_at >= datetime('now', '-5 minutes') LIMIT 1");
         return (bool)$stmt->fetchColumn();
     }
 
@@ -1059,6 +1059,36 @@ SQL);
         $attempts = (int)$stmt->fetchColumn();
         $status = $attempts >= $maxAttempts ? 'gave_up' : 'error';
         $this->pdo->prepare("UPDATE jobs SET status = ?, last_error = ?, updated_at = datetime('now') WHERE id = ?")->execute([$status, clip_text($error, 2000), $id]);
+    }
+
+    public function runningResearchJob(int $projectId): ?array
+    {
+        if ($projectId <= 0) {
+            return null;
+        }
+        $stmt = $this->pdo->prepare("SELECT * FROM jobs WHERE kind = 'research' AND project_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1");
+        $stmt->execute([$projectId]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    public function runningResearchJobs(): array
+    {
+        return $this->pdo->query("SELECT * FROM jobs WHERE kind = 'research' AND status = 'running' ORDER BY id")->fetchAll();
+    }
+
+    public function refreshResearchJob(int $id): void
+    {
+        $this->pdo->prepare("UPDATE jobs SET status = 'running', attempts = 1, last_error = NULL, updated_at = datetime('now') WHERE id = ?")->execute([$id]);
+    }
+
+    public function foregroundWork(): bool
+    {
+        if ($this->lockFresh('subagent_lock', 900)) {
+            return true;
+        }
+        $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE kind IN ('chat', 'subagent', 'task') AND status = 'running' AND updated_at >= datetime('now', '-5 minutes') LIMIT 1");
+        return (bool)$stmt->fetchColumn();
     }
 
     public function job(int $id): ?array

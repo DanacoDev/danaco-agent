@@ -46,6 +46,12 @@ class LLMClient
 
     private float $placementNext = 0;
 
+    private int $splitSeen = 0;
+
+    private float $splitNext = 0;
+
+    private bool $offloadStopped = false;
+
     private array $fitCache = [];
 
     private array $ctxCache = [];
@@ -313,6 +319,9 @@ class LLMClient
             $this->releaseOthers((string)$this->db->getSetting('local_model', app_config()['local_model']));
         }
         $this->restoreGpu();
+        $this->offloadStopped = false;
+        $this->splitSeen = 0;
+        $this->splitNext = 0;
         $last = null;
         $who = $agent !== '' ? $agent : 'orchestrator';
         for ($try = 1; $try <= 3; $try++) {
@@ -327,6 +336,10 @@ class LLMClient
             } catch (OutputRepeated $e) {
                 throw $e;
             } catch (LlmException $e) {
+                if ($this->offloadStopped) {
+                    $this->db->loop($who, 'model', $e->getMessage());
+                    throw $e;
+                }
                 $last = $e;
                 $this->db->loop($who, 'retry', 'try ' . $try . '/3 · ' . $e->getMessage());
                 if ($e->getMessage() === 'The model did not reply.') {
@@ -978,6 +991,9 @@ class LLMClient
                 try {
                     if ($ollama) {
                         $this->watchPlacement($model);
+                        if ($this->watchSplit($model)) {
+                            return 1;
+                        }
                     }
                     return ($shouldStop && $shouldStop()) ? 1 : 0;
                 } catch (ChatStopped $e) {
@@ -1099,6 +1115,10 @@ class LLMClient
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
         unset($ch);
+        if ($ollama && $this->offloadStopped) {
+            $this->stopModel($model);
+            throw new LlmException('This model is running partly on the CPU, so this reply was stopped and the model was unloaded.', false);
+        }
         $stopped = false;
         $this->doneReason = $doneReason;
         try {
@@ -1279,6 +1299,36 @@ class LLMClient
             return;
         }
         $this->markCpu(true);
+    }
+
+    private function watchSplit(string $model): bool
+    {
+        if ($this->offloadStopped) {
+            return true;
+        }
+        if (microtime(true) < $this->splitNext) {
+            return false;
+        }
+        $this->splitNext = microtime(true) + 3;
+        $row = $this->modelRow($model);
+        if ($row === null) {
+            return false;
+        }
+        $size = (int)($row['size'] ?? 0);
+        $vram = (int)($row['size_vram'] ?? 0);
+        if ($size <= 0 || $vram <= 0) {
+            return false;
+        }
+        if ($vram >= (int)($size * 0.9)) {
+            $this->splitSeen = 0;
+            return false;
+        }
+        $this->splitSeen++;
+        if ($this->splitSeen < 2) {
+            return false;
+        }
+        $this->offloadStopped = true;
+        return true;
     }
 
     private function sayGpu(?callable $onNote, string $text): void

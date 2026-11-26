@@ -741,7 +741,7 @@ TXT;
             $context = <<<TXT
 Assigned project folder: {$folder}
 Assigned project name: {$project['name']}
-{$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. A research mission is one research_loop action mission. That call creates database/research-<slug>.db and the one task. Do not create the task. Other findings get their own markdown file in that folder. Other structured rows go in their own SQLite file in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task.
+{$rename}Store project markdown only in {$folder}/wiki/. The description file is wiki/PROJECT.md. It holds only the general description: what the project is, contributors, credentials, and main goals. A research mission is one research_loop action mission. That call creates database/research-<slug>.db. It shows on the Research tab. Do not create a task for it. Other findings get their own markdown file in that folder. Other structured rows go in their own SQLite file in database/. wiki/NOTES.md is the doodle board. Small reminders and ideas for later go there with save_note, not in the description file. The task list has no backlog. An idea that is not scheduled does not get a task.
 When you create or cite a file, put its path alone on a line, such as wiki/NOTES.md or report.pdf. The chat adds a download button at the top right of that line. A png, jpg, gif, or webp on its own line is shown in the chat.
 A plan, a rule, a decision, or a conclusion is written in the same turn it is made. Read the matching wiki file, then update it with wiki_memory action write. Do this again when a later message changes it. Do not wait to be asked, and do not leave that record only in the chat. Do not copy the whole chat into the wiki. Update the file that already holds that topic, or start a new file for a new plan.
 Tag every delegation exactly as project: {$folder}
@@ -849,7 +849,7 @@ TXT;
             }
         }
         if ($this->taskIsolate) {
-            $tail .= "\n\nYou are the task manager for this scheduled run. Nobody can answer you here. Do not ask a question. Do not ask the user to approve, choose, or confirm. If hypotheses are proposed and waiting, list each one as a statement and stop. End with the line awaiting approval. The user approves later in the chat with research_loop action review. Do not call review yourself.\n";
+            $tail .= "\n\nYou are the task manager for this scheduled run. Nobody can answer you here. Do not ask a question. Do not ask the user to approve, choose, or confirm. A research mission is not a task. It keeps running until it is turned off. Do not run its packets from this task.\n";
         }
         return $tail;
     }
@@ -1614,8 +1614,8 @@ TXT;
                     if ($name === 'research_loop') {
                         $tools[$name] = function (array $args) use ($handler): string {
                             $action = strtolower(trim((string)($args['action'] ?? '')));
-                            if (in_array($action, ['add', 'next', 'commit'], true)) {
-                                return 'The researcher does this pass. Delegate the open step. Do not call research_loop action ' . $action . '.';
+                            if (in_array($action, ['add', 'next', 'commit', 'review'], true)) {
+                                return 'The research loop runs this pass. Do not call research_loop action ' . $action . '. Use status to answer how it is going, or active to turn it on or off.';
                             }
                             return $handler($args);
                         };

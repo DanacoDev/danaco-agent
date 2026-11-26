@@ -34,6 +34,9 @@ class Heartbeat
                 $this->traceJob($job, 'Skipped job ' . $id . ' · subagent still working');
                 continue;
             }
+            if ((string)$job['kind'] === 'research') {
+                continue;
+            }
             if ((string)$job['kind'] === 'task') {
                 if ($this->closeFinishedOccurrence($job)) {
                     continue;
@@ -358,6 +361,253 @@ class Heartbeat
         $this->db->loopWrite($jobId, $projectId, 'heartbeat', 'process', $line);
     }
 
+    public function launchResearch(array $job): bool
+    {
+        $jobId = (int)($job['id'] ?? 0);
+        $projectId = (int)($job['project_id'] ?? 0);
+        if ($jobId <= 0 || $projectId <= 0) {
+            return false;
+        }
+        $php = PHP_BINARY !== '' ? PHP_BINARY : 'php';
+        $script = dirname(__DIR__) . '/bin/run-research.php';
+        $log = app_config()['data_dir'] . '/research-run.log';
+        $cmd = 'nohup ' . escapeshellarg($php) . ' ' . escapeshellarg($script) . ' ' . $jobId;
+        $lines = [];
+        exec($cmd . ' >> ' . escapeshellarg($log) . ' 2>&1 < /dev/null & echo $!', $lines);
+        $pid = (int)trim((string)($lines[0] ?? '0'));
+        if ($pid <= 0) {
+            $this->db->loopWrite($jobId, $projectId, 'researcher', 'process', 'Research job ' . $jobId . ' did not start');
+            return false;
+        }
+        $this->db->setSetting('research_run_pid', (string)$pid);
+        $this->db->loopWrite($jobId, $projectId, 'researcher', 'process', 'Research job ' . $jobId . ' started');
+        return true;
+    }
+
+    public function researchProcessLive(): bool
+    {
+        $pid = (int)$this->db->getSetting('research_run_pid', '0');
+        if ($pid <= 1) {
+            return false;
+        }
+        $result = Process::run(['ps', '-ww', '-p', (string)$pid, '-o', 'command='], null, null, 3);
+        if ((int)$result['code'] !== 0) {
+            return false;
+        }
+        return str_contains((string)$result['stdout'], 'run-research.php');
+    }
+
+    public function startResearch(int $projectId, string $folder, string $slug): bool
+    {
+        if ($projectId <= 0 || $folder === '' || $slug === '') {
+            return false;
+        }
+        if (!$this->db->tryLock('research_launch', 15)) {
+            return false;
+        }
+        try {
+            $this->pauseResearchExcept(Projects::root($folder) . '/database/research-' . $slug . '.db');
+            foreach ($this->db->runningResearchJobs() as $job) {
+                if ((int)($job['project_id'] ?? 0) === $projectId && $this->researchJobSlug($job) === $slug) {
+                    continue;
+                }
+                $this->db->interruptJob((int)$job['id']);
+                $this->traceJob($job, 'Research paused · another mission started');
+            }
+            $job = $this->db->runningResearchJob($projectId);
+            if ($job && $this->researchJobSlug($job) === $slug) {
+                if ($this->researchProcessLive()) {
+                    return true;
+                }
+                $this->db->refreshResearchJob((int)$job['id']);
+                $fresh = $this->db->job((int)$job['id']);
+                return $fresh ? $this->launchResearch($fresh) : false;
+            }
+            $jobId = $this->db->startJob('research', $projectId, [
+                'slug' => $slug,
+                'folder' => $folder,
+            ]);
+            $created = $this->db->job($jobId);
+            return $created ? $this->launchResearch($created) : false;
+        } finally {
+            $this->db->unlock('research_launch');
+        }
+    }
+
+    public function stopResearch(int $projectId, string $slug): void
+    {
+        $job = $this->db->runningResearchJob($projectId);
+        if ($job && $this->researchJobSlug($job) === $slug) {
+            $this->db->interruptJob((int)$job['id']);
+            $this->db->loopWrite((int)$job['id'], $projectId, 'researcher', 'process', 'Research ' . $slug . ' stopped');
+        }
+    }
+
+    public function resumeResearch(): void
+    {
+        if (!$this->db->tryLock('research_launch', 15)) {
+            return;
+        }
+        try {
+            $missions = $this->activeResearchMissions();
+            $keep = null;
+            if (count($missions) > 1) {
+                foreach ($this->db->runningResearchJobs() as $job) {
+                    foreach ($missions as $mission) {
+                        if ($this->missionMatchesJob($mission, $job)) {
+                            $keep = $mission;
+                            break 2;
+                        }
+                    }
+                }
+                if ($keep === null) {
+                    usort($missions, static fn(array $a, array $b): int => $b['mtime'] <=> $a['mtime']);
+                    $keep = $missions[0];
+                }
+                foreach ($missions as $mission) {
+                    if ($mission['path'] === $keep['path']) {
+                        continue;
+                    }
+                    $this->setResearchActive($mission['path'], 0);
+                }
+            } elseif (count($missions) === 1) {
+                $keep = $missions[0];
+            }
+            foreach ($this->db->runningResearchJobs() as $job) {
+                if ($keep !== null && $this->missionMatchesJob($keep, $job)) {
+                    continue;
+                }
+                $this->db->interruptJob((int)$job['id']);
+            }
+            if ($this->researchProcessLive() || $keep === null) {
+                return;
+            }
+            $job = $this->db->runningResearchJob((int)$keep['project_id']);
+            if ($job && $this->researchJobSlug($job) === $keep['slug']) {
+                $this->db->refreshResearchJob((int)$job['id']);
+                $fresh = $this->db->job((int)$job['id']);
+                if ($fresh) {
+                    $this->launchResearch($fresh);
+                }
+                return;
+            }
+            $jobId = $this->db->startJob('research', (int)$keep['project_id'], [
+                'slug' => $keep['slug'],
+                'folder' => $keep['folder'],
+            ]);
+            $created = $this->db->job($jobId);
+            if ($created) {
+                $this->launchResearch($created);
+            }
+        } finally {
+            $this->db->unlock('research_launch');
+        }
+    }
+
+    private function activeResearchMissions(): array
+    {
+        $found = [];
+        foreach ($this->db->projects() as $project) {
+            $folder = (string)($project['folder_name'] ?? '');
+            if ($folder === '') {
+                continue;
+            }
+            try {
+                $dir = Projects::root($folder) . '/database';
+            } catch (Throwable $e) {
+                continue;
+            }
+            if (!is_dir($dir)) {
+                continue;
+            }
+            foreach (scandir($dir) ?: [] as $name) {
+                if (preg_match('/^research-([a-z0-9-]{1,40})\.db$/', $name, $match) !== 1) {
+                    continue;
+                }
+                $path = $dir . '/' . $name;
+                if (!$this->researchFileActive($path)) {
+                    continue;
+                }
+                $found[] = [
+                    'project_id' => (int)$project['id'],
+                    'folder' => $folder,
+                    'slug' => $match[1],
+                    'path' => $path,
+                    'mtime' => (int)(@filemtime($path) ?: 0),
+                ];
+            }
+        }
+        return $found;
+    }
+
+    private function pauseResearchExcept(string $keep): void
+    {
+        $keepReal = realpath($keep) ?: $keep;
+        foreach ($this->activeResearchMissions() as $mission) {
+            $real = realpath($mission['path']) ?: $mission['path'];
+            if ($real === $keepReal) {
+                continue;
+            }
+            $this->setResearchActive($mission['path'], 0);
+        }
+    }
+
+    private function researchFileActive(string $path): bool
+    {
+        if (!is_file($path)) {
+            return false;
+        }
+        try {
+            $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $have = [];
+            foreach ($pdo->query('PRAGMA table_info(meta)') as $col) {
+                $have[] = (string)$col['name'];
+            }
+            if (!in_array('active', $have, true)) {
+                return false;
+            }
+            return (int)$pdo->query('SELECT active FROM meta WHERE id = 1')->fetchColumn() === 1;
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    private function setResearchActive(string $path, int $on): void
+    {
+        if (!is_file($path)) {
+            return;
+        }
+        try {
+            $pdo = new PDO('sqlite:' . $path, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $have = [];
+            foreach ($pdo->query('PRAGMA table_info(meta)') as $col) {
+                $have[] = (string)$col['name'];
+            }
+            if (!in_array('active', $have, true)) {
+                $pdo->exec('ALTER TABLE meta ADD COLUMN active INTEGER NOT NULL DEFAULT 0');
+            }
+            $stmt = $pdo->prepare('UPDATE meta SET active = ? WHERE id = 1');
+            $stmt->execute([$on === 1 ? 1 : 0]);
+        } catch (Throwable $e) {
+            return;
+        }
+    }
+
+    private function missionMatchesJob(array $mission, array $job): bool
+    {
+        return (int)($job['project_id'] ?? 0) === (int)$mission['project_id']
+            && $this->researchJobSlug($job) === (string)$mission['slug'];
+    }
+
+    private function researchJobSlug(array $job): string
+    {
+        $payload = $job['payload'] ?? null;
+        if (is_string($payload)) {
+            $payload = json_decode($payload, true);
+        }
+        return is_array($payload) ? trim((string)($payload['slug'] ?? '')) : '';
+    }
+
     private function taskProcessLive(): bool
     {
         $pid = (int)$this->db->getSetting('task_run_pid', '0');
@@ -651,6 +901,9 @@ class Heartbeat
             $name = is_array($payload) ? trim((string)($payload['agent'] ?? '')) : '';
             $agent = $name !== '' ? $name : 'subagent';
         }
+        if ($kind === 'research') {
+            $agent = 'researcher';
+        }
         $jobId = isset($job['id']) ? (int)$job['id'] : null;
         $this->db->loopWrite($jobId, $projectId, $agent, 'process', $line);
     }
@@ -658,8 +911,13 @@ class Heartbeat
     public function tasksToRun(): array
     {
         $due = [];
+        $board = new Kanban($this->db);
         foreach ($this->db->dueTasks() as $task) {
             if (empty($task['project_id'])) {
+                continue;
+            }
+            if ($board->isResearchTask($task)) {
+                $board->retireResearch($task);
                 continue;
             }
             $due[] = $task;

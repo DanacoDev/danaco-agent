@@ -28,6 +28,13 @@ class Api
         $router->add('PATCH', '#^/api/subtasks/(?P<id>\d+)$#', $this->guard(fn(array $args) => $this->updateSubtask((int)$args['id'])));
         $router->add('POST', '#^/api/subtasks/(?P<id>\d+)/delete$#', $this->guard(fn(array $args) => $this->deleteSubtask((int)$args['id'])));
         $router->add('POST', '#^/api/tasks/finished/clear$#', $this->guard(fn() => $this->clearFinishedTasks()));
+        $router->add('GET', '#^/api/research$#', $this->guard(fn() => $this->researchMissions()));
+        $router->add('GET', '#^/api/research/board$#', $this->guard(fn() => $this->researchBoard()));
+        $router->add('POST', '#^/api/research/mission$#', $this->guard(fn() => $this->researchMission()));
+        $router->add('POST', '#^/api/research/review$#', $this->guard(fn() => $this->researchReview()));
+        $router->add('POST', '#^/api/research/run$#', $this->guard(fn() => $this->researchRun()));
+        $router->add('POST', '#^/api/research/stop$#', $this->guard(fn() => $this->researchStop()));
+        $router->add('POST', '#^/api/research/delete$#', $this->guard(fn() => $this->researchDelete()));
         $router->add('GET', '#^/api/messages$#', $this->guard(fn() => $this->messages()));
         $router->add('POST', '#^/api/messages$#', $this->guard(fn() => $this->saveMessage()));
         $router->add('POST', '#^/api/context/compress$#', $this->guard(fn() => $this->compressContext()));
@@ -239,21 +246,272 @@ class Api
         $projectId = (int)($_GET['project_id'] ?? 0);
         $tasks = $this->db->tasks($projectId > 0 ? $projectId : null);
         $board = new Kanban($this->db);
-        foreach ($tasks as $index => $task) {
+        $visible = [];
+        foreach ($tasks as $task) {
+            if ($board->isResearchTask($task)) {
+                $board->retireResearch($task);
+                continue;
+            }
             $raw = trim((string)($task['result'] ?? ''));
-            if ($raw === '') {
-                continue;
+            if ($raw !== '') {
+                $line = $board->oneLineResult($raw);
+                if ($line !== '' && $line !== $raw) {
+                    $saved = $this->db->updateTask((int)$task['id'], ['result' => $line]);
+                    if ($saved) {
+                        $task = $saved;
+                    }
+                }
             }
-            $line = $board->oneLineResult($raw);
-            if ($line === '' || $line === $raw) {
-                continue;
+            $visible[] = $task;
+        }
+        $this->json(['tasks' => $visible]);
+    }
+
+    private function researchMissions(): void
+    {
+        $projectId = (int)($_GET['project_id'] ?? 0);
+        $project = $projectId > 0 ? $this->db->project($projectId) : null;
+        if (!$project) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return;
+        }
+        try {
+            $result = app_services()['skills']->run('research_loop', ['action' => 'status'], (string)$project['folder_name'], false, false);
+        } catch (Throwable $e) {
+            $this->json(['error' => $e->getMessage()], 422);
+            return;
+        }
+        $payload = json_decode((string)($result['stdout'] ?? ''), true);
+        if (!is_array($payload)) {
+            $this->json(['missions' => []]);
+            return;
+        }
+        $missions = [];
+        if (isset($payload['missions']) && is_array($payload['missions'])) {
+            foreach ($payload['missions'] as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $name = trim((string)($item['name'] ?? ''));
+                if ($name === '') {
+                    continue;
+                }
+                $missions[] = ['name' => $name, 'active' => !empty($item['active'])];
             }
-            $saved = $this->db->updateTask((int)$task['id'], ['result' => $line]);
-            if ($saved) {
-                $tasks[$index] = $saved;
+        } elseif (isset($payload['names']) && is_array($payload['names'])) {
+            $on = trim((string)($payload['active'] ?? ''));
+            foreach ($payload['names'] as $name) {
+                $name = trim((string)$name);
+                if ($name === '') {
+                    continue;
+                }
+                $missions[] = ['name' => $name, 'active' => $name === $on];
+            }
+        } elseif (trim((string)($payload['name'] ?? '')) !== '' && (int)($result['exit_code'] ?? 1) === 0) {
+            $view = is_array($payload['view'] ?? null) ? $payload['view'] : [];
+            $missions[] = [
+                'name' => (string)$payload['name'],
+                'active' => !empty($view['active']),
+            ];
+        }
+        $this->json(['missions' => $missions]);
+    }
+
+    private function researchBoard(): void
+    {
+        $projectId = (int)($_GET['project_id'] ?? 0);
+        $slug = $this->researchSlug((string)($_GET['name'] ?? ''));
+        if ($slug === null) {
+            return;
+        }
+        $payload = $this->researchCall($projectId, ['action' => 'board', 'name' => $slug]);
+        if ($payload === null) {
+            return;
+        }
+        $payload['running'] = $this->researchRunning($projectId, $slug);
+        $this->json($payload);
+    }
+
+    private function researchMission(): void
+    {
+        $body = $this->input();
+        $projectId = (int)($body['project_id'] ?? 0);
+        $payload = $this->researchCall($projectId, [
+            'action' => 'mission',
+            'title' => trim((string)($body['title'] ?? '')),
+            'question' => trim((string)($body['question'] ?? '')),
+            'scope' => trim((string)($body['scope'] ?? '')),
+        ]);
+        if ($payload === null) {
+            return;
+        }
+        $this->json($payload);
+    }
+
+    private function researchReview(): void
+    {
+        $body = $this->input();
+        $projectId = (int)($body['project_id'] ?? 0);
+        $slug = $this->researchSlug((string)($body['name'] ?? ''));
+        if ($slug === null) {
+            return;
+        }
+        $args = [
+            'action' => 'review',
+            'name' => $slug,
+            'id' => (int)($body['id'] ?? 0),
+        ];
+        $decision = strtolower(trim((string)($body['decision'] ?? '')));
+        if ($decision !== '') {
+            $args['decision'] = $decision;
+        }
+        if (array_key_exists('statement', $body)) {
+            $args['statement'] = trim((string)$body['statement']);
+        }
+        if (array_key_exists('direction', $body)) {
+            $args['direction'] = trim((string)$body['direction']);
+        }
+        $payload = $this->researchCall($projectId, $args);
+        if ($payload === null) {
+            return;
+        }
+        $this->json($payload);
+    }
+
+    private function researchRun(): void
+    {
+        $body = $this->input();
+        $projectId = (int)($body['project_id'] ?? 0);
+        $slug = $this->researchSlug((string)($body['name'] ?? ''));
+        if ($slug === null) {
+            return;
+        }
+        $project = $this->db->project($projectId);
+        if (!$project) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return;
+        }
+        $turned = $this->researchCall($projectId, ['action' => 'active', 'name' => $slug, 'on' => 1]);
+        if ($turned === null) {
+            return;
+        }
+        $heartbeat = new Heartbeat($this->db);
+        if (!$heartbeat->startResearch($projectId, (string)$project['folder_name'], $slug)) {
+            $this->json(['error' => 'The research loop did not start.'], 500);
+            return;
+        }
+        $payload = $this->researchCall($projectId, ['action' => 'board', 'name' => $slug]);
+        if ($payload === null) {
+            return;
+        }
+        $payload['active'] = true;
+        $payload['running'] = true;
+        $this->json($payload);
+    }
+
+    private function researchStop(): void
+    {
+        $body = $this->input();
+        $projectId = (int)($body['project_id'] ?? 0);
+        $slug = $this->researchSlug((string)($body['name'] ?? ''));
+        if ($slug === null) {
+            return;
+        }
+        (new Heartbeat($this->db))->stopResearch($projectId, $slug);
+        $turned = $this->researchCall($projectId, ['action' => 'active', 'name' => $slug, 'on' => 0]);
+        if ($turned === null) {
+            return;
+        }
+        $this->json(['ok' => true]);
+    }
+
+    private function researchDelete(): void
+    {
+        $body = $this->input();
+        $projectId = (int)($body['project_id'] ?? 0);
+        $slug = $this->researchSlug((string)($body['name'] ?? ''));
+        if ($slug === null) {
+            return;
+        }
+        $project = $this->db->project($projectId);
+        if (!$project) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return;
+        }
+        try {
+            $dir = Projects::root((string)$project['folder_name']) . '/database';
+        } catch (Throwable $e) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return;
+        }
+        $path = $dir . '/research-' . $slug . '.db';
+        $root = realpath($dir);
+        $real = realpath($path);
+        if ($root === false || $real === false || !str_starts_with($real, $root . DIRECTORY_SEPARATOR)) {
+            $this->json(['error' => 'No mission named ' . $slug . '.'], 404);
+            return;
+        }
+        (new Heartbeat($this->db))->stopResearch($projectId, $slug);
+        foreach ([$real, $real . '-wal', $real . '-shm'] as $file) {
+            if (is_file($file)) {
+                unlink($file);
             }
         }
-        $this->json(['tasks' => $tasks]);
+        $this->json(['ok' => true]);
+    }
+
+    private function researchSlug(string $slug): ?string
+    {
+        $slug = strtolower(trim($slug));
+        if (preg_match('/^[a-z0-9-]{1,40}$/', $slug) !== 1) {
+            $this->json(['error' => 'Pass the mission name.'], 422);
+            return null;
+        }
+        return $slug;
+    }
+
+    private function researchRunning(int $projectId, string $slug): bool
+    {
+        $job = $this->db->runningResearchJob($projectId);
+        if (!$job) {
+            return false;
+        }
+        if ($slug === '') {
+            return true;
+        }
+        return $this->researchJobSlug($job) === $slug;
+    }
+
+    private function researchJobSlug(array $job): string
+    {
+        $payload = json_decode((string)($job['payload'] ?? ''), true);
+        return is_array($payload) ? trim((string)($payload['slug'] ?? '')) : '';
+    }
+
+    private function researchCall(int $projectId, array $args): ?array
+    {
+        $project = $projectId > 0 ? $this->db->project($projectId) : null;
+        if (!$project) {
+            $this->json(['error' => 'Project not found.'], 404);
+            return null;
+        }
+        try {
+            $result = app_services()['skills']->run('research_loop', $args, (string)$project['folder_name'], false, false);
+        } catch (Throwable $e) {
+            $this->json(['error' => $e->getMessage()], 422);
+            return null;
+        }
+        $payload = json_decode((string)($result['stdout'] ?? ''), true);
+        if (!is_array($payload)) {
+            $error = trim((string)($result['stderr'] ?? ''));
+            $this->json(['error' => $error !== '' ? $error : 'Research did not answer.'], 422);
+            return null;
+        }
+        if ((int)($result['exit_code'] ?? 1) !== 0 || (string)($payload['status'] ?? '') === 'error') {
+            $this->json(['error' => (string)($payload['message'] ?? 'Research failed.')], 422);
+            return null;
+        }
+        return $payload;
     }
 
     private function createTask(): void
