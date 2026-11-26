@@ -254,7 +254,7 @@ function research_next(PDO $db, string $slug): void
         $stage = is_array($payload) && !empty($payload['url']) && empty($payload['chunk_id']) ? 'fetch' : 'ingest';
         research_out(research_packet($db, $slug, $stage, $row));
     }
-    if ((int)$meta['ingest_since_reflect'] > 0) {
+    if ((int)$meta['ingest_since_reflect'] > 0 || research_search_due($db)) {
         research_out(research_reflect_packet($db, $slug));
     }
     research_out([
@@ -668,8 +668,14 @@ function research_commit_reflect(PDO $db, array $args): array
         }
     }
     $meta = research_meta($db);
-    $db->prepare('UPDATE meta SET cycle = ?, ingest_since_reflect = 0, last_reflect_cycle = ? WHERE id = 1')
-        ->execute([(int)$meta['cycle'] + 1, (int)$meta['cycle'] + 1]);
+    $cycle = (int)$meta['cycle'] + 1;
+    $lint = (int)$meta['last_lint_cycle'];
+    $testingNow = (int)$db->query("SELECT COUNT(*) FROM hypotheses WHERE status = 'testing'")->fetchColumn();
+    if ($testingNow > 0 && $added === 0 && research_count($db, 'sources') === 0) {
+        $lint = $cycle;
+    }
+    $db->prepare('UPDATE meta SET cycle = ?, ingest_since_reflect = 0, last_reflect_cycle = ?, last_lint_cycle = ? WHERE id = 1')
+        ->execute([$cycle, $cycle, $lint]);
     return [
         'kind' => 'reflect',
         'needs_review' => $review,
@@ -743,6 +749,19 @@ function research_packet(PDO $db, string $slug, string $stage, array $row): arra
     return $packet;
 }
 
+function research_search_due(PDO $db): bool
+{
+    $meta = research_meta($db);
+    $testing = (int)$db->query("SELECT COUNT(*) FROM hypotheses WHERE status = 'testing'")->fetchColumn();
+    if ($testing < 1 || research_count($db, 'sources') > 0) {
+        return false;
+    }
+    if (research_count_where($db, "SELECT COUNT(*) FROM queue WHERE status != 'done'") > 0) {
+        return false;
+    }
+    return (int)$meta['last_lint_cycle'] < (int)$meta['cycle'];
+}
+
 function research_reflect_packet(PDO $db, string $slug): array
 {
     $view = research_status_view($db);
@@ -758,7 +777,9 @@ function research_reflect_packet(PDO $db, string $slug): array
             'open_contradictions' => count($view['open_contradictions']),
             'cycle' => $view['cycle'],
         ],
-        'message' => 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A root is a direction. A child refines, corrects, or extends its parent and is a claim a source can check. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That lesson is carried up the tree. Do not read a paper in this pass.',
+        'message' => research_search_due($db)
+            ? 'These hypotheses are approved. For each testing hypothesis, add falsification queries, up to five in total. A query is a source to fetch next. Do not add a new hypothesis in this pass. Then stop.'
+            : 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A root is a direction. A child refines, corrects, or extends its parent and is a claim a source can check. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That lesson is carried up the tree. Do not read a paper in this pass.',
     ];
 }
 
@@ -1290,7 +1311,7 @@ function research_board(PDO $db, string $slug): array
         }
     }
     $waiting = $settledReview > 0 || ((int)$view['testing'] === 0 && ((int)$view['proposed'] > 0 || (int)$view['needs_review'] > 0));
-    $pendingReflect = (int)research_meta($db)['ingest_since_reflect'] > 0;
+    $pendingReflect = (int)research_meta($db)['ingest_since_reflect'] > 0 || research_search_due($db);
     $idle = !$waiting && $directed === null && (int)$view['ingest'] === 0 && (int)$view['reevaluate'] === 0 && !$pendingReflect && count($nodes) > 0;
     $backpropagated = false;
     foreach ($nodes as $node) {
