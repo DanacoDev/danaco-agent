@@ -34,7 +34,24 @@ class Heartbeat
                 $this->traceJob($job, 'Skipped job ' . $id . ' · subagent still working');
                 continue;
             }
-            if ((string)$job['kind'] === 'task' && $this->closeFinishedOccurrence($job)) {
+            if ((string)$job['kind'] === 'task') {
+                if ($this->closeFinishedOccurrence($job)) {
+                    continue;
+                }
+                if ($this->taskSlotTaken()) {
+                    $this->traceJob($job, 'Skipped job ' . $id . ' · task still running');
+                    continue;
+                }
+                $task = $this->taskFromJob($job);
+                if (!$task) {
+                    $this->traceJob($job, 'Task missing · job ' . $id . ' closed');
+                    $this->db->finishJob($id);
+                    continue;
+                }
+                $this->db->bumpJob($id);
+                $this->traceJob($job, 'Bumped job ' . $id . ' · attempt ' . ($attempt + 1));
+                $this->traceJob($job, 'Retry started · job ' . $id . ' · background');
+                $this->launchTask($task, $id);
                 continue;
             }
             $this->db->bumpJob($id);
@@ -302,6 +319,56 @@ class Heartbeat
             app_services()['llm']->releaseIfIdle();
             $this->db->loopPop();
         }
+    }
+
+    public function taskSlotTaken(): bool
+    {
+        if ($this->db->taskRunning()) {
+            return true;
+        }
+        return $this->taskProcessLive();
+    }
+
+    public function launchTask(array $task, ?int $jobId = null): void
+    {
+        $taskId = (int)($task['id'] ?? 0);
+        $projectId = (int)($task['project_id'] ?? 0);
+        if ($taskId <= 0 || $projectId <= 0) {
+            return;
+        }
+        $php = PHP_BINARY !== '' ? PHP_BINARY : 'php';
+        $script = dirname(__DIR__) . '/bin/run-task.php';
+        $log = app_config()['data_dir'] . '/task-run.log';
+        $cmd = 'nohup ' . escapeshellarg($php) . ' ' . escapeshellarg($script) . ' ' . $taskId;
+        if ($jobId !== null && $jobId > 0) {
+            $cmd .= ' ' . $jobId;
+        }
+        $lines = [];
+        exec($cmd . ' >> ' . escapeshellarg($log) . ' 2>&1 < /dev/null & echo $!', $lines);
+        $pid = (int)trim((string)($lines[0] ?? '0'));
+        if ($pid <= 0) {
+            $this->db->loopWrite($jobId, $projectId, 'heartbeat', 'process', 'Task ' . $taskId . ' did not start');
+            return;
+        }
+        $this->db->setSetting('task_run_pid', (string)$pid);
+        $line = 'Task ' . $taskId . ' started in the background';
+        if ($jobId !== null && $jobId > 0) {
+            $line .= ' · job ' . $jobId;
+        }
+        $this->db->loopWrite($jobId, $projectId, 'heartbeat', 'process', $line);
+    }
+
+    private function taskProcessLive(): bool
+    {
+        $pid = (int)$this->db->getSetting('task_run_pid', '0');
+        if ($pid <= 1) {
+            return false;
+        }
+        $result = Process::run(['ps', '-ww', '-p', (string)$pid, '-o', 'command='], null, null, 3);
+        if ((int)$result['code'] !== 0) {
+            return false;
+        }
+        return str_contains((string)$result['stdout'], 'run-task.php');
     }
 
     private function retry(array $job): bool

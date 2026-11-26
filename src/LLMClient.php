@@ -32,6 +32,10 @@ class LLMClient
 
     public bool $usingFailsafe = false;
 
+    public const STALL_SECONDS = 180;
+
+    private int $stallSeconds = 0;
+
     private int $attemptTry = 1;
 
     private float $gpuRestoreNotBefore = 0;
@@ -55,6 +59,11 @@ class LLMClient
     }
 
     public ?\Closure $onCpuChange = null;
+
+    public function stallAfter(int $seconds): void
+    {
+        $this->stallSeconds = max(0, $seconds);
+    }
 
     public function onCpu(): bool
     {
@@ -320,6 +329,9 @@ class LLMClient
             } catch (LlmException $e) {
                 $last = $e;
                 $this->db->loop($who, 'retry', 'try ' . $try . '/3 · ' . $e->getMessage());
+                if ($e->getMessage() === 'The model did not reply.') {
+                    break;
+                }
                 if ($this->isFullGpu($e->getMessage())) {
                     $this->keepSplit((string)$this->db->getSetting('local_model', app_config()['local_model']));
                 }
@@ -416,6 +428,18 @@ class LLMClient
             return false;
         }
         return $this->connectionLost($error);
+    }
+
+    private function silentStall(int $errno, string $err, string $full): bool
+    {
+        if ($this->stallSeconds <= 0 || trim($full) !== '') {
+            return false;
+        }
+        if ($errno === CURLE_OPERATION_TIMEDOUT) {
+            return true;
+        }
+        $err = strtolower($err);
+        return str_contains($err, 'too slow') || str_contains($err, 'timed out');
     }
 
     private function connectionLost(string $error): bool
@@ -1066,6 +1090,10 @@ class LLMClient
                 return strlen($data);
             },
         ]);
+        if ($this->stallSeconds > 0) {
+            curl_setopt($ch, CURLOPT_LOW_SPEED_LIMIT, 1);
+            curl_setopt($ch, CURLOPT_LOW_SPEED_TIME, $this->stallSeconds);
+        }
         $ok = curl_exec($ch);
         $errno = curl_errno($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -1077,6 +1105,9 @@ class LLMClient
             $stopped = $shouldStop && $shouldStop();
         } catch (ChatStopped $e) {
             $stopped = true;
+        }
+        if (!$stopped && $this->silentStall($errno, $err, $full)) {
+            throw new LlmException('The model did not reply.', false);
         }
         $failed = $ok === false || $errno !== 0 || $code >= 400 || $errorBody !== '';
         if ($failed && trim($full) !== '' && !$stopped) {

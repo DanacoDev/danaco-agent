@@ -63,7 +63,11 @@ try {
             $work = true;
         }
         $tickProjects[(int)$task['project_id']] = true;
-        $heartbeat->runTask($task);
+        if ($heartbeat->taskSlotTaken()) {
+            break;
+        }
+        $heartbeat->launchTask($task);
+        break;
     }
     if ($work) {
         $db->loopWrite(null, null, 'heartbeat', 'process', 'Tick finished');

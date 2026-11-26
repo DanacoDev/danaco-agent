@@ -672,6 +672,9 @@ class AgentRuntime
         if (!$this->llm->usingFailsafe && ($cloud || (string)$this->db->getSetting('model_mode', '') === 'cloud')) {
             $maxTurns = $this->cloudMaxTurns();
         }
+        if ($scheduled) {
+            $this->llm->stallAfter(LLMClient::STALL_SECONDS);
+        }
         $visible = '';
         $retryOpen = 0;
         $roomNoted = false;
