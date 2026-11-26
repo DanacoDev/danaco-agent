@@ -218,6 +218,10 @@ a.btn { display: inline-block; color: inherit; text-decoration: none; }
 .flow-node.is-picked { box-shadow: inset 0 0 0 1px var(--gold); }
 .flow-node.is-main { grid-column: 2; grid-row: 1; width: 220px; justify-self: center; margin: 0; }
 .flow-node.is-main strong { text-transform: uppercase; }
+.flow-task-agent {
+  grid-column: 1; grid-row: 1; justify-self: end; display: flex; align-items: center; min-width: 0;
+}
+.flow-node.is-task { width: 220px; flex: none; }
 .flow-consult {
   grid-column: 3; grid-row: 1; justify-self: start; display: flex; align-items: center; min-width: 0;
 }

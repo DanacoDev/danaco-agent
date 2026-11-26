@@ -240,16 +240,16 @@ class SkillEngine
         if ($slug === '') {
             return $stdout;
         }
-        $title = trim((string)($args['title'] ?? ''));
+        $title = trim(preg_replace('/\s+/u', ' ', (string)($args['title'] ?? '')) ?? '');
         if ($title === '') {
-            $title = trim((string)($args['question'] ?? ''));
+            $title = trim(preg_replace('/\s+/u', ' ', (string)($args['question'] ?? '')) ?? '');
         }
         if ($title === '') {
             $title = $slug;
         }
         $taskTitle = 'Research: ' . $title;
         if (strlen($taskTitle) > 200) {
-            $taskTitle = substr($taskTitle, 0, 200);
+            $taskTitle = rtrim(substr($taskTitle, 0, 200));
         }
         $project = $projectFolder !== '' ? $this->db->projectByFolder($projectFolder) : null;
         if (!$project) {

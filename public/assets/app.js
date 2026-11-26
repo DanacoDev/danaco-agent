@@ -467,6 +467,9 @@
         mainAgent() {
           return this.agents.find((agent) => agent.name === 'orchestrator') || null;
         },
+        taskAgent() {
+          return this.agents.find((agent) => agent.name === 'scheduler') || null;
+        },
         consultant() {
           return this.agents.find((agent) => agent.name === 'consultant') || null;
         },
@@ -1193,7 +1196,7 @@
         },
         agentLabel(name, markCpu) {
           let label = '';
-          if (name === 'scheduler') label = 'Main agent (tasks)';
+          if (name === 'scheduler') label = 'Task agent';
           else if (name === 'orchestrator' || name === 'assistant') label = 'Main agent';
           else {
             const text = String(name || '');
@@ -2600,9 +2603,12 @@
         removeNewStep(index) {
           this.newSteps.splice(index, 1);
         },
+        flatTitle(text) {
+          return String(text || '').replace(/\s+/g, ' ').trim();
+        },
         async addTask() {
           this.taskError = '';
-          const title = String(this.taskEdit.title || '').trim();
+          const title = this.flatTitle(this.taskEdit.title);
           if (!title) {
             this.taskError = 'Task title is required.';
             return;
@@ -2657,7 +2663,7 @@
           const stamp = String(task.schedule_time || '').replace(' ', 'T').slice(0, 16);
           const heldOff = Number(task.held) === 1 && !stamp;
           this.taskEdit = {
-            title: task.title,
+            title: this.flatTitle(task.title),
             when: heldOff ? 'never' : 'at',
             schedule_time: stamp || (heldOff ? '' : this.taskSoonStamp()),
             recurrence_interval: task.recurrence_interval || 'none'
@@ -2692,7 +2698,7 @@
             return;
           }
           const body = {
-            title: this.taskEdit.title,
+            title: this.flatTitle(this.taskEdit.title),
             schedule_time: never ? 'never' : (stamp || null),
             recurrence_interval: this.taskEdit.recurrence_interval
           };
@@ -4086,7 +4092,7 @@
       methods: {
         label(name) {
           let label = 'Agent';
-          if (name === 'scheduler') label = 'Main agent (tasks)';
+          if (name === 'scheduler') label = 'Task agent';
           else if (name === 'orchestrator') label = 'Main agent';
           else {
             const text = String(name || '');

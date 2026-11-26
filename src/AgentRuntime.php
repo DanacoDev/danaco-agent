@@ -677,6 +677,7 @@ class AgentRuntime
         }
         $visible = '';
         $retryOpen = 0;
+        $sameRefusal = [];
         $roomNoted = false;
         $heldBrief = $this->llm->keepBrief;
         $repeatTries = 0;
@@ -992,7 +993,9 @@ class AgentRuntime
                         $prompt = 'That was not a tool call. Do not write <|tool_code_begin|>, <invoke>, or a line that only says Tool call:. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"tool_name","args":{}}' . "\n" . '<<end>>';
                     }
                     if (preg_match('/\bdelegat/i', $turnText)) {
-                        $prompt = 'That delegation was not run. Do not describe it. Create the task with tasklist action create, list the tasks and read the new id. If the list says scheduled, do not delegate. The scheduler starts it. Do not invent an id. A number from an older message is not a task.';
+                        $prompt = $agent === 'scheduler'
+                            ? 'That delegation was not run. Emit one delegate tool call for the open step and stop:' . "\n" . '<<tool>>' . "\n" . '{"name":"delegate","args":{"agent":"researcher","task_id":0}}' . "\n" . '<<end>>' . "\n" . 'Use the agent on that step and the task id from this scheduled task. Do not write a new instruction. Do not call research_loop. Do not create a task. Do not rewrite the steps.'
+                            : 'That delegation was not run. Do not describe it. Create the task with tasklist action create, list the tasks and read the new id. If the list says scheduled, do not delegate. The scheduler starts it. Do not invent an id. A number from an older message is not a task.';
                     } elseif (($xmlTool = $this->fakeXmlToolName($turnText)) !== null) {
                         $prompt = 'XML tags are not a tool call. Do not write <' . $xmlTool . '>. Emit exactly:' . "\n" . '<<tool>>' . "\n" . '{"name":"' . $xmlTool . '","args":{}}' . "\n" . '<<end>>' . "\n" . 'Fill args with the real JSON for that tool, then stop.';
                     } elseif ($this->claimedSkillWithoutCall($turnText)) {
@@ -1184,6 +1187,13 @@ class AgentRuntime
                     return $this->finishVisible($result);
                 }
                 $messages[] = ['role' => 'user', 'content' => "TOOL RESULT {$tool['name']}:\n{$result}"];
+                $refused = $this->repeatedRefusal($result, $sameRefusal);
+                if ($refused !== null) {
+                    $this->db->loop($agent, 'stop', 'same refusal · ' . $refused, $projectId);
+                    $this->db->setAgentStatus($agent, 'completed');
+                    $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
+                    return $this->finishVisible($result);
+                }
                 if ($this->kanbanFollowsDelegate($agent, (string)($tool['name'] ?? ''), $result)) {
                     $this->db->loop($agent, 'steer', 'tasklist after delegate', $projectId);
                     $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the task list and read the result. If the id you passed is not in that list, the task was never created and nothing was done. Do not tell the user it is finished. An empty delegate result is not a finished piece. Create the task, list the tasks, and read the id. If the list says scheduled, do not delegate. The scheduler starts it. If the task is done, do not delegate it again. If a step is still open, delegate only that step. If that step is assigned to human, ask the user and wait. Do not delegate it. Do not start a finished step over. If the result says the task is not done, do not tell the user the task is finished. Do not set a task to done yourself. A run-once task becomes done when every step is crossed off. Leave a repeating task in progress. Do not archive it. A subagent reports the result and crosses off the step that just finished. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has tasks. Do not explain these steps in place of listing the tasks.'];
@@ -1487,8 +1497,33 @@ class AgentRuntime
         return $prompt;
     }
 
+    private function repeatedRefusal(string $result, array &$seen): ?string
+    {
+        $keys = [
+            'The researcher does this pass' => 'research pass',
+            'That research task is fixed' => 'task rewrite',
+            'Pass hypotheses, a list' => 'hypotheses',
+            'A hypothesis is one statement' => 'hypotheses',
+            'Pass statement, one sentence' => 'hypotheses',
+        ];
+        foreach ($keys as $needle => $label) {
+            if (!str_contains($result, $needle)) {
+                continue;
+            }
+            $seen[$needle] = ($seen[$needle] ?? 0) + 1;
+            if ($seen[$needle] >= 2) {
+                return $label;
+            }
+        }
+        return null;
+    }
+
     private function proseDelegation(string $text): ?array
     {
+        $xml = $this->xmlDelegate($text);
+        if ($xml !== null) {
+            return $xml;
+        }
         if (!preg_match('/(?:^|\n)\s*\*{0,2}\s*delegate\s*\*{0,2}\s*:?\s*\*{0,2}\s*\n+\s*\*{0,2}\s*agent\s*\*{0,2}\s*:\s*\*{0,2}\s*([A-Za-z_]+)\s*\*{0,2}\s*\n+\s*\*{0,2}\s*instruction\s*\*{0,2}\s*:\s*\*{0,2}\s*>?\s*\n(.*)\z/is', $text, $match)) {
             return null;
         }
@@ -1509,6 +1544,38 @@ class AgentRuntime
             if ($clean !== '' && strlen($clean) <= 200) {
                 $args['title'] = $clean;
             }
+        }
+        return ['name' => 'delegate', 'args' => $args];
+    }
+
+    private function xmlDelegate(string $text): ?array
+    {
+        if (!preg_match('/<\s*delegate\b[^>]*>(.*)<\s*\/\s*delegate\s*>/is', $text, $match)) {
+            return null;
+        }
+        $body = trim($match[1]);
+        $start = strpos($body, '{');
+        $end = strrpos($body, '}');
+        if ($start === false || $end === false || $end <= $start) {
+            return null;
+        }
+        $payload = json_decode(substr($body, $start, $end - $start + 1), true);
+        if (!is_array($payload)) {
+            return null;
+        }
+        $agent = strtolower(trim((string)($payload['agent'] ?? '')));
+        $instruction = trim((string)($payload['instruction'] ?? ''));
+        if ($instruction === '' || !in_array($agent, ['researcher', 'writer', 'coder', 'analyst', 'marketer', 'consultant'], true)) {
+            return null;
+        }
+        $args = ['agent' => $agent, 'instruction' => $instruction];
+        $id = (int)($payload['task_id'] ?? $payload['task'] ?? $payload['id'] ?? 0);
+        if ($id > 0) {
+            $args['task_id'] = $id;
+        }
+        $project = trim((string)($payload['project'] ?? ''));
+        if ($project !== '') {
+            $args['project'] = $project;
         }
         return ['name' => 'delegate', 'args' => $args];
     }

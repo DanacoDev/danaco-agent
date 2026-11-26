@@ -2189,6 +2189,7 @@ SQL);
     private function castTask(array $row): array
     {
         $row['id'] = (int)$row['id'];
+        $row['title'] = trim(preg_replace('/\s+/u', ' ', (string)($row['title'] ?? '')) ?? (string)($row['title'] ?? ''));
         $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
         $row['held'] = (int)($row['held'] ?? 0);
         $row['failed'] = (int)($row['failed'] ?? 0);

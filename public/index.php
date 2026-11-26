@@ -115,6 +115,7 @@ header('X-Danaco: 1');
   <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.2v13.6l12-6.8z"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4.5 5.5h5.5v13H4.5z"/><circle cx="8" cy="12" r="0.8" fill="currentColor" stroke="none"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12.5 12H20M16.8 8.8 20 12l-3.2 3.2"/></symbol>
   <symbol id="i-av-orchestrator" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" d="M7 8.2 9 5.2 12 7.2 15 5.2 17 8.2"/><circle cx="12" cy="11.2" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" d="M12 13.8 10.4 19.2h3.2zM8 19.6c1.2-1.6 2.4-2.2 4-2.2s2.8.6 4 2.2"/></symbol>
+  <symbol id="i-av-scheduler" viewBox="0 0 24 24"><circle cx="8" cy="8" r="2.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M4.6 17.4c.5-2.1 1.8-3.2 3.4-3.2s2.9 1.1 3.4 3.2"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M14.2 8.2h5.4M14.2 11.6h5.4M14.2 15h3.2"/></symbol>
   <symbol id="i-av-researcher" viewBox="0 0 24 24"><circle cx="9" cy="9" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="15.2" cy="15" r="2.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M17.3 17.1 20 19.8"/></symbol>
   <symbol id="i-av-writer" viewBox="0 0 24 24"><circle cx="12" cy="8.2" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M7.2 18.8 16.6 14.2M15.6 14.6l2.2 1.6"/></symbol>
   <symbol id="i-av-coder" viewBox="0 0 24 24"><circle cx="12" cy="8" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d="M9 15.2 6 18l3 2.8M15 15.2 18 18l-3 2.8"/></symbol>
@@ -378,7 +379,7 @@ header('X-Danaco: 1');
                     <svg class="ico" aria-hidden="true"><use href="#i-grip"></use></svg>
                   </button>
                   <span class="task-name">
-                    <button class="task-title" type="button" :class="{ 'is-finished': stepsDone(task) }" :aria-expanded="expandedTasks[task.id] ? 'true' : 'false'" @click="toggleSteps(task)">{{ task.title }}</button>
+                    <button class="task-title" type="button" :class="{ 'is-finished': stepsDone(task) }" :aria-expanded="expandedTasks[task.id] ? 'true' : 'false'" @click="toggleSteps(task)">{{ flatTitle(task.title) }}</button>
                     <span class="task-tag">#{{ task.id }}</span>
                     <span v-if="taskNextRun(task)" class="task-when">{{ taskNextRun(task) }}</span>
                   </span>
@@ -503,7 +504,7 @@ header('X-Danaco: 1');
                 <article v-for="task in archivedVisible()" :key="'done'+task.id" class="task-card is-archive" @click="toggleArchive(task)">
                   <header class="task-row">
                     <span class="task-name">
-                      <h3 class="task-title">{{ task.title }}</h3>
+                      <h3 class="task-title">{{ flatTitle(task.title) }}</h3>
                       <span class="task-tag">#{{ task.id }}</span>
                     </span>
                     <span class="task-tools">
@@ -665,6 +666,20 @@ header('X-Danaco: 1');
             <div v-if="mainAgent" class="flow-board">
               <div class="flow">
                 <div class="flow-top">
+                  <div v-if="taskAgent" class="flow-task-agent">
+                    <article class="flow-node is-task" :class="['is-' + taskAgent.status, { 'is-picked': logAgent === taskAgent.name }]" @click="pickLogAgent(taskAgent.name)">
+                      <svg class="avatar" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-av-scheduler"></use></svg>
+                      <div class="flow-copy">
+                        <strong>{{ agentLabel(taskAgent.name) }}</strong>
+                        <p class="flow-status">
+                          <span v-if="agentBusy(taskAgent)" class="spinner"></span>
+                          <span :class="'status-' + taskAgent.status">{{ taskAgent.label }}</span>
+                        </p>
+                        <p class="hint flow-task">{{ agentWork(taskAgent) }}</p>
+                      </div>
+                    </article>
+                    <span class="flow-link" :class="{live: agentBusy(taskAgent)}"></span>
+                  </div>
                   <article class="flow-node is-main" :class="['is-' + mainAgent.status, { 'is-picked': logAgent === mainAgent.name }]" @click="pickLogAgent(mainAgent.name)">
                     <svg class="avatar" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-av-orchestrator"></use></svg>
                     <div class="flow-copy">
