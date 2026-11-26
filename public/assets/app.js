@@ -187,6 +187,7 @@
           researchBusy: false,
           researchFormOpen: false,
           researchTreeOpen: false,
+          researchDash: 'you',
           researchForm: { title: '', question: '', scope: '' },
           researchSelected: 0,
           researchDirection: '',
@@ -861,6 +862,7 @@
           this.researchSlug = name;
           this.researchSelected = 0;
           this.researchDirection = '';
+          this.researchDash = 'you';
           await this.loadResearchBoard();
         },
         async createResearch() {
@@ -1043,40 +1045,80 @@
           if (this.researchBoard.running || this.researchBoard.waiting || this.researchBoard.idle) return true;
           return false;
         },
-        researchStateLabel() {
+        researchNodes() {
+          const out = [];
+          const walk = (list) => {
+            (list || []).forEach((node) => {
+              out.push(node);
+              walk(node.children);
+            });
+          };
+          walk(this.researchBoard && this.researchBoard.tree);
+          return out;
+        },
+        researchGroups() {
+          const nodes = this.researchNodes();
+          const testing = nodes.filter((node) => node.status === 'testing');
+          const proposed = nodes.filter((node) => node.status === 'proposed');
+          const conclusions = nodes.filter((node) => node.status === 'supported' || node.status === 'narrowed');
+          const results = nodes.filter((node) => node.status === 'refuted' || node.status === 'parked');
+          const waiting = nodes.filter((node) => node.needs_review);
+          if (!testing.length) {
+            proposed.forEach((node) => {
+              if (!waiting.some((item) => item.id === node.id)) waiting.push(node);
+            });
+          }
+          return { testing: testing, proposed: proposed, conclusions: conclusions, results: results, waiting: waiting };
+        },
+        researchDashTabs() {
+          const groups = this.researchGroups();
+          return [
+            { id: 'you', label: 'For you', count: groups.waiting.length },
+            { id: 'ideas', label: 'Ideas', count: groups.proposed.length + groups.testing.length },
+            { id: 'conclusions', label: 'Conclusions', count: groups.conclusions.length },
+            { id: 'results', label: 'Results', count: groups.results.length }
+          ];
+        },
+        researchDashItems() {
+          const groups = this.researchGroups();
+          if (this.researchDash === 'ideas') return groups.testing.concat(groups.proposed);
+          if (this.researchDash === 'conclusions') return groups.conclusions;
+          if (this.researchDash === 'results') return groups.results;
+          return groups.waiting;
+        },
+        researchDashEmpty() {
+          if (this.researchDash === 'ideas') return 'No ideas yet. They show up after the next pass.';
+          if (this.researchDash === 'conclusions') return 'No conclusion yet. Findings that hold up show up here.';
+          if (this.researchDash === 'results') return 'Nothing has been ruled out or parked yet.';
+          return 'Nothing is waiting on you.';
+        },
+        researchProgress() {
           const board = this.researchBoard;
           if (!board) return '';
-          if (!board.active && !board.running) return 'Off';
-          if (board.phase === 'select') return 'On · waiting on you to choose a branch';
-          if (board.phase === 'decide') return 'On · waiting on you to keep or park a result';
-          if (board.phase === 'ideate') return 'On · ready to branch';
-          if (board.phase === 'test') return 'On · reading sources';
-          if (board.phase === 'observe') return 'On · watching for the next step';
-          if (board.running) return 'On · working';
-          return 'On · starting';
+          const groups = this.researchGroups();
+          const review = groups.waiting.filter((node) => node.needs_review).length;
+          const choose = groups.waiting.length - review;
+          if (review && choose) return 'Keep or park a result, and choose an idea to pursue.';
+          if (review === 1) return 'A result is ready. Keep it or park it.';
+          if (review > 1) return review + ' results are ready. Keep or park each one.';
+          if (choose === 1) return 'One idea is ready. Pursue it or park it.';
+          if (choose > 1) return 'Choose an idea to pursue.';
+          if (!board.active && !board.running) {
+            return this.researchNodes().length ? 'This mission is off.' : 'Start the mission to propose the first ideas.';
+          }
+          if (groups.testing.length) return 'Checking: ' + groups.testing[0].statement;
+          if (board.phase === 'ideate') return 'The next pass will add ideas.';
+          if (board.phase === 'test') return 'Reading sources.';
+          if (board.phase === 'observe') return 'Watching for a next step.';
+          if (board.running) return 'Working.';
+          return 'Starting.';
         },
-        researchSteps() {
-          const order = [
-            ['observe', 'Observe'],
-            ['ideate', 'Ideate'],
-            ['select', 'Select'],
-            ['test', 'Test'],
-            ['backpropagate', 'Backpropagate'],
-            ['decide', 'Decide']
-          ];
-          const phase = (this.researchBoard && this.researchBoard.phase) || '';
-          const index = order.findIndex((step) => step[0] === phase);
-          const back = !!(this.researchBoard && this.researchBoard.backpropagated);
-          return order.map((step, at) => ({
-            id: step[0],
-            label: step[1],
-            now: step[0] === phase,
-            done: step[0] === 'backpropagate' ? back && phase !== 'backpropagate' : index > at
-          }));
-        },
-        researchLessons() {
-          const list = (this.researchBoard && this.researchBoard.constraints && this.researchBoard.constraints.lessons) || [];
-          return list.slice(-4);
+        async reviewResearchNode(id, decision) {
+          const node = this.researchNodes().find((item) => item.id === id);
+          if (!node) return;
+          this.researchSelected = id;
+          if (!this.researchDirectionFocused) this.researchDirection = node.direction || '';
+          await this.reviewResearch(decision);
         },
         selectResearchNode(node) {
           this.researchSelected = node.id;
@@ -1141,6 +1183,7 @@
           this.researchError = '';
           this.researchFormOpen = false;
           this.researchTreeOpen = false;
+          this.researchDash = 'you';
           this.replyId = null;
           this.streamError = '';
           clearTimeout(this._chatSearchTimer);

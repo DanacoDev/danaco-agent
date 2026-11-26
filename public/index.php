@@ -542,40 +542,30 @@ header('X-Danaco: 1');
             <p v-if="researchError && !researchFormOpen" class="form-error">{{ researchError }}</p>
             <div v-if="researchBoard" class="research-body">
               <div class="research-main">
-                <ol class="research-cycle">
-                  <li v-for="step in researchSteps()" :key="step.id" :class="{ 'is-now': step.now, 'is-done': step.done }">{{ step.label }}</li>
-                </ol>
                 <div class="research-progress">
                   <button class="btn" type="button" @click="researchTreeOpen = true">Open tree</button>
-                  <span>{{ researchStateLabel() }}</span>
-                  <span>Cycle {{ researchBoard.cycle }}</span>
-                  <span>{{ researchBoard.ingest }} sources left</span>
-                  <span>{{ researchBoard.reevaluate }} to reevaluate</span>
+                  <span>{{ researchProgress() }}</span>
                 </div>
-                <article class="research-best panel">
-                  <h3>Best outcome</h3>
-                  <template v-if="researchBoard.best">
-                    <p class="research-best-line">{{ researchBoard.best.statement }}</p>
-                    <p class="muted">{{ researchBoard.best.status }} · {{ researchBoard.best.confidence }}</p>
-                    <p v-if="researchBoard.best.insight">{{ researchBoard.best.insight }}</p>
-                    <ol v-if="researchBoard.best.chain && researchBoard.best.chain.length > 1" class="research-chain">
-                      <li v-for="step in researchBoard.best.chain" :key="step.id">
-                        <button type="button" @click="selectResearchNodeId(step.id)">#{{ step.id }} {{ step.statement }}</button>
-                        <span v-if="step.insight" class="muted">{{ step.insight }}</span>
-                      </li>
-                    </ol>
-                  </template>
-                  <p v-else class="muted">No conclusion yet. Supported and narrowed branches show up here.</p>
-                </article>
-                <article v-if="researchLessons().length" class="research-lessons panel">
-                  <h3>Lessons</h3>
-                  <ul>
-                    <li v-for="lesson in researchLessons()" :key="lesson.id">
-                      <button type="button" @click="selectResearchNodeId(lesson.id)">#{{ lesson.id }} {{ lesson.status }}</button>
-                      <span>{{ lesson.insight || lesson.statement }}</span>
-                    </li>
-                  </ul>
-                </article>
+                <div class="research-dash">
+                  <button v-for="item in researchDashTabs()" :key="item.id" type="button" :class="{ active: researchDash === item.id }" @click="researchDash = item.id">
+                    {{ item.label }}<span class="count">{{ item.count }}</span>
+                  </button>
+                </div>
+                <div class="research-cards">
+                  <p v-if="!researchDashItems().length" class="muted">{{ researchDashEmpty() }}</p>
+                  <article v-for="item in researchDashItems()" :key="item.id" class="research-card panel">
+                    <h3><button type="button" @click="selectResearchNodeId(item.id)">{{ item.statement }}</button></h3>
+                    <p class="muted">{{ item.status }}<template v-if="item.confidence"> · {{ item.confidence }}</template></p>
+                    <p v-if="item.insight">{{ item.insight }}</p>
+                    <p v-else-if="item.needs_review" class="muted">This result is waiting for you.</p>
+                    <p v-else-if="item.status === 'testing'" class="muted">This idea is being checked.</p>
+                    <div v-if="researchDash === 'you' || researchDash === 'ideas'" class="research-actions">
+                      <button v-if="item.needs_review" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearchNode(item.id, 'noted')">Keep</button>
+                      <button v-else-if="item.status === 'proposed' && !researchGroups().testing.length" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearchNode(item.id, 'testing')">Pursue</button>
+                      <button v-if="item.needs_review || item.status === 'proposed' || item.status === 'testing'" class="btn" type="button" :disabled="researchBusy" title="Park this node and the open nodes under it" @click="reviewResearchNode(item.id, 'parked')">Park</button>
+                    </div>
+                  </article>
+                </div>
               </div>
             </div>
             <p v-else-if="!researchMissions.length" class="empty">No mission yet.</p>

@@ -780,7 +780,7 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
   display: flex; flex-direction: column; gap: 12px;
 }
 .research-detail { min-height: 0; min-width: 0; overflow: auto; padding: 12px; }
-.research-detail, .research-detail h3, .research-detail p, .research-best, .research-best-line, .research-chain button, .research-lessons span {
+.research-detail, .research-detail h3, .research-detail p, .research-card, .research-card h3, .research-card p {
   overflow-wrap: anywhere;
 }
 .research-main { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
@@ -800,29 +800,23 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
   grid-template-columns: minmax(0, 1fr) 300px; gap: 12px;
 }
 .research-tree-body .research-canvas { height: 100%; min-height: 0; }
-.research-cycle { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.research-cycle li {
-  padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 0.75rem;
-}
-.research-cycle li.is-now { border-color: var(--gold); color: var(--gold-text); background: rgba(232, 184, 109, 0.2); }
-.research-cycle li.is-done { color: var(--ok); }
 .research-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--muted); font-size: 0.88rem; }
+.research-dash { display: flex; flex-wrap: wrap; gap: 8px; }
+.research-dash button {
+  padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--muted);
+}
+.research-dash button.active { border-color: var(--gold); color: var(--gold-text); background: rgba(232, 184, 109, 0.2); }
+.research-dash .count { margin-left: 6px; }
+.research-cards { display: flex; flex-direction: column; gap: 10px; }
+.research-card { padding: 12px 14px; min-height: 0; }
+.research-card h3 { margin: 0 0 6px; font-size: 1rem; }
+.research-card h3 button { background: transparent; border: 0; padding: 0; text-align: left; color: inherit; font: inherit; font-weight: 650; }
+.research-card p { margin: 0 0 6px; }
 .research-zoom { display: inline-flex; gap: 6px; }
 .research-zoom button {
   width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
 }
-.research-best, .research-lessons { padding: 12px 14px; }
-.research-lessons h3 { margin: 0 0 6px; font-size: 1rem; }
-.research-lessons ul { margin: 0; padding-left: 18px; }
-.research-lessons li { margin: 4px 0; }
-.research-lessons button { background: transparent; border: 0; padding: 0; color: inherit; }
-.research-lessons span { display: block; color: var(--muted); }
-.research-best h3, .research-detail h3 { margin: 0 0 6px; font-size: 1rem; }
-.research-best-line { margin: 0 0 4px; }
-.research-chain { margin: 8px 0 0; padding-left: 18px; }
-.research-chain li { margin: 4px 0; }
-.research-chain button { background: transparent; border: 0; padding: 0; text-align: left; color: inherit; }
-.research-chain span { display: block; }
+.research-detail h3 { margin: 0 0 6px; font-size: 1rem; }
 .research-canvas {
   flex: 1; min-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 14px;
   background:
