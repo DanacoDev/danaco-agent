@@ -114,6 +114,7 @@ header('X-Danaco: 1');
   <symbol id="i-chevron" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6-6 6"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path fill="#000" stroke="#000" stroke-linejoin="round" stroke-width="1" d="M12 3.2 2.2 20.8h19.6z"/><path fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" d="M12 9v5.2"/><circle cx="12" cy="16.9" r="0.95" fill="#fff" stroke="none"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.2v13.6l12-6.8z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M6 5h4.2v14H6zM13.8 5H18v14h-4.2z"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4.5 5.5h5.5v13H4.5z"/><circle cx="8" cy="12" r="0.8" fill="currentColor" stroke="none"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12.5 12H20M16.8 8.8 20 12l-3.2 3.2"/></symbol>
   <symbol id="i-av-orchestrator" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" d="M7 8.2 9 5.2 12 7.2 15 5.2 17 8.2"/><circle cx="12" cy="11.2" r="2.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" d="M12 13.8 10.4 19.2h3.2zM8 19.6c1.2-1.6 2.4-2.2 4-2.2s2.8.6 4 2.2"/></symbol>
   <symbol id="i-av-scheduler" viewBox="0 0 24 24"><circle cx="8" cy="8" r="2.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M4.6 17.4c.5-2.1 1.8-3.2 3.4-3.2s2.9 1.1 3.4 3.2"/><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M14.2 8.2h5.4M14.2 11.6h5.4M14.2 15h3.2"/></symbol>
@@ -534,16 +535,28 @@ header('X-Danaco: 1');
               </label>
               <div class="view-actions">
                 <button class="btn" type="button" @click="researchFormOpen = true">New mission</button>
-                <button v-if="researchBoard && researchBoard.active" class="btn btn-stop" type="button" :disabled="researchBusy" @click="stopResearch">Stop</button>
-                <button v-else class="btn btn-gold" type="button" :disabled="researchBusy || !researchSlug" @click="runResearch">Start</button>
-                <button class="btn" type="button" :disabled="researchBusy || !researchSlug" @click="deleteResearch">Delete</button>
+                <button v-if="researchBoard && researchBoard.active" class="btn research-icon" type="button" aria-label="Pause" :disabled="researchBusy" @click="stopResearch">
+                  <svg class="ico" aria-hidden="true"><use href="#i-pause"></use></svg>
+                </button>
+                <button v-else class="btn research-icon" type="button" aria-label="Start" :disabled="researchBusy || !researchSlug" @click="runResearch">
+                  <svg class="ico" aria-hidden="true"><use href="#i-play"></use></svg>
+                </button>
+                <button class="btn research-icon" type="button" aria-label="Delete" :disabled="researchBusy || !researchSlug" @click="deleteResearch">
+                  <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
+                </button>
               </div>
             </div>
             <p v-if="researchError && !researchFormOpen" class="form-error">{{ researchError }}</p>
             <div v-if="researchBoard" class="research-body">
               <div class="research-main">
+                <article class="research-goal">
+                  <button class="research-goal-tree" type="button" aria-label="Open tree" @click="researchTreeOpen = true">
+                    <svg class="ico" aria-hidden="true"><use href="#i-research"></use></svg>
+                  </button>
+                  <p>{{ researchBoard.question || researchBoard.title }}</p>
+                  <p v-if="researchBoard.scope" class="muted">{{ researchBoard.scope }}</p>
+                </article>
                 <div class="research-progress">
-                  <button class="btn" type="button" @click="researchTreeOpen = true">Open tree</button>
                   <span>{{ researchProgress() }}</span>
                 </div>
                 <div class="research-dash">
