@@ -2264,11 +2264,15 @@
           const when = String(task.schedule_time || '').trim();
           let at = when ? Date.parse(when.replace(' ', 'T')) : NaN;
           if (this.taskRepeats(task)) {
-            if (Number.isNaN(at) || this.repeatMissed(task, at)) at = this.nextRepeatAt(task, at);
+            if (Number.isNaN(at) || at <= Date.now()) {
+              if (!Number.isNaN(at) && this.repeatMissed(task, at)) at = this.nextRepeatAt(task, at);
+              else return 'Now';
+            }
           } else if (Number.isNaN(at) || at <= Date.now()) {
             return '';
           }
           if (Number.isNaN(at)) return '';
+          if (at <= Date.now()) return 'Now';
           const date = new Date(at);
           const now = new Date();
           const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
