@@ -873,8 +873,10 @@ function research_slug_list(array $slugs): array
     $missions = [];
     $on = '';
     foreach ($slugs as $slug) {
-        $flag = research_file_active(getcwd() . '/database/research-' . $slug . '.db');
-        $missions[] = ['name' => $slug, 'active' => $flag];
+        $path = getcwd() . '/database/research-' . $slug . '.db';
+        $flag = research_file_active($path);
+        $title = research_file_title($path);
+        $missions[] = ['name' => $slug, 'title' => $title !== '' ? $title : $slug, 'active' => $flag];
         if ($flag) {
             $on = $slug;
         }
@@ -990,6 +992,26 @@ function research_ensure_active_column(PDO $db): void
     }
     if (!in_array('active', $have, true)) {
         $db->exec('ALTER TABLE meta ADD COLUMN active INTEGER NOT NULL DEFAULT 0');
+    }
+}
+
+function research_file_title(string $path): string
+{
+    if (!is_file($path)) {
+        return '';
+    }
+    try {
+        $db = research_connect($path);
+        $have = [];
+        foreach ($db->query('PRAGMA table_info(meta)') as $col) {
+            $have[] = (string)$col['name'];
+        }
+        if (!in_array('title', $have, true)) {
+            return '';
+        }
+        return trim((string)$db->query('SELECT title FROM meta WHERE id = 1')->fetchColumn());
+    } catch (Throwable $e) {
+        return '';
     }
 }
 

@@ -530,7 +530,7 @@ header('X-Danaco: 1');
               <h2>Research</h2>
               <label v-if="researchMissions.length" class="research-pick">
                 <select :value="researchSlug" aria-label="Research mission" :disabled="researchBusy" @change="openResearch($event.target.value)">
-                  <option v-for="mission in researchMissions" :key="mission.name" :value="mission.name">{{ mission.name }}{{ mission.active ? ' · On' : '' }}</option>
+                  <option v-for="mission in researchMissions" :key="mission.name" :value="mission.name">{{ mission.title || mission.name }}{{ mission.active ? ' · On' : '' }}</option>
                 </select>
               </label>
               <div class="view-actions">
@@ -541,6 +541,9 @@ header('X-Danaco: 1');
                 <button v-else class="btn research-icon" type="button" aria-label="Start" :disabled="researchBusy || !researchSlug" @click="runResearch">
                   <svg class="ico" aria-hidden="true"><use href="#i-play"></use></svg>
                 </button>
+                <button class="btn research-icon" type="button" aria-label="Open tree" :disabled="!researchBoard" @click="researchTreeOpen = true">
+                  <svg class="ico" aria-hidden="true"><use href="#i-research"></use></svg>
+                </button>
                 <button class="btn research-icon" type="button" aria-label="Delete" :disabled="researchBusy || !researchSlug" @click="deleteResearch">
                   <svg class="ico" aria-hidden="true"><use href="#i-trash"></use></svg>
                 </button>
@@ -550,9 +553,6 @@ header('X-Danaco: 1');
             <div v-if="researchBoard" class="research-body">
               <div class="research-main">
                 <article class="research-goal">
-                  <button class="research-goal-tree" type="button" aria-label="Open tree" @click="researchTreeOpen = true">
-                    <svg class="ico" aria-hidden="true"><use href="#i-research"></use></svg>
-                  </button>
                   <p>{{ researchBoard.question || researchBoard.title }}</p>
                   <p v-if="researchBoard.scope" class="muted">{{ researchBoard.scope }}</p>
                 </article>
@@ -643,7 +643,6 @@ header('X-Danaco: 1');
                 <h2>New mission</h2>
                 <label class="field">Short name<input v-model="researchForm.title" required></label>
                 <label class="field">Goal<textarea v-model="researchForm.question" rows="4" required placeholder="What this mission should find out"></textarea></label>
-                <label class="field">Scope<input v-model="researchForm.scope" placeholder="Optional"></label>
                 <p class="form-error">{{ researchError }}</p>
                 <div class="view-actions">
                   <button class="btn btn-gold" type="submit" :disabled="researchBusy">Create mission</button>

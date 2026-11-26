@@ -188,7 +188,7 @@
           researchFormOpen: false,
           researchTreeOpen: false,
           researchDash: 'you',
-          researchForm: { title: '', question: '', scope: '' },
+          researchForm: { title: '', question: '' },
           researchSelected: 0,
           researchDirection: '',
           researchDirectionFocused: false,
@@ -823,11 +823,15 @@
           }
           try {
             const data = await this.api('/api/research?project_id=' + this.projectId);
-            this.researchMissions = (data.missions || []).map((mission) => (
-              mission && typeof mission === 'object'
-                ? { name: mission.name, active: !!mission.active }
-                : { name: String(mission), active: false }
-            )).filter((mission) => mission.name);
+            this.researchMissions = (data.missions || []).map((mission) => {
+              if (mission && typeof mission === 'object') {
+                const name = mission.name || '';
+                const title = String(mission.title || '').trim();
+                return { name, title: title || name, active: !!mission.active };
+              }
+              const name = String(mission);
+              return { name, title: name, active: false };
+            }).filter((mission) => mission.name);
             if (!this.researchMissions.length) {
               this.researchSlug = '';
               this.researchBoard = null;
@@ -875,11 +879,10 @@
               body: {
                 project_id: this.projectId,
                 title: this.researchForm.title,
-                question: this.researchForm.question,
-                scope: this.researchForm.scope
+                question: this.researchForm.question
               }
             });
-            this.researchForm = { title: '', question: '', scope: '' };
+            this.researchForm = { title: '', question: '' };
             this.researchFormOpen = false;
             this.researchSlug = data.name || '';
             await this.loadResearch();

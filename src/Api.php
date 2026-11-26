@@ -296,7 +296,8 @@ class Api
                 if ($name === '') {
                     continue;
                 }
-                $missions[] = ['name' => $name, 'active' => !empty($item['active'])];
+                $title = trim((string)($item['title'] ?? ''));
+                $missions[] = ['name' => $name, 'title' => $title !== '' ? $title : $name, 'active' => !empty($item['active'])];
             }
         } elseif (isset($payload['names']) && is_array($payload['names'])) {
             $on = trim((string)($payload['active'] ?? ''));
@@ -305,12 +306,15 @@ class Api
                 if ($name === '') {
                     continue;
                 }
-                $missions[] = ['name' => $name, 'active' => $name === $on];
+                $missions[] = ['name' => $name, 'title' => $name, 'active' => $name === $on];
             }
         } elseif (trim((string)($payload['name'] ?? '')) !== '' && (int)($result['exit_code'] ?? 1) === 0) {
             $view = is_array($payload['view'] ?? null) ? $payload['view'] : [];
+            $name = (string)$payload['name'];
+            $title = trim((string)($view['title'] ?? ''));
             $missions[] = [
-                'name' => (string)$payload['name'],
+                'name' => $name,
+                'title' => $title !== '' ? $title : $name,
                 'active' => !empty($view['active']),
             ];
         }
