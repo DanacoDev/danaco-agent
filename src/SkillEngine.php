@@ -14,7 +14,7 @@ class SkillEngine
         'wiki_memory', 'list_vault', 'read_vault', 'restore_file', 'tasklist', 'delegate',
         'web_search', 'fetch_url', 'browse_url', 'run_command', 'run_python', 'send_email',
         'ftp', 'mcp', 'remember', 'write_skill', 'test_skill', 'sqlite_helper', 'save_note',
-        'code_verifier', 'research_pipeline', 'research_loop', 'download_large',
+        'code_verifier', 'research_loop', 'download_large',
         'write_article', 'humanizer', 'grammar_check', 'make_graphic', 'yahoo_finance',
     ];
 

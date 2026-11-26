@@ -1,6 +1,6 @@
 ---
 name: research_loop
-description: One research mission in database/research-<slug>.db. args action, name. action is mission, add, next, commit, review, or status. No SQL and no wiki files.
+description: A long research mission in database/research-<slug>.db. Not a lookup log. args action, name. action is mission, add, next, commit, review, or status.
 version: 1.0.0
 ---
 
@@ -8,7 +8,7 @@ A research mission is this skill and one database. The file is database/research
 
 name is the slug the mission action returned. If the project has one mission, name may be omitted. If it has several, name is required. status with no name lists the slugs and stops.
 
-Do not pass sql, a table, a column list, or a filename. Do not open the file with sqlite_helper, filesystem, run_command, or run_python. Do not write a wiki markdown for a finding, a source list, a hypothesis, or a phase. A lookup that is not a mission still uses research_pipeline.
+Do not pass sql, a table, a column list, or a filename. Do not open the file with sqlite_helper, filesystem, run_command, or run_python. Do not write a wiki markdown for a finding, a source list, a hypothesis, or a phase. A lookup that is not a mission is saved with wiki_memory. It is not this skill.
 
 Actions:
 
