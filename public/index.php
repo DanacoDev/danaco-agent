@@ -528,39 +528,29 @@ header('X-Danaco: 1');
             <div class="view-head">
               <h2>Research</h2>
               <label v-if="researchMissions.length" class="research-pick">
-                <span>Mission</span>
                 <select :value="researchSlug" aria-label="Research mission" :disabled="researchBusy" @change="openResearch($event.target.value)">
                   <option v-for="mission in researchMissions" :key="mission.name" :value="mission.name">{{ mission.name }}{{ mission.active ? ' · On' : '' }}</option>
                 </select>
               </label>
               <div class="view-actions">
-                <button class="btn" type="button" @click="researchFormOpen = !researchFormOpen">New mission</button>
+                <button class="btn" type="button" @click="researchFormOpen = true">New mission</button>
                 <button v-if="researchBoard && researchBoard.active" class="btn btn-stop" type="button" :disabled="researchBusy" @click="stopResearch">Stop</button>
                 <button v-else class="btn btn-gold" type="button" :disabled="researchBusy || !researchSlug" @click="runResearch">Start</button>
                 <button class="btn" type="button" :disabled="researchBusy || !researchSlug" @click="deleteResearch">Delete</button>
               </div>
             </div>
-            <form v-if="researchFormOpen || !researchMissions.length" class="research-form" @submit.prevent="createResearch">
-              <label class="field">Title<input v-model="researchForm.title" required></label>
-              <label class="field">Question<textarea v-model="researchForm.question" rows="3" required></textarea></label>
-              <label class="field">Scope<input v-model="researchForm.scope" placeholder="Optional"></label>
-              <button class="btn btn-gold" type="submit" :disabled="researchBusy">Create mission</button>
-            </form>
-            <p v-if="researchError" class="form-error">{{ researchError }}</p>
+            <p v-if="researchError && !researchFormOpen" class="form-error">{{ researchError }}</p>
             <div v-if="researchBoard" class="research-body">
               <div class="research-main">
                 <ol class="research-cycle">
                   <li v-for="step in researchSteps()" :key="step.id" :class="{ 'is-now': step.now, 'is-done': step.done }">{{ step.label }}</li>
                 </ol>
                 <div class="research-progress">
+                  <button class="btn" type="button" @click="researchTreeOpen = true">Open tree</button>
                   <span>{{ researchStateLabel() }}</span>
                   <span>Cycle {{ researchBoard.cycle }}</span>
                   <span>{{ researchBoard.ingest }} sources left</span>
                   <span>{{ researchBoard.reevaluate }} to reevaluate</span>
-                  <span class="research-zoom">
-                    <button type="button" @click="researchZoom = Math.max(0.55, Math.round((researchZoom - 0.15) * 100) / 100)">−</button>
-                    <button type="button" @click="researchZoom = Math.min(1.6, Math.round((researchZoom + 0.15) * 100) / 100)">+</button>
-                  </span>
                 </div>
                 <article class="research-best panel">
                   <h3>Best outcome</h3>
@@ -586,47 +576,78 @@ header('X-Danaco: 1');
                     </li>
                   </ul>
                 </article>
+              </div>
+            </div>
+            <p v-else-if="!researchMissions.length" class="empty">No mission yet.</p>
+            <div v-if="researchTreeOpen && researchBoard" class="research-screen">
+              <button class="research-screen-close" type="button" aria-label="Close" @click="researchTreeOpen = false">
+                <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>
+              </button>
+              <div class="research-screen-bar">
+                <span class="research-zoom">
+                  <button type="button" @click="researchZoom = Math.max(0.55, Math.round((researchZoom - 0.15) * 100) / 100)">−</button>
+                  <button type="button" @click="researchZoom = Math.min(1.6, Math.round((researchZoom + 0.15) * 100) / 100)">+</button>
+                </span>
+              </div>
+              <div class="research-tree-body">
                 <div ref="researchCanvas" class="research-canvas" @pointerdown="researchPanStart" @pointermove="researchPanMove" @pointerup="researchPanEnd" @pointercancel="researchPanEnd">
-                  <div v-if="!researchMap().nodes.length" class="research-empty muted">{{ researchBoard && researchBoard.active ? 'The first hypotheses show up after the next pass.' : 'Start the mission to propose the first hypotheses.' }}</div>
-                  <div v-else class="research-stage" :style="{ width: (researchMap().width * researchZoom) + 'px', height: (researchMap().height * researchZoom) + 'px' }">
+                  <div class="research-stage" :style="{ width: (researchMap().width * researchZoom) + 'px', height: (researchMap().height * researchZoom) + 'px' }">
                     <div class="research-scale" :style="{ width: researchMap().width + 'px', height: researchMap().height + 'px', transform: 'scale(' + researchZoom + ')' }">
                       <svg class="research-lines" :width="researchMap().width" :height="researchMap().height">
                         <path v-for="edge in researchMap().edges" :key="edge.id" :d="edge.d"></path>
                       </svg>
                       <button v-for="node in researchMap().nodes" :key="node.id" type="button" class="research-node" :class="['is-' + node.status, { 'is-on': researchSelected === node.id, 'is-best': researchBoard.best && researchBoard.best.id === node.id }]" :style="{ left: node.x + 'px', top: node.y + 'px', width: node.w + 'px', height: node.h + 'px' }" @click.stop="selectResearchNode(node)">
-                        <span class="research-chip">{{ node.status }}</span>
+                        <span v-if="!node.goal" class="research-chip">{{ node.status }}</span>
                         <strong>{{ node.statement }}</strong>
                       </button>
                     </div>
                   </div>
                 </div>
+                <aside class="research-detail panel">
+                  <template v-if="researchCurrent() && researchCurrent().goal">
+                    <p class="research-chip is-goal">Goal</p>
+                    <h3>{{ researchCurrent().statement }}</h3>
+                    <p>{{ researchCurrent().question }}</p>
+                    <p v-if="researchCurrent().scope" class="muted">{{ researchCurrent().scope }}</p>
+                  </template>
+                  <template v-else-if="researchCurrent()">
+                    <p class="research-chip" :class="'is-' + researchCurrent().status">{{ researchCurrent().status }} · {{ researchCurrent().confidence }}</p>
+                    <h3>{{ researchCurrent().statement }}</h3>
+                    <p class="muted">{{ researchCurrent().parent_id ? 'Parent #' + researchCurrent().parent_id : 'Goal' }} · #{{ researchCurrent().id }}</p>
+                    <p v-if="researchCurrent().insight"><strong>Conclusion.</strong> {{ researchCurrent().insight }}</p>
+                    <p v-else class="muted">No conclusion on this node yet.</p>
+                    <p v-if="researchCurrent().inherited"><strong>From the branch.</strong> {{ researchCurrent().inherited }}</p>
+                    <p v-if="researchCurrent().falsification"><strong>Would falsify it.</strong> {{ researchCurrent().falsification }}</p>
+                    <ul v-if="researchCurrent().claims && researchCurrent().claims.length" class="research-claims">
+                      <li v-for="claim in researchCurrent().claims" :key="claim.id">{{ claim.text }}</li>
+                    </ul>
+                    <div class="research-actions">
+                      <button class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearch('testing')">Pursue</button>
+                      <button class="btn" type="button" :disabled="researchBusy" title="Park this node and the open nodes under it" @click="reviewResearch('parked')">Park</button>
+                      <button class="btn" type="button" :disabled="researchBusy" @click="reviewResearch('noted')">Keep</button>
+                    </div>
+                    <label class="field">Direction
+                      <textarea v-model="researchDirection" rows="3" placeholder="Where this branch should go next" @focus="researchDirectionFocused = true" @blur="researchDirectionFocused = false"></textarea>
+                    </label>
+                    <button class="btn" type="button" :disabled="researchBusy" @click="reviewResearch('', true)">Save direction</button>
+                  </template>
+                  <p v-else class="muted">Click a node to read it.</p>
+                </aside>
               </div>
-              <aside class="research-detail panel">
-                <template v-if="researchCurrent()">
-                  <p class="research-chip" :class="'is-' + researchCurrent().status">{{ researchCurrent().status }} · {{ researchCurrent().confidence }}</p>
-                  <h3>{{ researchCurrent().statement }}</h3>
-                  <p class="muted">{{ researchCurrent().parent_id ? 'Parent #' + researchCurrent().parent_id : 'Root' }} · #{{ researchCurrent().id }}</p>
-                  <p v-if="researchCurrent().insight"><strong>Conclusion.</strong> {{ researchCurrent().insight }}</p>
-                  <p v-else class="muted">No conclusion on this node yet.</p>
-                  <p v-if="researchCurrent().inherited"><strong>From the branch.</strong> {{ researchCurrent().inherited }}</p>
-                  <p v-if="researchCurrent().falsification"><strong>Would falsify it.</strong> {{ researchCurrent().falsification }}</p>
-                  <ul v-if="researchCurrent().claims && researchCurrent().claims.length" class="research-claims">
-                    <li v-for="claim in researchCurrent().claims" :key="claim.id">{{ claim.text }}</li>
-                  </ul>
-                  <div class="research-actions">
-                    <button class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearch('testing')">Pursue</button>
-                    <button class="btn" type="button" :disabled="researchBusy" title="Park this node and the open nodes under it" @click="reviewResearch('parked')">Park</button>
-                    <button class="btn" type="button" :disabled="researchBusy" @click="reviewResearch('noted')">Keep</button>
-                  </div>
-                  <label class="field">Direction
-                    <textarea v-model="researchDirection" rows="3" placeholder="Where this branch should go next" @focus="researchDirectionFocused = true" @blur="researchDirectionFocused = false"></textarea>
-                  </label>
-                  <button class="btn" type="button" :disabled="researchBusy" @click="reviewResearch('', true)">Save direction</button>
-                </template>
-                <p v-else class="muted">Click a node to read it.</p>
-              </aside>
             </div>
-            <p v-else-if="!researchMissions.length && !researchFormOpen" class="empty">No mission yet.</p>
+            <div v-if="researchFormOpen" class="modal-back" @click.self="researchFormOpen = false">
+              <form class="modal project-modal" @submit.prevent="createResearch">
+                <h2>New mission</h2>
+                <label class="field">Short name<input v-model="researchForm.title" required></label>
+                <label class="field">Goal<textarea v-model="researchForm.question" rows="4" required placeholder="What this mission should find out"></textarea></label>
+                <label class="field">Scope<input v-model="researchForm.scope" placeholder="Optional"></label>
+                <p class="form-error">{{ researchError }}</p>
+                <div class="view-actions">
+                  <button class="btn btn-gold" type="submit" :disabled="researchBusy">Create mission</button>
+                  <button class="btn" type="button" @click="researchFormOpen = false">Cancel</button>
+                </div>
+              </form>
+            </div>
           </section>
 
           <section v-else-if="tab==='workspace'" class="view workspace-view" :class="{ 'is-vault': vaultOpen }">

@@ -186,6 +186,7 @@
           researchError: '',
           researchBusy: false,
           researchFormOpen: false,
+          researchTreeOpen: false,
           researchForm: { title: '', question: '', scope: '' },
           researchSelected: 0,
           researchDirection: '',
@@ -829,7 +830,6 @@
             if (!this.researchMissions.length) {
               this.researchSlug = '';
               this.researchBoard = null;
-              this.researchFormOpen = true;
               return;
             }
             if (!this.researchMissions.some((mission) => mission.name === this.researchSlug)) {
@@ -942,7 +942,7 @@
           }
         },
         async reviewResearch(decision, withDirection) {
-          if (this.researchBusy || !this.researchSelected) return;
+          if (this.researchBusy || !this.researchSelected || this.researchSelected === 'mission') return;
           this.researchError = '';
           this.researchBusy = true;
           try {
@@ -963,7 +963,25 @@
           }
         },
         researchMap() {
-          const tree = (this.researchBoard && this.researchBoard.tree) || [];
+          const board = this.researchBoard;
+          const tree = (board && board.tree) || [];
+          const mission = {
+            id: 'mission',
+            parent_id: 0,
+            goal: true,
+            statement: (board && (board.title || board.name)) || '',
+            question: (board && board.question) || '',
+            scope: (board && board.scope) || '',
+            status: 'goal',
+            confidence: '',
+            insight: '',
+            direction: '',
+            inherited: '',
+            falsification: '',
+            claims: [],
+            children: tree
+          };
+          const roots = board ? [mission] : [];
           const nodes = [];
           const width = 232;
           const height = 96;
@@ -984,7 +1002,7 @@
             nodes.push(Object.assign({}, node, { depth: depth, row: at }));
             return at;
           };
-          tree.forEach((node) => place(node, 0));
+          roots.forEach((node) => place(node, 0));
           let maxDepth = 0;
           nodes.forEach((node) => {
             node.x = pad + node.depth * (width + gapX);
@@ -997,7 +1015,8 @@
           nodes.forEach((node) => { byId[node.id] = node; });
           const edges = [];
           nodes.forEach((node) => {
-            const parent = byId[node.parent_id];
+            if (node.goal) return;
+            const parent = byId[node.parent_id] || byId.mission;
             if (!parent) return;
             const x1 = parent.x + parent.w;
             const y1 = parent.y + parent.h / 2;
@@ -1065,7 +1084,9 @@
         },
         selectResearchNodeId(id) {
           const node = this.researchMap().nodes.find((item) => item.id === id);
-          if (node) this.selectResearchNode(node);
+          if (!node) return;
+          this.researchTreeOpen = true;
+          this.selectResearchNode(node);
         },
         researchPanStart(event) {
           if (event.button !== 0) return;
@@ -1119,6 +1140,7 @@
           this.researchSelected = 0;
           this.researchError = '';
           this.researchFormOpen = false;
+          this.researchTreeOpen = false;
           this.replyId = null;
           this.streamError = '';
           clearTimeout(this._chatSearchTimer);
