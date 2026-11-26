@@ -1196,7 +1196,7 @@
         },
         agentLabel(name, markCpu) {
           let label = '';
-          if (name === 'scheduler') label = 'Task agent';
+          if (name === 'scheduler') label = 'Task manager';
           else if (name === 'orchestrator' || name === 'assistant') label = 'Main agent';
           else {
             const text = String(name || '');
@@ -4092,7 +4092,7 @@
       methods: {
         label(name) {
           let label = 'Agent';
-          if (name === 'scheduler') label = 'Task agent';
+          if (name === 'scheduler') label = 'Task manager';
           else if (name === 'orchestrator') label = 'Main agent';
           else {
             const text = String(name || '');

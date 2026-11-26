@@ -678,8 +678,8 @@ header('X-Danaco: 1');
                         <p class="hint flow-task">{{ agentWork(taskAgent) }}</p>
                       </div>
                     </article>
-                    <span class="flow-link" :class="{live: agentBusy(taskAgent)}"></span>
                   </div>
+                  <div v-if="taskAgent" class="flow-task-down" :class="{live: agentBusy(taskAgent)}"></div>
                   <article class="flow-node is-main" :class="['is-' + mainAgent.status, { 'is-picked': logAgent === mainAgent.name }]" @click="pickLogAgent(mainAgent.name)">
                     <svg class="avatar" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-av-orchestrator"></use></svg>
                     <div class="flow-copy">

@@ -1663,7 +1663,7 @@ class AgentRuntime
         $tools = $this->recentToolResults($messages);
         $reply = clip_text(trim($reply), 1500);
         if ($scheduled) {
-            $question = 'This is a scheduled task and nobody is here to answer. Is that task finished? Answer yes or no. yes only if the task is finished. A question to the user is no. A reply or tool result that only promises to check, add, or save, and did not do it, is no.';
+            $question = 'This is a scheduled task and nobody is here to answer. Is this run finished? Answer yes or no. yes if the work for this run is done, or the reply lists hypotheses and says awaiting approval without asking a question. no if it asks the user a question, a tool still needs to run, or a reply only promises to check, add, or save.';
         } else {
             $question = 'Is the job finished, or is the agent only waiting for the user? Answer yes or no. yes = the requested work is done, or the agent asked the user a real question, or it is waiting for the user to choose, including now versus scheduled. no = work is still unfinished. The last tool failed and was not fixed, the reply describes a next step it did not take, or a tool result only promises to check, add, or save.';
         }
@@ -1908,7 +1908,7 @@ class AgentRuntime
     private function finishSteer(bool $scheduled): string
     {
         if ($scheduled) {
-            return 'The scheduled task is not finished. Nobody is here to answer. If the last tool failed, fix that call and run it again. Choose the sensible option and finish the task. Call the tool that is still needed. Do not only describe it.';
+            return 'The scheduled task is not finished. Nobody is here to answer, so do not ask a question. If hypotheses are waiting, list them and stop with the line awaiting approval. Do not ask the user to approve. If the last tool failed, fix that call and run it again. Otherwise call the tool that is still needed, then stop.';
         }
         return 'The job is not finished. You stopped before the work was done. If the last tool failed, fix that call and run it again. If you described a next step, do it now with a real tool call. Do not only describe it.';
     }

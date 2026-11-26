@@ -848,6 +848,9 @@ TXT;
                 $tail .= "\n\nThe chat was just cleared. Before you answer or do other work, read {$desc} so you know what this project is. Use wiki_memory with action read and no name.\n";
             }
         }
+        if ($this->taskIsolate) {
+            $tail .= "\n\nYou are the task manager for this scheduled run. Nobody can answer you here. Do not ask a question. Do not ask the user to approve, choose, or confirm. If hypotheses are proposed and waiting, list each one as a statement and stop. End with the line awaiting approval. The user approves later in the chat with research_loop action review. Do not call review yourself.\n";
+        }
         return $tail;
     }
 

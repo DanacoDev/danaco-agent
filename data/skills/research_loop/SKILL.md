@@ -29,7 +29,7 @@ The fixed step is this, and nothing more:
 - If a hypothesis is still proposed and none are testing, stop. The result line is awaiting approval. Do not ingest. Do not call tasklist result.
 - Otherwise call next once. If the stage is idle, the result line is idle and you stop without a step result. Otherwise judge that one packet, call commit, then call tasklist result with one line: the stage, the chunk or topic id, and the queue depths. Put needs_review on that line when the commit says so. Do not take another packet.
 
-The user approves in chat. Then call review with decision testing, parked, or an edited statement. Do not create a task to ask. The 15-minute repeat is already set. To pause it, set schedule_time to never on this same task.
+The user approves in chat. Then call review with decision testing, parked, or an edited statement. Do not ask a question in a scheduled run. Do not create a task to ask. The 15-minute repeat is already set. To pause it, set schedule_time to never on this same task.
 
 A pass does one packet and exits. Do not batch.
 
