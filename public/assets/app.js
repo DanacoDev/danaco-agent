@@ -2260,9 +2260,14 @@
           return 'active';
         },
         taskNextRun(task) {
-          if (this.taskState(task) !== 'scheduled') return '';
+          if (Number(task.held) === 1 && !String(task.schedule_time || '').trim()) return '';
           const when = String(task.schedule_time || '').trim();
-          const at = Date.parse(when.replace(' ', 'T'));
+          let at = when ? Date.parse(when.replace(' ', 'T')) : NaN;
+          if (this.taskRepeats(task)) {
+            if (Number.isNaN(at) || this.repeatMissed(task, at)) at = this.nextRepeatAt(task, at);
+          } else if (Number.isNaN(at) || at <= Date.now()) {
+            return '';
+          }
           if (Number.isNaN(at)) return '';
           const date = new Date(at);
           const now = new Date();
@@ -2270,12 +2275,48 @@
           const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
           const day = Math.round((dayStart - start) / 86400000);
           const clock = date.getHours() + ':' + String(date.getMinutes()).padStart(2, '0');
-          if (day <= 0) return 'Today ' + clock;
-          if (day === 1) return 'Tomorrow ' + clock;
           const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-          if (day < 7) return weekdays[date.getDay()] + ' ' + clock;
           const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          if (day < 0) {
+            if (day > -7) return weekdays[date.getDay()] + ' ' + clock;
+            return months[date.getMonth()] + ' ' + date.getDate() + ' ' + clock;
+          }
+          if (day === 0) return 'Today ' + clock;
+          if (day === 1) return 'Tomorrow ' + clock;
+          if (day < 7) return weekdays[date.getDay()] + ' ' + clock;
           return months[date.getMonth()] + ' ' + date.getDate() + ' ' + clock;
+        },
+        repeatMissed(task, at) {
+          if (Number.isNaN(at) || at > Date.now()) return false;
+          const interval = String(task.recurrence_interval || '');
+          const seconds = { '5min': 300, '15min': 900, '30min': 1800, hourly: 3600, daily: 86400, weekly: 604800 };
+          if (seconds[interval]) return Date.now() >= at + seconds[interval] * 1000;
+          if (interval !== 'monthly') return false;
+          const next = new Date(at);
+          next.setMonth(next.getMonth() + 1);
+          return Date.now() >= next.getTime();
+        },
+        nextRepeatAt(task, from) {
+          const interval = String(task.recurrence_interval || '');
+          const seconds = { '5min': 300, '15min': 900, '30min': 1800, hourly: 3600, daily: 86400, weekly: 604800 };
+          const now = Date.now();
+          let base = Number.isNaN(from) ? now : from;
+          if (seconds[interval]) {
+            const step = seconds[interval] * 1000;
+            if (base <= now) base += Math.ceil((now - base + 1000) / step) * step;
+            return base;
+          }
+          if (interval !== 'monthly') return NaN;
+          let cursor = new Date(base);
+          let guard = 0;
+          do {
+            const next = new Date(cursor.getTime());
+            next.setMonth(next.getMonth() + 1);
+            if (next.getTime() <= cursor.getTime()) return NaN;
+            cursor = next;
+            guard += 1;
+          } while (cursor.getTime() <= now && guard < 240);
+          return cursor.getTime() > now ? cursor.getTime() : NaN;
         },
         taskStatusIndex() {
           const order = ['', 'pending', 'active', 'scheduled', 'finished'];
