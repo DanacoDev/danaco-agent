@@ -171,7 +171,7 @@ Those skills cover any file in the project, including the wiki. {$scope} A new o
 - coder: write and debug software in PHP, run code_verifier on each changed file, and use download_large for a download over 100 MB. Use Python only when a Python library is required, and run that file with run_python. If run_python says a library is missing, stop and name it. Do not install it. Do not use run_command for Python, and do not ask for full system control to run a script. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A skill program is PHP. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
 - marketer: campaigns, press copy, brand, and visual direction. An icon or infographic runs make_graphic.
-- consultant: a subagent for a hard multi-step problem. Delegate with agent consultant. It uses an external paid model and the same project file skills. It can list, create, update, and delete tasks. It has no write_skill or test_skill. When it returns, delegate the first open step. Delegate only when the note says the Consultant is on.
+- consultant: a subagent for a hard multi-step problem. Delegate with agent consultant. It uses an external paid model and the same project file skills. It can list, create, update, and delete tasks. It can see research_loop and set up a mission: one database/research-<slug>.db and one task titled Research: and the short title. It has no write_skill or test_skill. When it returns, delegate the first open step. Delegate only when the note says the Consultant is on.
 TXT;
     }
 
@@ -203,6 +203,7 @@ TXT;
         }
         if ($agent === 'consultant') {
             $expand[] = 'tasklist';
+            $expand[] = 'research_loop';
         }
         if ($agent === 'researcher') {
             $expand[] = 'yahoo_finance';
@@ -233,9 +234,14 @@ TXT;
         if ($brief !== '') {
             $identity .= "\n\n" . $brief;
         }
-        $researchRule = $agent === 'researcher'
-            ? ' A research mission is research_loop and one database/research-<slug>.db per question. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db.'
-            : '';
+        $researchRule = match ($agent) {
+            'researcher' => ' A research mission is research_loop and one database/research-<slug>.db per question. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db.',
+            'consultant' => ' You can see research_loop. Its instructions are written out below. To set a mission up, call research_loop with action mission, then create one task titled Research: and the short title. One step, One pass, agent researcher. The step includes the slug. Recurrence is 15min after the user approves. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db. Do not add a second task for the same slug. Do not run the research packets.',
+            default => '',
+        };
+        $skillLead = $agent === 'consultant'
+            ? 'wiki_memory, tasklist, and research_loop are written out in full.'
+            : 'wiki_memory is written out in full.';
         $taskRule = $agent === 'consultant'
             ? 'When the assignment names a task, list it with the tasklist tool first. Update the named task so its open steps match the plan. Do not delete it and create another. Delete only when the assignment says to remove that task. Each step needs a description that names the files, lists, and skills, and what to save or return. A title alone is rejected. To replace the open steps, pass replace_steps true and the full new list. Done steps stay. Do not do the research or file work unless the assignment asks for that. End with the task id and the open steps.'
             : 'You cannot create, update, or delete a task. When the instruction names a task, add a short result to it with the tasklist tool before you finish. The main agent checks that work and then updates the task.';
@@ -269,7 +275,7 @@ Naming a tool in a list or sentence does nothing. Only the <<tool>> ... <<end>> 
 Do not print a tool call in the reply. Do not write a tool name followed by a JSON object. Draft XML such as <delegate> is thinking, not something the user should read.
 Do not say you wrote, updated, or created a file until a tool result confirms it. Showing the planned markdown in chat is not a write. Call wiki_memory with action write, or filesystem with action write, first, then answer.
 
-These are the skills at your disposal. wiki_memory is written out in full. Each other line is the description and the arguments. After a skill is called, its instructions are added here and stay while that call is still in this chat.
+These are the skills at your disposal. {$skillLead} Each other line is the description and the arguments. After a skill is called, its instructions are added here and stay while that call is still in this chat.
 TXT;
         if ($this->db->fullSystemControl()) {
             $rules .= "\nFull system control is on. You may use sudo, and a path that starts with / can read or change any file on this computer. Prefer {$projectFolder}/ unless the task needs something outside it. Python still runs through run_python and stays inside the project.\n";
@@ -524,6 +530,9 @@ TXT;
                 $tail = ' The main agent checks this and updates the task.';
             }
             return 'Added a result to task #' . $task['id'] . ': ' . $task['title'] . '.' . $tail;
+        }
+        if ($action === 'stop') {
+            return 'Only the main agent can stop a running job.';
         }
         return 'Only the main agent can update a task. You can list the task list, or add a result with action result, id, and result.';
     }

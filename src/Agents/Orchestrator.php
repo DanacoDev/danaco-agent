@@ -1882,6 +1882,9 @@ TXT;
             if ($action === 'list') {
                 return $board->listing($projectId);
             }
+            if ($action === 'stop') {
+                return $this->db->stopRunningWork($projectId);
+            }
             if ($action === 'create') {
                 $batch = $this->taskBatch($args);
                 if ($batch !== null) {
@@ -1939,7 +1942,7 @@ TXT;
         } catch (RuntimeException $e) {
             return $e->getMessage();
         }
-        return 'Unknown tasklist action. Use list, create, update, or delete.';
+        return 'Unknown tasklist action. Use list, create, update, delete, or stop.';
     }
 
     private function taskBatch(array $args): ?array

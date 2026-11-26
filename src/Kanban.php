@@ -324,7 +324,14 @@ class Kanban
                 }
             }
         }
-        return $lines ? implode("\n", $lines) : 'No open tasks.';
+        $text = $lines ? implode("\n", $lines) : 'No open tasks.';
+        if ($projectId !== null && $projectId > 0) {
+            $working = $this->db->workingLines($projectId);
+            if ($working) {
+                $text .= "\n" . implode("\n", $working);
+            }
+        }
+        return $text;
     }
 
     public function awaiting(array $task): bool

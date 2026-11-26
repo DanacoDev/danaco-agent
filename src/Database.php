@@ -728,8 +728,12 @@ SQL);
 
     public function deleteTask(int $id): bool
     {
-        if (!$this->task($id)) {
+        $task = $this->task($id);
+        if (!$task) {
             return false;
+        }
+        if ($this->taskJobRunning($id)) {
+            $this->finishRunningSubagents((int)($task['project_id'] ?? 0));
         }
         $this->pdo->prepare('DELETE FROM subtasks WHERE task_id = ?')->execute([$id]);
         $this->pdo->prepare("DELETE FROM jobs WHERE kind = 'task' AND ref_id = ?")->execute([$id]);
@@ -1768,6 +1772,98 @@ SQL);
             $stmt = $this->pdo->query("SELECT * FROM jobs WHERE project_id IS NULL AND status IN ('running', 'error')");
         }
         return $stmt->fetchAll();
+    }
+
+    public function workingJobs(int $projectId): array
+    {
+        $jobs = [];
+        foreach ($this->runningJobs($projectId) as $row) {
+            $kind = (string)($row['kind'] ?? '');
+            if ($kind !== 'task' && $kind !== 'subagent') {
+                continue;
+            }
+            if ((string)($row['status'] ?? '') !== 'running') {
+                continue;
+            }
+            $jobs[] = $row;
+        }
+        return $jobs;
+    }
+
+    public function workingLines(int $projectId): array
+    {
+        $lines = [];
+        foreach ($this->workingJobs($projectId) as $job) {
+            $lines[] = $this->workerLabel($this->jobWorker($job)) . ' is working. Job ' . (int)$job['id'] . '.';
+        }
+        return $lines;
+    }
+
+    public function stopRunningWork(int $projectId): string
+    {
+        $jobs = $this->workingJobs($projectId);
+        if (!$jobs) {
+            return 'Nothing is running.';
+        }
+        $lines = [];
+        foreach ($jobs as $job) {
+            $id = (int)$job['id'];
+            $agent = $this->jobWorker($job);
+            if ((string)($job['kind'] ?? '') === 'task') {
+                $this->interruptJob($id);
+            } else {
+                $this->finishJob($id);
+            }
+            $this->idleWorker($agent);
+            $lines[] = 'Stopped the ' . strtolower($this->workerLabel($agent)) . '. Job ' . $id . '.';
+        }
+        if ($projectId > 0) {
+            $this->pauseHeartbeat($projectId);
+        }
+        return implode("\n", $lines);
+    }
+
+    public function jobWorker(array $job): string
+    {
+        return $this->loopJobAgent($job);
+    }
+
+    private function taskJobRunning(int $taskId): bool
+    {
+        if ($taskId <= 0) {
+            return false;
+        }
+        $stmt = $this->pdo->prepare("SELECT 1 FROM jobs WHERE kind = 'task' AND ref_id = ? AND status = 'running' LIMIT 1");
+        $stmt->execute([$taskId]);
+        return (bool)$stmt->fetchColumn();
+    }
+
+    private function finishRunningSubagents(int $projectId): void
+    {
+        foreach ($this->workingJobs($projectId) as $job) {
+            if ((string)($job['kind'] ?? '') !== 'subagent') {
+                continue;
+            }
+            $this->finishJob((int)$job['id']);
+            $this->idleWorker($this->jobWorker($job));
+        }
+    }
+
+    private function workerLabel(string $agent): string
+    {
+        $agent = trim($agent);
+        if ($agent === '') {
+            $agent = 'subagent';
+        }
+        return ucfirst($agent);
+    }
+
+    private function idleWorker(string $agent): void
+    {
+        if ($agent === '' || $agent === 'orchestrator' || !array_key_exists($agent, self::idleStatus())) {
+            return;
+        }
+        $this->setAgentStatus($agent, 'idle');
     }
 
     public function anyRunningJob(): bool
