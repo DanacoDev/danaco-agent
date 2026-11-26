@@ -375,18 +375,7 @@ fi
 
 FAILSAFE_MODEL="qwen2.5:0.5b"
 SUGGESTED_MODE="local"
-gpu="$VRAM_MB"
-if [[ "$OS" == "Darwin" && "$(uname -m)" == "arm64" && "$gpu" -eq 0 ]]; then
-  gpu="$RAM_MB"
-fi
-ram_need=8192
-if [[ "$OS" != "Darwin" ]]; then
-  # MemTotal sits a little under the labeled RAM.
-  ram_need=7680
-fi
-if [[ "$gpu" -ge 8192 && "$RAM_MB" -ge "$ram_need" ]]; then
-  SUGGESTED_MODEL="hf.co/unsloth/gemma-4-E4B-it-GGUF:gemma-4-E4B-it-Q4_K_M.gguf"
-elif [[ "$VRAM_MB" -gt 0 ]]; then
+if [[ "$VRAM_MB" -gt 0 ]]; then
   SUGGESTED_MODEL="Maternion/sage-a1.5:35b-q4_K_M"
 elif [[ "$RAM_MB" -ge 7168 ]]; then
   SUGGESTED_MODEL="qwen3.5:9b-q4_K_M"
