@@ -265,7 +265,7 @@ class Api
             return;
         }
         $title = trim((string)($body['title'] ?? ''));
-        if ($title === '' || strlen($title) > 200) {
+        if ($title === '') {
             $this->json(['error' => 'Task title is required.'], 422);
             return;
         }

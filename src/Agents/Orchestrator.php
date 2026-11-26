@@ -1669,8 +1669,11 @@ TXT;
             return "\nTask #" . $saved['id'] . ' is in in_progress.';
         }
         $title = trim((string)($args['title'] ?? ''));
-        if ($title === '' || strlen($title) > 200) {
+        if ($title === '') {
             return '';
+        }
+        if (mb_strlen($title) > 125) {
+            $title = rtrim(mb_substr($title, 0, 122)) . '...';
         }
         foreach ($this->db->tasks($projectId) as $task) {
             if (strcasecmp(trim((string)$task['title']), $title) !== 0) {
@@ -1999,8 +2002,8 @@ TXT;
             if ($agent === 'human' || $agent === 'user') {
                 return 'Cards are not personal todos. Assign orchestrator for planning with the user, or the subagent who will produce the result.';
             }
-            if (strlen($title) > 200) {
-                $title = substr($title, 0, 200);
+            if (mb_strlen($title) > 125) {
+                $title = rtrim(mb_substr($title, 0, 122)) . '...';
             }
             $steps = [$title];
             if (is_array($task)) {

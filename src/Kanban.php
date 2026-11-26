@@ -13,7 +13,7 @@ class Kanban
     public function create(int $projectId, array $args, bool $byUser): array
     {
         $title = $this->oneLine((string)($args['title'] ?? ''));
-        if ($title === '' || strlen($title) > 200) {
+        if ($title === '') {
             throw new InvalidArgumentException('Task title is required.');
         }
         if (!$byUser && $this->researchSetup($args, null)) {
@@ -127,7 +127,7 @@ class Kanban
         $fields = [];
         if (array_key_exists('title', $args)) {
             $title = $this->oneLine((string)$args['title']);
-            if ($title === '' || strlen($title) > 200) {
+            if ($title === '') {
                 throw new InvalidArgumentException('Task title is required.');
             }
             $fields['title'] = $title;
@@ -997,8 +997,11 @@ class Kanban
 
     private function oneLine(string $value): string
     {
-        $value = preg_replace('/\s+/u', ' ', $value) ?? $value;
-        return trim($value);
+        $value = trim(preg_replace('/\s+/u', ' ', $value) ?? $value);
+        if (mb_strlen($value) <= 125) {
+            return $value;
+        }
+        return rtrim(mb_substr($value, 0, 122)) . '...';
     }
 
     private function agent(string $agent): string

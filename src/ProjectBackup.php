@@ -704,7 +704,7 @@ class ProjectBackup
     private function cleanTask(array $row): array
     {
         return [
-            'title' => $this->text($row['title'] ?? '', 200, true, 'A task title'),
+            'title' => $this->text($this->taskTitle($row['title'] ?? ''), 125, true, 'A task title'),
             'description' => $this->text($row['description'] ?? '', 20000, false, 'A task description'),
             'status' => $this->token($row['status'] ?? 'todo', 'todo'),
             'assigned_agent' => $this->token($row['assigned_agent'] ?? 'orchestrator', 'orchestrator'),
@@ -783,6 +783,15 @@ class ProjectBackup
             $out[] = $clean($row);
         }
         return $out;
+    }
+
+    private function taskTitle(mixed $value): string
+    {
+        $value = trim(preg_replace('/\s+/u', ' ', (string)($value ?? '')) ?? '');
+        if (mb_strlen($value) <= 125) {
+            return $value;
+        }
+        return rtrim(mb_substr($value, 0, 122)) . '...';
     }
 
     private function text(mixed $value, int $max, bool $required, string $label): string

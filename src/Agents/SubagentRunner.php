@@ -618,8 +618,8 @@ TXT;
             if ($title === '') {
                 continue;
             }
-            if (strlen($title) > 200) {
-                $title = substr($title, 0, 200);
+            if (mb_strlen($title) > 125) {
+                $title = rtrim(mb_substr($title, 0, 122)) . '...';
             }
             $steps = $task['steps'] ?? $task['subtasks'] ?? [$title];
             $payload = [

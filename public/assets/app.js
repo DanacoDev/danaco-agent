@@ -2604,7 +2604,9 @@
           this.newSteps.splice(index, 1);
         },
         flatTitle(text) {
-          return String(text || '').replace(/\s+/g, ' ').trim();
+          const line = String(text || '').replace(/\s+/g, ' ').trim();
+          if (line.length <= 125) return line;
+          return line.slice(0, 122).trimEnd() + '...';
         },
         async addTask() {
           this.taskError = '';

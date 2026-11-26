@@ -2189,7 +2189,7 @@ SQL);
     private function castTask(array $row): array
     {
         $row['id'] = (int)$row['id'];
-        $row['title'] = trim(preg_replace('/\s+/u', ' ', (string)($row['title'] ?? '')) ?? (string)($row['title'] ?? ''));
+        $row['title'] = $this->taskTitle((string)($row['title'] ?? ''));
         $row['project_id'] = $row['project_id'] !== null ? (int)$row['project_id'] : null;
         $row['held'] = (int)($row['held'] ?? 0);
         $row['failed'] = (int)($row['failed'] ?? 0);
@@ -2207,6 +2207,15 @@ SQL);
         $row['assigned_agent'] = (string)($row['assigned_agent'] ?? '');
         $row['result'] = (string)($row['result'] ?? '');
         return $row;
+    }
+
+    private function taskTitle(string $value): string
+    {
+        $value = trim(preg_replace('/\s+/u', ' ', $value) ?? $value);
+        if (mb_strlen($value) <= 125) {
+            return $value;
+        }
+        return rtrim(mb_substr($value, 0, 122)) . '...';
     }
 
     private function attachSubtasks(array $tasks): array

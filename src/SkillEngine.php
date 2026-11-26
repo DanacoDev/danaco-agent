@@ -248,8 +248,8 @@ class SkillEngine
             $title = $slug;
         }
         $taskTitle = 'Research: ' . $title;
-        if (strlen($taskTitle) > 200) {
-            $taskTitle = rtrim(substr($taskTitle, 0, 200));
+        if (mb_strlen($taskTitle) > 125) {
+            $taskTitle = rtrim(mb_substr($taskTitle, 0, 122)) . '...';
         }
         $project = $projectFolder !== '' ? $this->db->projectByFolder($projectFolder) : null;
         if (!$project) {
