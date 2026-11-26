@@ -322,6 +322,13 @@ function research_review(PDO $db, string $slug, array $args): void
     }
     $flag = $decision === '' && $statement === '' ? (int)$row['needs_review'] : 0;
     $db->prepare('UPDATE hypotheses SET status = ?, statement = ?, direction = ?, needs_review = ? WHERE id = ?')->execute([$status, $text, $note, $flag, $id]);
+    if ($decision === 'testing' && (string)$row['status'] !== 'testing') {
+        $meta = research_meta($db);
+        $queued = research_count_where($db, "SELECT COUNT(*) FROM queue WHERE status != 'done'");
+        if ((int)$meta['ingest_since_reflect'] === 0 && $queued === 0) {
+            $db->prepare('UPDATE meta SET ingest_since_reflect = 1 WHERE id = 1')->execute();
+        }
+    }
     $closed = $decision === 'parked' ? research_park_branch($db, $id) : 0;
     $message = 'Hypothesis #' . $id . ' is ' . $status . '.';
     if ($closed === 1) {
@@ -1276,8 +1283,15 @@ function research_board(PDO $db, string $slug): array
     }
     $best = research_best($nodes);
     $directed = research_open_direction($db);
-    $waiting = (int)$view['proposed'] > 0 || (int)$view['needs_review'] > 0;
-    $idle = !$waiting && $directed === null && (int)$view['ingest'] === 0 && (int)$view['reevaluate'] === 0 && count($nodes) > 0;
+    $settledReview = 0;
+    foreach ($view['lines'] as $line) {
+        if ((int)$line['needs_review'] === 1 && (string)$line['status'] !== 'proposed') {
+            $settledReview++;
+        }
+    }
+    $waiting = $settledReview > 0 || ((int)$view['testing'] === 0 && ((int)$view['proposed'] > 0 || (int)$view['needs_review'] > 0));
+    $pendingReflect = (int)research_meta($db)['ingest_since_reflect'] > 0;
+    $idle = !$waiting && $directed === null && (int)$view['ingest'] === 0 && (int)$view['reevaluate'] === 0 && !$pendingReflect && count($nodes) > 0;
     $backpropagated = false;
     foreach ($nodes as $node) {
         if (trim((string)$node['inherited']) !== '') {

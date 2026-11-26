@@ -1099,13 +1099,13 @@
           const board = this.researchBoard;
           if (!board) return '';
           const groups = this.researchGroups();
-          const review = groups.waiting.filter((node) => node.needs_review).length;
-          const choose = groups.waiting.length - review;
-          if (review && choose) return 'Keep or park a result, and choose an idea to pursue.';
+          const ideas = groups.waiting.filter((node) => node.status === 'proposed').length;
+          const review = groups.waiting.filter((node) => node.needs_review && node.status !== 'proposed').length;
+          if (review && ideas) return 'Keep each idea you want checked. A finished result is also waiting.';
           if (review === 1) return 'A result is ready. Keep it or park it.';
           if (review > 1) return review + ' results are ready. Keep or park each one.';
-          if (choose === 1) return 'One idea is ready. Pursue it or park it.';
-          if (choose > 1) return 'Choose an idea to pursue.';
+          if (ideas === 1) return 'An idea is ready. Keep it to check that branch, or park it.';
+          if (ideas > 1) return 'Keep each idea you want checked, or park it.';
           if (!board.active && !board.running) {
             return this.researchNodes().length ? 'This mission is off.' : 'Start the mission to propose the first ideas.';
           }
