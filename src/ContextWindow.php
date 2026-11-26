@@ -75,16 +75,17 @@ class ContextWindow
         return $used;
     }
 
+    public static function earlierChatLine(string $summary): string
+    {
+        return 'Earlier chat (current thread only; older detail stays in the wiki if it was saved): ' . trim($summary);
+    }
+
     public static function apply(string $system, string $summary, array $kept, int $total, int $raw): array
     {
         $summary = trim($summary);
         $messages = [['role' => 'system', 'content' => $system]];
         if ($summary !== '') {
-            $messages[0]['content'] .= "\n\nEarlier messages were summarized below. Treat that summary as the record of them. Do not invent details that are not in the summary or the later messages. The same summary is saved in the wiki.";
-            $messages[] = [
-                'role' => 'user',
-                'content' => "Summary of the earlier conversation:\n\n" . $summary,
-            ];
+            $messages[0]['content'] .= "\n" . self::earlierChatLine($summary);
         }
         foreach ($kept as $message) {
             $row = [

@@ -114,14 +114,12 @@ class MemoryManager
         if (!is_file($path)) {
             return '';
         }
-        $text = (string)file_get_contents($path);
-        $text = preg_replace('/\A# Conversation memory\s*/', '', $text) ?? $text;
-        return trim($text);
+        return $this->compactContextSummary((string)file_get_contents($path));
     }
 
     public function writeContextSummary(?string $projectFolder, string $summary): string
     {
-        $summary = trim($summary);
+        $summary = $this->compactContextSummary($summary);
         if ($summary === '') {
             return '';
         }
@@ -130,12 +128,48 @@ class MemoryManager
         if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
             return '';
         }
-        $body = "# Conversation memory\n\n" . $summary . "\n";
-        if (file_put_contents($path, $body) === false) {
+        if (file_put_contents($path, $summary . "\n") === false) {
             return '';
         }
-        $this->reindex();
         return $path;
+    }
+
+    public function compactContextSummary(string $summary): string
+    {
+        $summary = trim($summary);
+        if ($summary === '') {
+            return '';
+        }
+        $summary = preg_replace('/\A```(?:json)?\s*/i', '', $summary) ?? $summary;
+        $summary = preg_replace('/\s*```\z/', '', $summary) ?? $summary;
+        $summary = trim($summary);
+        if ($summary === '') {
+            return '';
+        }
+        $decoded = json_decode($summary, true);
+        if (is_array($decoded) && !array_is_list($decoded)) {
+            return $this->encodeContext($decoded);
+        }
+        $start = strpos($summary, '{');
+        $end = strrpos($summary, '}');
+        if ($start !== false && $end !== false && $end > $start) {
+            $decoded = json_decode(substr($summary, $start, $end - $start + 1), true);
+            if (is_array($decoded) && !array_is_list($decoded)) {
+                return $this->encodeContext($decoded);
+            }
+        }
+        $sections = $this->markdownContext($summary);
+        if ($sections !== null) {
+            $encoded = $this->encodeContext($sections);
+            if ($encoded !== '') {
+                return $encoded;
+            }
+        }
+        $text = $this->oneSpace($summary);
+        if ($text === '') {
+            return '';
+        }
+        return $this->encodeContext(['text' => $text]);
     }
 
     public function readCentral(string $name): string
@@ -214,10 +248,149 @@ class MemoryManager
     private function contextSummaryPath(?string $projectFolder): string
     {
         $folder = strtolower(trim((string)$projectFolder));
+        $name = 'chat.json';
         if ($folder !== '' && preg_match('/^[a-z0-9][a-z0-9_-]{0,63}$/', $folder)) {
-            return Projects::root($folder) . '/wiki/context_memory.md';
+            $name = $folder . '.json';
         }
-        return $this->dataDir . '/wiki/chat_memory.md';
+        return $this->dataDir . '/.context/' . $name;
+    }
+
+    private function encodeContext(array $data): string
+    {
+        if (array_is_list($data)) {
+            return '';
+        }
+        $clean = [];
+        foreach (['decisions', 'results', 'facts', 'open', 'log'] as $key) {
+            if (!array_key_exists($key, $data)) {
+                continue;
+            }
+            $items = $this->contextLines($data[$key]);
+            if ($items !== []) {
+                $clean[$key] = $items;
+            }
+        }
+        if (array_key_exists('text', $data)) {
+            $text = $this->oneSpace(implode(' ', $this->contextLines($data['text'])));
+            if ($text !== '') {
+                $clean['text'] = $text;
+            }
+        }
+        if ($clean === []) {
+            return '';
+        }
+        $flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+        $json = json_encode($clean, $flags);
+        if (!is_string($json)) {
+            return '';
+        }
+        while (strlen($json) > 6000) {
+            $key = '';
+            foreach (['log', 'open', 'facts', 'results', 'decisions', 'text'] as $candidate) {
+                if (array_key_exists($candidate, $clean)) {
+                    $key = $candidate;
+                    break;
+                }
+            }
+            if ($key === '') {
+                return '';
+            }
+            $before = strlen($json);
+            if ($key === 'text') {
+                $clean['text'] = rtrim(substr((string)$clean['text'], 0, max(0, strlen((string)$clean['text']) - 200)));
+                if ($clean['text'] === '') {
+                    unset($clean['text']);
+                }
+            } else {
+                $last = count($clean[$key]) - 1;
+                $item = (string)$clean[$key][$last];
+                if (strlen($item) > 240) {
+                    $clean[$key][$last] = rtrim(substr($item, 0, strlen($item) - 200));
+                    if ($clean[$key][$last] === '') {
+                        array_pop($clean[$key]);
+                    }
+                } else {
+                    array_pop($clean[$key]);
+                }
+                if ($clean[$key] === []) {
+                    unset($clean[$key]);
+                }
+            }
+            if ($clean === []) {
+                return '';
+            }
+            $json = json_encode($clean, $flags);
+            if (!is_string($json) || strlen($json) >= $before) {
+                return '';
+            }
+        }
+        return $json;
+    }
+
+    private function contextLines(mixed $value): array
+    {
+        if (is_string($value) || is_numeric($value)) {
+            $line = $this->oneSpace((string)$value);
+            return $line === '' ? [] : [$line];
+        }
+        if (!is_array($value)) {
+            return [];
+        }
+        $lines = [];
+        foreach ($value as $item) {
+            if (!is_string($item) && !is_numeric($item)) {
+                continue;
+            }
+            $line = $this->oneSpace((string)$item);
+            if ($line !== '') {
+                $lines[] = $line;
+            }
+        }
+        return $lines;
+    }
+
+    private function oneSpace(string $text): string
+    {
+        $text = preg_replace('/\s+/u', ' ', $text);
+        return trim(is_string($text) ? $text : '');
+    }
+
+    private function markdownContext(string $summary): ?array
+    {
+        $summary = preg_replace('/\A# Conversation memory\s*/', '', $summary) ?? $summary;
+        $map = [
+            'decisions' => 'decisions',
+            'results' => 'results',
+            'facts' => 'facts',
+            'open questions' => 'open',
+        ];
+        $data = [];
+        $section = '';
+        $saw = false;
+        foreach (preg_split('/\R/', $summary) ?: [] as $line) {
+            $trim = trim($line);
+            if ($trim === '') {
+                continue;
+            }
+            $header = strtolower(trim($trim, "#* \t"));
+            if (isset($map[$header])) {
+                $section = $map[$header];
+                $saw = true;
+                continue;
+            }
+            if (preg_match('/^(user|agent)\s*:\s*(.*)$/i', $trim, $match)) {
+                $who = strtolower($match[1]) === 'agent' ? 'a' : 'u';
+                $data['log'][] = $who . ': ' . $match[2];
+                $saw = true;
+                continue;
+            }
+            if ($section === '') {
+                continue;
+            }
+            $item = preg_replace('/^(?:[-*]|\d+[.)])\s+/', '', $trim) ?? $trim;
+            $data[$section][] = $item;
+        }
+        return $saw ? $data : null;
     }
 
     private function wikiFile(string $name): string

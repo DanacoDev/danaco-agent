@@ -150,7 +150,7 @@ class Orchestrator
         $system = $this->systemPrompt($project, $this->skills->usedNames($live));
         $measureSystem = $system;
         if (trim($summary) !== '') {
-            $measureSystem .= $this->summaryNotice() . "\n\n" . $summary;
+            $measureSystem .= "\n" . ContextWindow::earlierChatLine($summary);
         }
         $split = ContextWindow::split($measureSystem, $live, $total, $manual);
         if ($cutOff) {
@@ -267,13 +267,13 @@ class Orchestrator
         foreach ($rest as $message) {
             $plain += strlen((string)($message['content'] ?? ''));
         }
-        $rest = ContextWindow::stripLookups($rest);
+        $rest = $this->withoutStoredSummary(ContextWindow::stripLookups($rest));
         $stripped = 0;
         foreach ($rest as $message) {
             $stripped += strlen((string)($message['content'] ?? ''));
         }
         $bare = $this->systemPrompt($project, $this->skills->usedNames($rest));
-        $system = $this->withSummaryNotice($bare, $previous);
+        $system = $this->withSummaryNotice($bare, $project);
         $messages = array_merge([['role' => 'system', 'content' => $system]], $rest);
         $total = $this->contextTotal();
         $split = ContextWindow::split($system, $rest, $total, $pending);
@@ -290,7 +290,7 @@ class Orchestrator
         $kept = $split['kept'];
         if ($this->skills->usedNames($kept) !== $this->skills->usedNames($rest)) {
             $bare = $this->systemPrompt($project, $this->skills->usedNames($kept));
-            $system = $this->withSummaryNotice($bare, $previous);
+            $system = $this->withSummaryNotice($bare, $project);
             $messages[0]['content'] = $system;
         }
         if ($this->taskIsolate) {
@@ -325,10 +325,9 @@ class Orchestrator
     private function repackForFailsafe(array $messages, ?array $project, callable $emit, ?callable $shouldStop): array
     {
         $before = count($messages);
-        $previous = (string)($messages[0]['content'] ?? '');
-        $rest = ContextWindow::stripLookups(array_slice($messages, 1));
+        $rest = $this->withoutStoredSummary(ContextWindow::stripLookups(array_slice($messages, 1)));
         $bare = $this->systemPrompt($project, $this->skills->usedNames($rest));
-        $system = $this->withSummaryNotice($bare, $previous);
+        $system = $this->withSummaryNotice($bare, $project);
         $messages = array_merge([['role' => 'system', 'content' => $system]], $rest);
         $total = $this->contextTotal();
         $split = ContextWindow::fit($system, $rest, $total);
@@ -339,7 +338,7 @@ class Orchestrator
         $kept = $split['kept'];
         if ($this->skills->usedNames($kept) !== $this->skills->usedNames($rest)) {
             $bare = $this->systemPrompt($project, $this->skills->usedNames($kept));
-            $system = $this->withSummaryNotice($bare, $previous);
+            $system = $this->withSummaryNotice($bare, $project);
             $messages[0]['content'] = $system;
         }
         if ($this->taskIsolate) {
@@ -432,7 +431,8 @@ class Orchestrator
             if (trim($summary) === '' && $dropped !== [] && ContextWindow::summarySource($dropped) === []) {
                 $summary = 'Earlier listings were omitted.';
             }
-            if (trim($summary) === '') {
+            $summary = $this->memory->compactContextSummary($summary);
+            if ($summary === '') {
                 return null;
             }
             $packed = ContextWindow::apply($system, $summary, $kept, $total, 0);
@@ -477,32 +477,32 @@ class Orchestrator
             $emit(['type' => 'phase', 'phase' => 'compressing']);
         }
         $fresh = ContextWindow::summarySource($fresh);
-        if (ContextWindow::isShort($fresh)) {
-            return $this->mechanicalSummary($previous, $fresh);
+        if (trim($previous) === '' && ContextWindow::isShort($fresh)) {
+            return $this->memory->compactContextSummary($this->mechanicalSummary($fresh));
         }
-        return $this->summarizeForWindow($previous, ContextWindow::projectForSummary($fresh), $shouldStop, $this->contextTotal());
+        return $this->memory->compactContextSummary($this->summarizeForWindow($previous, ContextWindow::projectForSummary($fresh), $shouldStop, $this->contextTotal()));
     }
 
-    private function mechanicalSummary(string $previous, array $fresh): string
+    private function mechanicalSummary(array $fresh): string
     {
-        $lines = [];
+        $log = [];
         foreach ($fresh as $message) {
             $text = trim((string)($message['content'] ?? ''));
             if ($text === '') {
                 continue;
             }
-            $who = ($message['role'] ?? '') === 'assistant' ? 'Agent' : 'User';
-            $lines[] = $who . ': ' . $text;
+            $who = ($message['role'] ?? '') === 'assistant' ? 'a' : 'u';
+            $text = trim(preg_replace('/\s+/', ' ', $text) ?? '');
+            if ($text === '') {
+                continue;
+            }
+            $log[] = $who . ': ' . $text;
         }
-        $body = trim(implode("\n\n", $lines));
-        $previous = trim($previous);
-        if ($body === '') {
-            return $previous;
+        if ($log === []) {
+            return '';
         }
-        if ($previous === '') {
-            return clip_text($body, 6000);
-        }
-        return clip_text($previous . "\n\n" . $body, 6000);
+        $json = json_encode(['log' => $log], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        return is_string($json) ? $json : '';
     }
 
     private function summarizeForWindow(string $previous, array $fresh, ?callable $shouldStop, int $window): string
@@ -526,12 +526,17 @@ class Orchestrator
             $chunks[] = $buffer;
         }
         $previous = trim($previous);
-        if ($previous !== '' && ContextWindow::tokens($previous) > $piece) {
-            $previous = clip_text($previous, max(200, $piece * 4));
+        if ($chunks === []) {
+            return $previous;
         }
+        $budget = max(160, $window - 700);
         if (count($chunks) === 1) {
             if ($shouldStop && $shouldStop()) {
                 throw new ChatStopped('Stopped.');
+            }
+            if ($previous !== '' && ContextWindow::tokens($previous) + ContextWindow::tokens($chunks[0]) > $budget) {
+                $partial = trim($this->summarizeChunk('', $chunks[0], $shouldStop));
+                return trim($this->summarizeChunk($previous, $partial, $shouldStop));
             }
             return trim($this->summarizeChunk($previous, $chunks[0], $shouldStop));
         }
@@ -602,13 +607,15 @@ class Orchestrator
     private function summarizeChunk(string $previous, string $chunk, ?callable $shouldStop): string
     {
         $instructions = <<<TXT
-You compress older chat history into a short record the agent can reuse.
-Keep decisions, results, names, dates, numbers, file paths, and open questions.
-Prefer what was said and what was produced. Leave out the reasoning that led there.
-Do not add anything that is not in the text.
-Do not call tools.
-Use these sections: Decisions, Results, Facts, Open questions.
-Stay under 350 words.
+You compress older chat into one JSON object that replaces any previous summary.
+Join the previous summary and the new messages into one current summary. If there is no previous summary, summarize the new messages only.
+Keep names, dates, numbers, and paths that the new messages still rely on.
+Drop a subject the new messages do not continue. This is the current thread, not a history of everything the chat once covered.
+Do not add anything that is not in the previous summary or the new messages.
+Do not call tools. Do not write a wiki file.
+Reply with one line of JSON and nothing else.
+Keys: decisions, results, facts, open. Each value is an array of short strings. Omit empty keys.
+If the previous summary has a log array, fold anything still current into those keys and omit log.
 TXT;
         $source = $chunk;
         if ($previous !== '') {
@@ -622,15 +629,48 @@ TXT;
             }, $shouldStop);
             $text = trim($text);
             if ($text !== '') {
-                return clip_text($text, 6000);
+                $compact = $this->memory->compactContextSummary($text);
+                if ($compact !== '') {
+                    return $compact;
+                }
             }
         } catch (ChatStopped $e) {
             throw $e;
         } catch (Throwable $e) {
             $this->db->logAgent('orchestrator', null, 'error', 'Context summary failed: ' . $e->getMessage());
         }
-        $excerpt = trim($previous . "\n\n" . clip_text($chunk, 2500));
-        return trim($excerpt);
+        return $this->memory->compactContextSummary($this->failedSummary($previous, $chunk));
+    }
+
+    private function failedSummary(string $previous, string $chunk): string
+    {
+        $note = trim(preg_replace('/\s+/', ' ', clip_text($chunk, 400)) ?? '');
+        $previous = trim($previous);
+        if ($note !== '') {
+            $note = 'note: ' . $note;
+        }
+        if ($previous === '') {
+            if ($note === '') {
+                return '';
+            }
+            $json = json_encode(['log' => [$note]], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            return is_string($json) ? $json : '';
+        }
+        if ($note === '') {
+            return $previous;
+        }
+        $decoded = json_decode($previous, true);
+        if (!is_array($decoded) || array_is_list($decoded)) {
+            $decoded = ['text' => trim(preg_replace('/\s+/', ' ', $previous) ?? '')];
+        }
+        $log = $decoded['log'] ?? [];
+        if (!is_array($log) || !array_is_list($log)) {
+            $log = is_string($log) && trim($log) !== '' ? [trim($log)] : [];
+        }
+        $log[] = $note;
+        $decoded['log'] = $log;
+        $json = json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        return is_string($json) ? $json : $previous;
     }
 
     private function projectIndex(): string
@@ -651,23 +691,36 @@ TXT;
         if ($messages === []) {
             return $messages;
         }
-        $previous = (string)($messages[0]['content'] ?? '');
-        $bare = $this->systemPrompt($project, $this->skills->usedNames(array_slice($messages, 1)));
-        $messages[0]['content'] = $this->withSummaryNotice($bare, $previous);
-        return $messages;
+        $tail = $this->withoutStoredSummary(array_slice($messages, 1));
+        $bare = $this->systemPrompt($project, $this->skills->usedNames($tail));
+        return array_merge([['role' => 'system', 'content' => $this->withSummaryNotice($bare, $project)]], $tail);
     }
 
-    private function summaryNotice(): string
+    private function withSummaryNotice(string $system, ?array $project): string
     {
-        return "\n\nEarlier messages were summarized below. Treat that summary as the record of them. Do not invent details that are not in the summary or the later messages. The same summary is saved in the wiki.";
-    }
-
-    private function withSummaryNotice(string $system, string $previous): string
-    {
-        if (!str_contains($previous, 'Earlier messages were summarized below.')) {
+        $folder = is_array($project) ? (string)($project['folder_name'] ?? '') : '';
+        $summary = $this->memory->readContextSummary($folder !== '' ? $folder : null);
+        if ($summary === '') {
             return $system;
         }
-        return $system . $this->summaryNotice();
+        return $system . "\n" . ContextWindow::earlierChatLine($summary);
+    }
+
+    private function withoutStoredSummary(array $messages): array
+    {
+        $out = [];
+        foreach ($messages as $message) {
+            if (!is_array($message)) {
+                $out[] = $message;
+                continue;
+            }
+            $content = ltrim((string)($message['content'] ?? ''));
+            if (str_starts_with($content, 'Summary of the earlier conversation:')) {
+                continue;
+            }
+            $out[] = $message;
+        }
+        return $out;
     }
 
     private function systemPrompt(?array $project, array $expand = []): string
