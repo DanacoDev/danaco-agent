@@ -216,11 +216,91 @@ class SkillEngine
             mkdir($cwd, 0775, true);
         }
         $result = Process::run([$bin, $runner], $cwd, json_encode($args, JSON_UNESCAPED_UNICODE), 20, $this->envWithKeys());
+        $stdout = (string)$result['stdout'];
+        if ($name === 'research_loop' && (int)$result['code'] === 0) {
+            $stdout = $this->attachResearchTask($stdout, $args, $projectFolder);
+        }
         return [
             'exit_code' => $result['code'],
-            'stdout' => clip_text($result['stdout']),
+            'stdout' => clip_text($stdout),
             'stderr' => clip_text($result['stderr']),
         ];
+    }
+
+    private function attachResearchTask(string $stdout, array $args, string $projectFolder): string
+    {
+        if (strtolower(trim((string)($args['action'] ?? ''))) !== 'mission') {
+            return $stdout;
+        }
+        $payload = json_decode($stdout, true);
+        if (!is_array($payload) || (string)($payload['status'] ?? '') !== 'success') {
+            return $stdout;
+        }
+        $slug = trim((string)($payload['name'] ?? ''));
+        if ($slug === '') {
+            return $stdout;
+        }
+        $title = trim((string)($args['title'] ?? ''));
+        if ($title === '') {
+            $title = trim((string)($args['question'] ?? ''));
+        }
+        if ($title === '') {
+            $title = $slug;
+        }
+        $taskTitle = 'Research: ' . $title;
+        if (strlen($taskTitle) > 200) {
+            $taskTitle = substr($taskTitle, 0, 200);
+        }
+        $project = $projectFolder !== '' ? $this->db->projectByFolder($projectFolder) : null;
+        if (!$project) {
+            $payload['message'] = rtrim((string)($payload['message'] ?? '')) . ' Open a project so the task can be created.';
+            return json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: $stdout;
+        }
+        $projectId = (int)$project['id'];
+        $marker = 'Slug: ' . $slug;
+        $existingId = 0;
+        foreach ($this->db->tasks($projectId) as $task) {
+            foreach ($task['subtasks'] ?? [] as $sub) {
+                if (!is_array($sub)) {
+                    continue;
+                }
+                if (str_contains((string)($sub['description'] ?? ''), $marker)) {
+                    $existingId = (int)$task['id'];
+                    break 2;
+                }
+            }
+        }
+        if ($existingId > 0) {
+            $payload['task_id'] = $existingId;
+            $payload['message'] = 'Mission ' . $slug . ' is database/research-' . $slug . '.db. Task #' . $existingId . ' is the one pass. Do not create another task and do not rewrite its step.';
+            return json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: $stdout;
+        }
+        $step = "Slug: {$slug}\n"
+            . "Delegate this single step to the researcher. Do not create a task. Do not add or rewrite steps.\n"
+            . "The researcher calls research_loop with name {$slug}. One call, then stop. Do not fetch a batch of sources first. Do not write a wiki file. Do not open the database with sqlite_helper.\n"
+            . "1. Call action status.\n"
+            . "2. If there are no hypotheses, call action commit, kind reflect, with at most three hypotheses, each status proposed. Stop. Say awaiting approval. Do not call tasklist result.\n"
+            . "3. If a hypothesis is still proposed and none are testing, stop. Say awaiting approval. Do not ingest. Do not call tasklist result.\n"
+            . "4. Otherwise call action next once. If the stage is idle, stop without tasklist result. Otherwise judge that one packet, call action commit, then call tasklist result with one line: the stage, the id, and the queue depths. Do not take another packet.";
+        try {
+            $task = (new Kanban($this->db))->create($projectId, [
+                'title' => $taskTitle,
+                'agent' => 'researcher',
+                'recurrence' => '15min',
+                'steps' => [[
+                    'title' => 'One pass',
+                    'agent' => 'researcher',
+                    'description' => $step,
+                ]],
+            ], true);
+        } catch (Throwable $e) {
+            $payload['message'] = rtrim((string)($payload['message'] ?? '')) . ' The task was not created. ' . $e->getMessage();
+            return json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: $stdout;
+        }
+        $when = trim((string)($task['schedule_time'] ?? ''));
+        $payload['task_id'] = (int)$task['id'];
+        $payload['message'] = 'Mission ' . $slug . ' is database/research-' . $slug . '.db. Task #' . $task['id'] . ' ' . $taskTitle . ' is the one pass, every 15 minutes' . ($when !== '' ? ', first run ' . $when : '') . '. Do not create another task and do not rewrite its step.';
+        return json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: $stdout;
     }
 
     public function testCall(array $call, string $projectFolder): string

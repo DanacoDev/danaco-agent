@@ -98,7 +98,7 @@ function research_mission(array $args): void
         research_out([
             'name' => $slug,
             'existing' => true,
-            'message' => 'Mission ' . $slug . ' already exists. Use this slug. Do not create another file.',
+            'message' => 'Mission ' . $slug . ' already exists. Use this slug. Do not create another file or another task.',
         ]);
     }
     $dir = dirname($path);
@@ -112,7 +112,7 @@ function research_mission(array $args): void
     research_out([
         'name' => $slug,
         'existing' => false,
-        'message' => 'Mission ' . $slug . ' is database/research-' . $slug . '.db. One task, titled Research: ' . $title . '.',
+        'message' => 'Mission ' . $slug . ' is database/research-' . $slug . '.db. The task is created with this call. Do not create a task and do not write steps.',
     ]);
 }
 

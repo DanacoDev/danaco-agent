@@ -16,6 +16,9 @@ class Kanban
         if ($title === '' || strlen($title) > 200) {
             throw new InvalidArgumentException('Task title is required.');
         }
+        if (!$byUser && $this->researchSetup($args, null)) {
+            throw new InvalidArgumentException('A research task is created by research_loop action mission. It was not added. Pass title and question to mission. Do not write the steps yourself.');
+        }
         $inactivate = $this->inactivated($args['schedule_time'] ?? null);
         $schedule = $inactivate ? null : $this->schedule($args['schedule_time'] ?? null);
         $recurrence = $this->recurrence((string)($args['recurrence'] ?? $args['recurrence_interval'] ?? 'none'));
@@ -131,6 +134,9 @@ class Kanban
         }
         $steps = $this->stepItems($args);
         $hasSteps = array_key_exists('steps', $args) || array_key_exists('subtasks', $args);
+        if (!$byUser && $hasSteps && $this->researchSetup($args, $existing)) {
+            throw new InvalidArgumentException('That research task is fixed. It was not changed. Do not rewrite the steps. To pause it, set schedule_time to never. A clock time and recurrence 15min turns it back on.');
+        }
         if (!$byUser && $hasSteps) {
             if ($steps === []) {
                 throw new InvalidArgumentException('A step needs a title and a description. It was not saved. Pass each step as an object with title, agent, and description. description names the files, lists, and skills to use, and what to save or return.');
@@ -951,6 +957,42 @@ class Kanban
             return true;
         }
         return is_string($schedule) && $schedule !== '';
+    }
+
+    private function researchSetup(array $args, ?array $existing): bool
+    {
+        if ($existing !== null && $this->researchCard($existing)) {
+            return true;
+        }
+        $title = trim((string)($args['title'] ?? ''));
+        if (preg_match('/^research\s*:/i', $title) === 1) {
+            return true;
+        }
+        $blob = '';
+        foreach (['steps', 'subtasks', 'description', 'instruction'] as $key) {
+            if (!array_key_exists($key, $args)) {
+                continue;
+            }
+            $blob .= is_string($args[$key]) ? $args[$key] : (json_encode($args[$key]) ?: '');
+        }
+        return preg_match('/research_loop/i', $blob) === 1;
+    }
+
+    private function researchCard(array $task): bool
+    {
+        if (preg_match('/^research\s*:/i', trim((string)($task['title'] ?? ''))) === 1) {
+            return true;
+        }
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub)) {
+                continue;
+            }
+            $text = (string)($sub['title'] ?? '') . "\n" . (string)($sub['description'] ?? '');
+            if (preg_match('/research_loop/i', $text) === 1) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function agent(string $agent): string
