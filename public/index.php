@@ -572,7 +572,7 @@ header('X-Danaco: 1');
                     <p v-if="item.insight">{{ item.insight }}</p>
                     <p v-else-if="item.status === 'proposed'" class="muted">Keep it to check this branch.</p>
                     <p v-else-if="item.needs_review" class="muted">This result is waiting for you.</p>
-                    <div v-if="researchDash === 'you' || researchDash === 'ideas'" class="research-actions">
+                    <div v-if="researchDash === 'ideas' || item.needs_review" class="research-actions">
                       <button v-if="item.status === 'proposed'" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearchNode(item.id, 'testing')">Keep</button>
                       <button v-else-if="item.needs_review" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearchNode(item.id, 'noted')">Keep</button>
                       <button v-if="item.needs_review || item.status === 'proposed' || item.status === 'testing'" class="btn" type="button" :disabled="researchBusy" title="Park this node and the open nodes under it" @click="reviewResearchNode(item.id, 'parked')">Park</button>

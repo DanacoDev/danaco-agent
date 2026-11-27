@@ -187,7 +187,7 @@
           researchBusy: false,
           researchFormOpen: false,
           researchTreeOpen: false,
-          researchDash: 'you',
+          researchDash: 'ideas',
           researchForm: { title: '', question: '' },
           researchSelected: 0,
           researchDirection: '',
@@ -866,7 +866,7 @@
           this.researchSlug = name;
           this.researchSelected = 0;
           this.researchDirection = '';
-          this.researchDash = 'you';
+          this.researchDash = 'ideas';
           await this.loadResearchBoard();
         },
         async createResearch() {
@@ -1076,18 +1076,16 @@
         researchDashTabs() {
           const groups = this.researchGroups();
           return [
-            { id: 'you', label: 'For you', count: groups.waiting.length },
-            { id: 'ideas', label: 'Ideas', count: groups.proposed.length + groups.testing.length },
+            { id: 'ideas', label: 'Ideas to explore', count: groups.proposed.length + groups.testing.length },
             { id: 'conclusions', label: 'Conclusions', count: groups.conclusions.length },
             { id: 'results', label: 'Results', count: groups.results.length }
           ];
         },
         researchDashItems() {
           const groups = this.researchGroups();
-          if (this.researchDash === 'ideas') return groups.testing.concat(groups.proposed);
           if (this.researchDash === 'conclusions') return groups.conclusions;
           if (this.researchDash === 'results') return groups.results;
-          return groups.waiting;
+          return groups.testing.concat(groups.proposed);
         },
         researchDashEmpty() {
           if (this.researchDash === 'ideas') return 'No ideas yet. They show up after the next pass.';
@@ -1186,7 +1184,7 @@
           this.researchError = '';
           this.researchFormOpen = false;
           this.researchTreeOpen = false;
-          this.researchDash = 'you';
+          this.researchDash = 'ideas';
           this.replyId = null;
           this.streamError = '';
           clearTimeout(this._chatSearchTimer);

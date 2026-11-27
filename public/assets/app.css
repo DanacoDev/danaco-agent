@@ -220,10 +220,11 @@ a.btn { display: inline-block; color: inherit; text-decoration: none; }
 .flow-node.is-main strong { text-transform: uppercase; }
 .flow-task-agent {
   grid-column: 1; grid-row: 1; justify-self: end; display: flex; align-items: center; min-width: 0;
+  margin-right: 20px;
 }
 .flow-node.is-task { width: 220px; flex: none; }
 .flow-task-down {
-  grid-column: 1; grid-row: 2; justify-self: end; width: 2px; height: 14px; margin: 0 109px -1px 0;
+  grid-column: 1; grid-row: 2; justify-self: end; width: 2px; height: 14px; margin: 0 129px -1px 0;
   background: rgba(232, 184, 109, 0.55);
 }
 .flow-consult {
@@ -830,7 +831,10 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
 .research-dash button.active { border-color: var(--gold); color: var(--gold-text); background: rgba(232, 184, 109, 0.2); }
 .research-dash .count { margin-left: 6px; }
 .research-cards { display: flex; flex-direction: column; gap: 10px; }
-.research-card { padding: 12px 14px; min-height: 0; }
+.research-card { position: relative; padding: 12px 14px; min-height: 0; }
+.research-card:has(.research-actions) h3,
+.research-card:has(.research-actions) h3 + p { padding-right: 156px; }
+.research-card .research-actions { position: absolute; top: 12px; right: 14px; margin: 0; flex-wrap: nowrap; }
 .research-card h3 { margin: 0 0 6px; font-size: 1rem; }
 .research-card h3 button { background: transparent; border: 0; padding: 0; text-align: left; color: inherit; font: inherit; font-weight: 650; }
 .research-card p { margin: 0 0 6px; }
