@@ -619,7 +619,7 @@ header('X-Danaco: 1');
                           <button type="button" class="research-node-hit" @click.stop="selectResearchNode(node)">
                             <span v-if="!node.goal && node.status !== 'testing'" class="research-chip">{{ node.status }}</span>
                             <span v-else-if="node.goal && researchNodeOpen(node)" class="research-chip is-goal">Goal</span>
-                            <strong v-if="!researchNodeOpen(node)">{{ node.statement }}</strong>
+                            <strong v-if="node.goal || !researchNodeOpen(node)">{{ node.statement }}</strong>
                           </button>
                           <div v-if="researchNodeOpen(node)" class="research-node-body" @click.stop @pointerdown.stop>
                             <template v-if="researchIdeaOpen && researchIdeaParent === node.id">
@@ -634,7 +634,6 @@ header('X-Danaco: 1');
                               </div>
                             </template>
                             <template v-else-if="node.goal">
-                              <p class="research-chip is-goal">Goal</p>
                               <p>{{ node.question }}</p>
                               <p v-if="node.scope" class="muted">{{ node.scope }}</p>
                             </template>
