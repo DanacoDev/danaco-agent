@@ -399,17 +399,32 @@ function research_idea(PDO $db, string $slug, array $args): void
 
 function research_commit_delta(PDO $db, array $args): array
 {
+    $items = $args['items'] ?? $args['chunks'] ?? $args['claims'] ?? null;
+    if (is_string($items)) {
+        $decoded = json_decode($items, true);
+        $items = is_array($decoded) ? $decoded : null;
+    }
+    if (is_array($items) && !array_is_list($items)) {
+        $items = [$items];
+    }
     $chunkId = (int)($args['chunk_id'] ?? 0);
+    if ($chunkId <= 0 && is_array($items)) {
+        foreach ($items as $item) {
+            if (is_array($item) && (int)($item['chunk_id'] ?? 0) > 0) {
+                $chunkId = (int)$item['chunk_id'];
+                break;
+            }
+        }
+    }
     if ($chunkId <= 0) {
-        throw new InvalidArgumentException('Pass chunk_id.');
+        throw new InvalidArgumentException('Pass chunk_id. A delta is {"chunk_id":6,"items":[{"kind":"reinforces","claim_id":20}]}.');
     }
     $chunk = research_one($db, 'SELECT * FROM chunks WHERE id = ?', [$chunkId]);
     if (!$chunk) {
         throw new InvalidArgumentException('No chunk #' . $chunkId . '.');
     }
-    $items = $args['items'] ?? null;
     if (!is_array($items) || $items === []) {
-        throw new InvalidArgumentException('Pass items, a list of claims judged against this chunk.');
+        throw new InvalidArgumentException('Pass items, a list of claims judged against this chunk. Each one is {"kind":"reinforces","claim_id":20}. The argument name is items.');
     }
     $meta = research_meta($db);
     $cycle = (int)$meta['cycle'] + 1;
@@ -419,7 +434,11 @@ function research_commit_delta(PDO $db, array $args): array
         if (!is_array($item)) {
             throw new InvalidArgumentException('Each item is an object with kind and text.');
         }
-        $kind = strtolower(trim((string)($item['kind'] ?? '')));
+        $itemChunk = (int)($item['chunk_id'] ?? 0);
+        if ($itemChunk > 0 && $itemChunk !== $chunkId) {
+            throw new InvalidArgumentException('One commit judges chunk #' . $chunkId . '. Pass that chunk_id once.');
+        }
+        $kind = strtolower(trim((string)($item['kind'] ?? $item['change'] ?? '')));
         if (!in_array($kind, ['reinforces', 'extends', 'contradicts', 'temporally_invalidates', 'novel'], true)) {
             throw new InvalidArgumentException('Item kind is reinforces, extends, contradicts, temporally_invalidates, or novel.');
         }
@@ -803,8 +822,8 @@ function research_packet(PDO $db, string $slug, string $stage, array $row): arra
     $packet['claims'] = $chunk ? research_overlap($db, (string)$chunk['text']) : [];
     $packet['topics'] = research_topic_lines($db, (string)($packet['text'] ?? ''));
     $packet['message'] = $packet['section'] === 'falsification query'
-        ? 'This chunk is a falsification query. Search it with arxiv first, then web_search. A paper weighs a little more than a web page when both bear on the claim. Read a paper that bears on it with arxiv action read. Then commit kind delta for this chunk_id.'
-        : 'Judge this chunk only. Then commit kind delta for this chunk_id.';
+        ? 'This chunk is a falsification query. Search it with arxiv first, then web_search. A paper weighs a little more than a web page when both bear on the claim. Read a paper that bears on it with arxiv action read. Then commit kind delta for this chunk_id. Pass chunk_id once and items, a list. Each item is {"kind":"reinforces","claim_id":20}.'
+        : 'Judge this chunk only. Then commit kind delta for this chunk_id. Pass chunk_id once and items, a list. Each item is {"kind":"reinforces","claim_id":20}.';
     return $packet;
 }
 

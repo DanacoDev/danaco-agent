@@ -36,7 +36,7 @@ The main agent may call mission, status, and active. It answers questions about 
 
 The user steers on the Research tab. Keep on a proposed hypothesis sets testing. Every kept hypothesis is explored. Park sets parked and parks the open nodes under it. A direction note says where to look. It is not evidence. Do not ask a question in a pass. Do not create a task to ask. Parked and refuted nodes stay as lessons.
 
-Commit kind delta items use kind reinforces, extends, contradicts, temporally_invalidates, or novel. contradicts and temporally_invalidates name the claim_id they touch. novel is only for a sentence that is not already a claim. Each item needs the chunk_id. reinforces does not enqueue a reevaluation. A wording tweak does not either.
+Commit kind delta passes chunk_id once and items, a list. Each item is {"kind":"reinforces","claim_id":20}. kind is reinforces, extends, contradicts, temporally_invalidates, or novel. contradicts and temporally_invalidates name the claim_id they touch. novel is only for a sentence that is not already a claim. reinforces does not enqueue a reevaluation. A wording tweak does not either.
 
 Commit kind topic rewrites that topic's synthesis and returns every claim id on the topic. A missing claim is rejected. superseded_by is chunk:<id>. Name other topic ids only when a load-bearing assumption changed.
 

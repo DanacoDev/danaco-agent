@@ -1233,9 +1233,9 @@
               project_id: this.projectId,
               name: this.researchSlug,
               id: node.id,
-              direction: this.researchDirection
+              direction: this.researchDirection,
+              statement: this.researchStatement
             };
-            if (node.status === 'proposed') body.statement = this.researchStatement;
             await this.api('/api/research/review', { method: 'POST', body });
             this.researchDirectionFocused = false;
             await this.loadResearchBoard();

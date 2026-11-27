@@ -1507,6 +1507,8 @@ class AgentRuntime
             'Pass statement. A root is one to four words' => 'hypotheses',
             'A root is a short title' => 'hypotheses',
             'A child is one full sentence' => 'hypotheses',
+            'Pass chunk_id' => 'delta',
+            'Pass items, a list' => 'delta',
         ];
         foreach ($keys as $needle => $label) {
             if (!str_contains($result, $needle)) {

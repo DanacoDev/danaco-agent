@@ -634,7 +634,7 @@ header('X-Danaco: 1');
                               <p v-if="node.scope" class="muted">{{ node.scope }}</p>
                             </template>
                             <template v-else>
-                              <div v-if="node.status === 'proposed'" class="field">
+                              <div class="field">
                                 <textarea v-model="researchStatement" rows="6" :placeholder="node.parent_id ? 'The idea' : 'One to four words'"></textarea>
                               </div>
                               <div class="field">
