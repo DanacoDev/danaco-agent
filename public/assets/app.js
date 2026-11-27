@@ -1309,7 +1309,6 @@
           this.researchAskError = '';
         },
         closeResearchAsk() {
-          if (this.researchAskBusy) return;
           this.researchAsk = null;
           this.researchAskLog = [];
           this.researchAskText = '';
@@ -1318,6 +1317,7 @@
         async sendResearchAsk() {
           const text = this.researchAskText.trim();
           if (!text || this.researchAskBusy || !this.researchAsk) return;
+          const id = this.researchAsk.id;
           const history = this.researchAskLog.map((turn) => ({ role: turn.role, text: turn.text }));
           this.researchAskLog.push({ role: 'user', text: text });
           this.researchAskText = '';
@@ -1329,16 +1329,18 @@
               body: {
                 project_id: this.projectId,
                 name: this.researchSlug,
-                id: this.researchAsk.id,
+                id: id,
                 message: text,
                 history: history
               }
             });
+            if (!this.researchAsk || this.researchAsk.id !== id) return;
             this.researchAskLog.push({ role: 'assistant', text: data.reply || '' });
           } catch (error) {
+            if (!this.researchAsk || this.researchAsk.id !== id) return;
             this.researchAskError = error.message;
           } finally {
-            this.researchAskBusy = false;
+            if (!this.researchAsk || this.researchAsk.id === id) this.researchAskBusy = false;
           }
         },
         selectResearchNodeId(id) {

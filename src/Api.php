@@ -358,10 +358,6 @@ class Api
             $this->json(['error' => 'The model is still loading.'], 409);
             return;
         }
-        if ($this->db->modelInUse()) {
-            $this->json(['error' => 'The model is in the middle of a pass. Ask when it is free.'], 409);
-            return;
-        }
         $board = $this->researchCall($projectId, ['action' => 'board', 'name' => $slug]);
         if ($board === null) {
             return;
@@ -397,12 +393,22 @@ class Api
             $messages[] = $turn;
         }
         $messages[] = ['role' => 'user', 'content' => $question];
-        $paused = $this->db->heartbeatPaused($projectId);
-        if (!$paused) {
-            $this->db->pauseHeartbeat($projectId);
-        }
         if (session_status() === PHP_SESSION_ACTIVE) {
             session_write_close();
+        }
+        $parallel = $this->db->parallelWork();
+        $held = false;
+        $paused = true;
+        if (!$parallel) {
+            $held = $this->researchAskTurn();
+            if (!$held) {
+                $this->json(['error' => 'The pass is still using the model. Ask again in a moment.'], 409);
+                return;
+            }
+            $paused = $this->db->heartbeatPaused($projectId);
+            if (!$paused) {
+                $this->db->pauseHeartbeat($projectId);
+            }
         }
         try {
             $reply = '';
@@ -428,11 +434,17 @@ class Api
             }
             $reply = $this->researchAskVisible($reply);
         } catch (Throwable $e) {
+            if ($held) {
+                $this->db->unlock('subagent_lock');
+            }
             if (!$paused) {
                 $this->db->resumeHeartbeat($projectId);
             }
             $this->json(['error' => $e->getMessage() !== '' ? $e->getMessage() : 'The model did not reply.'], 422);
             return;
+        }
+        if ($held) {
+            $this->db->unlock('subagent_lock');
         }
         if (!$paused) {
             $this->db->resumeHeartbeat($projectId);
@@ -442,6 +454,18 @@ class Api
             return;
         }
         $this->json(['reply' => $reply]);
+    }
+
+    private function researchAskTurn(): bool
+    {
+        $deadline = time() + 900;
+        while (time() < $deadline) {
+            if (!$this->db->foregroundWork() && $this->db->tryLock('subagent_lock', 900)) {
+                return true;
+            }
+            sleep(2);
+        }
+        return false;
     }
 
     private function researchAskTool(string $text): ?array
