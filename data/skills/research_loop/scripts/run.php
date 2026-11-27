@@ -443,10 +443,18 @@ function research_commit_delta(PDO $db, array $args): array
             throw new InvalidArgumentException('Item kind is reinforces, extends, contradicts, temporally_invalidates, or novel.');
         }
         $claimId = (int)($item['claim_id'] ?? 0);
+        if ($claimId <= 0 && array_key_exists('claim_ids', $item)) {
+            $listed = research_id_list($item['claim_ids']);
+            $ids = $listed === '' ? [] : explode(',', $listed);
+            if (count($ids) > 1) {
+                throw new InvalidArgumentException('Name one claim_id on this item. Put each other claim in its own item. Example: {"kind":"reinforces","claim_id":1}.');
+            }
+            $claimId = (int)($ids[0] ?? 0);
+        }
         $text = trim((string)($item['text'] ?? ''));
         if (in_array($kind, ['reinforces', 'contradicts', 'temporally_invalidates'], true)) {
             if ($claimId <= 0) {
-                throw new InvalidArgumentException('That kind names claim_id.');
+                throw new InvalidArgumentException('Pass claim_id as a number, for example {"kind":"' . $kind . '","claim_id":1}. Do not pass claim_ids.');
             }
             $claim = research_one($db, 'SELECT * FROM claims WHERE id = ?', [$claimId]);
             if (!$claim) {
@@ -828,7 +836,7 @@ function research_packet(PDO $db, string $slug, string $stage, array $row): arra
         : 'Judge this chunk only. Then commit kind delta for this chunk_id. ';
     $packet['message'] = $lead . ($packet['claims'] === []
         ? 'claims is empty. Pass items as [{"kind":"novel","text":"one sentence"}]. Do not invent a claim_id.'
-        : 'Pass chunk_id once and items, a list. reinforces names a claim_id from claims. A sentence that is not already a claim is {"kind":"novel","text":"one sentence"}.');
+        : 'Pass chunk_id once and items, a list. reinforces is {"kind":"reinforces","claim_id":1}. claim_id is one number from claims. Do not pass claim_ids. A sentence that is not already a claim is {"kind":"novel","text":"one sentence"}.');
     return $packet;
 }
 
