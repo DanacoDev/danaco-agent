@@ -800,7 +800,7 @@ function research_packet(PDO $db, string $slug, string $stage, array $row): arra
     $packet['claims'] = $chunk ? research_overlap($db, (string)$chunk['text']) : [];
     $packet['topics'] = research_topic_lines($db, (string)($packet['text'] ?? ''));
     $packet['message'] = $packet['section'] === 'falsification query'
-        ? 'This chunk is a falsification query. Search it, then commit kind delta for this chunk_id.'
+        ? 'This chunk is a falsification query. Search it with arxiv first, then web_search. A paper weighs a little more than a web page when both bear on the claim. Read a paper that bears on it with arxiv action read. Then commit kind delta for this chunk_id.'
         : 'Judge this chunk only. Then commit kind delta for this chunk_id.';
     return $packet;
 }
@@ -834,7 +834,7 @@ function research_reflect_packet(PDO $db, string $slug): array
             'cycle' => $view['cycle'],
         ],
         'message' => research_search_due($db)
-            ? 'These hypotheses are approved. For each testing hypothesis, add falsification queries, up to five in total. A query is a source to fetch next. Do not add a new hypothesis in this pass. Then stop.'
+            ? 'These hypotheses are approved. For each testing hypothesis, add falsification queries, up to five in total. A query is searched with arxiv and the web on the next pass. Do not add a new hypothesis in this pass. Then stop.'
             : 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A root is a short title of one to four words. A child refines, corrects, or extends its parent and is a claim a source can check. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That lesson is carried up the tree. Do not read a paper in this pass.',
     ];
 }
