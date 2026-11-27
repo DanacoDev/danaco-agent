@@ -187,7 +187,7 @@
           researchBusy: false,
           researchFormOpen: false,
           researchTreeOpen: false,
-          researchDash: 'ideas',
+          researchDash: 'review',
           researchForm: { title: '', question: '' },
           researchSelected: 0,
           researchDirection: '',
@@ -866,7 +866,7 @@
           this.researchSlug = name;
           this.researchSelected = 0;
           this.researchDirection = '';
-          this.researchDash = 'ideas';
+          this.researchDash = 'review';
           await this.loadResearchBoard();
         },
         async createResearch() {
@@ -1076,18 +1076,21 @@
         researchDashTabs() {
           const groups = this.researchGroups();
           return [
-            { id: 'ideas', label: 'Ideas to explore', count: groups.proposed.length + groups.testing.length },
+            { id: 'review', label: 'New ideas to review', count: groups.proposed.length },
+            { id: 'ideas', label: 'Ideas', count: groups.proposed.length + groups.testing.length },
             { id: 'conclusions', label: 'Conclusions', count: groups.conclusions.length },
             { id: 'results', label: 'Results', count: groups.results.length }
           ];
         },
         researchDashItems() {
           const groups = this.researchGroups();
+          if (this.researchDash === 'review') return groups.proposed;
           if (this.researchDash === 'conclusions') return groups.conclusions;
           if (this.researchDash === 'results') return groups.results;
           return groups.testing.concat(groups.proposed);
         },
         researchDashEmpty() {
+          if (this.researchDash === 'review') return 'No new ideas to review.';
           if (this.researchDash === 'ideas') return 'No ideas yet. They show up after the next pass.';
           if (this.researchDash === 'conclusions') return 'No conclusion yet. Findings that hold up show up here.';
           if (this.researchDash === 'results') return 'Nothing has been ruled out or parked yet.';
@@ -1184,7 +1187,7 @@
           this.researchError = '';
           this.researchFormOpen = false;
           this.researchTreeOpen = false;
-          this.researchDash = 'ideas';
+          this.researchDash = 'review';
           this.replyId = null;
           this.streamError = '';
           clearTimeout(this._chatSearchTimer);
