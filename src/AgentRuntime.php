@@ -1509,6 +1509,7 @@ class AgentRuntime
             'A child is one full sentence' => 'hypotheses',
             'Pass chunk_id' => 'delta',
             'Pass items, a list' => 'delta',
+            'No claim #' => 'delta',
         ];
         foreach ($keys as $needle => $label) {
             if (!str_contains($result, $needle)) {

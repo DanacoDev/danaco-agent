@@ -450,7 +450,9 @@ function research_commit_delta(PDO $db, array $args): array
             }
             $claim = research_one($db, 'SELECT * FROM claims WHERE id = ?', [$claimId]);
             if (!$claim) {
-                throw new InvalidArgumentException('No claim #' . $claimId . '.');
+                $ids = $db->query('SELECT id FROM claims ORDER BY id LIMIT 12')->fetchAll(PDO::FETCH_COLUMN);
+                $known = $ids === [] ? 'There are no claims yet.' : 'Claims you can name: ' . implode(', ', array_map('intval', $ids)) . '.';
+                throw new InvalidArgumentException('No claim #' . $claimId . '. ' . $known . ' A sentence that is not already a claim is {"kind":"novel","text":"one sentence"}. Do not use a hypothesis id.');
             }
             if ($kind === 'reinforces') {
                 $touched[] = $claimId;
@@ -821,9 +823,12 @@ function research_packet(PDO $db, string $slug, string $stage, array $row): arra
     $packet['source'] = $chunk ? ['id' => (int)$chunk['source_id'], 'title' => (string)$chunk['source_title'], 'year' => (string)$chunk['source_year']] : [];
     $packet['claims'] = $chunk ? research_overlap($db, (string)$chunk['text']) : [];
     $packet['topics'] = research_topic_lines($db, (string)($packet['text'] ?? ''));
-    $packet['message'] = $packet['section'] === 'falsification query'
-        ? 'This chunk is a falsification query. Search it with arxiv first, then web_search. A paper weighs a little more than a web page when both bear on the claim. Read a paper that bears on it with arxiv action read. Then commit kind delta for this chunk_id. Pass chunk_id once and items, a list. Each item is {"kind":"reinforces","claim_id":20}.'
-        : 'Judge this chunk only. Then commit kind delta for this chunk_id. Pass chunk_id once and items, a list. Each item is {"kind":"reinforces","claim_id":20}.';
+    $lead = $packet['section'] === 'falsification query'
+        ? 'This chunk is a falsification query. Search it with arxiv first, then web_search. A paper weighs a little more than a web page when both bear on the claim. Read a paper that bears on it with arxiv action read. Then commit kind delta for this chunk_id. '
+        : 'Judge this chunk only. Then commit kind delta for this chunk_id. ';
+    $packet['message'] = $lead . ($packet['claims'] === []
+        ? 'claims is empty. Pass items as [{"kind":"novel","text":"one sentence"}]. Do not invent a claim_id.'
+        : 'Pass chunk_id once and items, a list. reinforces names a claim_id from claims. A sentence that is not already a claim is {"kind":"novel","text":"one sentence"}.');
     return $packet;
 }
 
