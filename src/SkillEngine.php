@@ -15,7 +15,7 @@ class SkillEngine
         'web_search', 'fetch_url', 'browse_url', 'run_command', 'run_python', 'send_email',
         'ftp', 'mcp', 'remember', 'write_skill', 'test_skill', 'sqlite_helper', 'save_note',
         'code_verifier', 'research_loop', 'download_large',
-        'write_article', 'humanizer', 'grammar_check', 'make_graphic', 'yahoo_finance',
+        'write_article', 'humanizer', 'grammar_check', 'make_graphic', 'yahoo_finance', 'arxiv',
     ];
 
     private array $hidden = [];

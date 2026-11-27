@@ -818,6 +818,7 @@ TXT;
             'fetch_url' => $this->researchToolLine('fetch_url'),
             'browse_url' => $this->researchToolLine('browse_url'),
             'yahoo_finance' => $this->researchToolLine('yahoo_finance'),
+            'arxiv' => $this->researchToolLine('arxiv'),
         ], $expand);
         $lines = [];
         $sawEmail = false;
@@ -1585,6 +1586,9 @@ TXT;
             'yahoo_finance' => function (): string {
                 return $this->researchDelegationNotice('yahoo_finance');
             },
+            'arxiv' => function (): string {
+                return $this->researchDelegationNotice('arxiv');
+            },
         ];
         if ($folder !== '') {
             foreach ($this->skills->activeHandlers($folder) as $name => $handler) {
@@ -2165,6 +2169,7 @@ TXT;
             'fetch_url' => '- fetch_url: args url. You know this tool. It opens a public web page. Only the researcher can call it. Delegate the visit to the researcher. Do not say you cannot visit a website.',
             'browse_url' => '- browse_url: args url. You know this tool. It opens a public page in the headless browser, so scripts on the page run. Only the researcher can call it. Delegate the visit to the researcher.',
             'yahoo_finance' => '- yahoo_finance: args symbol. Optional action, range, interval, start, end, exchange, type. The trading and financial research tool: stocks, bonds, commodities, crypto, currencies, indexes, ETFs, and futures, including price, history, dividends, and splits. A US listing has no suffix. Any other exchange needs the Yahoo suffix, such as .ST for Stockholm. Only the researcher can call it. Delegate that to the researcher.',
+            'arxiv' => '- arxiv: args query, author, category, id. Optional action, max, sort, start, offset. action is search, read, or bibtex. search lists papers. read returns one paper. bibtex returns one entry. Only the researcher can call it. Delegate that to the researcher.',
             default => '',
         };
     }
