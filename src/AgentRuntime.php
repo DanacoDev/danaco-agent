@@ -1506,6 +1506,7 @@ class AgentRuntime
             'A hypothesis is one statement' => 'hypotheses',
             'Pass statement. A root is one to four words' => 'hypotheses',
             'A root is a short title' => 'hypotheses',
+            'A child is one full sentence' => 'hypotheses',
         ];
         foreach ($keys as $needle => $label) {
             if (!str_contains($result, $needle)) {

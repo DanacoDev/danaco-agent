@@ -832,10 +832,10 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
 .research-dash .count { margin-left: 6px; }
 .research-cards { display: flex; flex-direction: column; gap: 10px; }
 .research-card { position: relative; padding: 12px 14px; min-height: 0; }
-.research-card:has(.research-actions) .research-branch,
 .research-card:has(.research-actions) h3,
 .research-card:has(.research-actions) .research-edit,
 .research-card:has(.research-actions) h3 + p { padding-right: 220px; }
+.research-card:has(.research-actions) .research-branch { max-width: calc(100% - 220px); }
 .research-card .research-actions { position: absolute; top: 12px; right: 14px; margin: 0; flex-wrap: nowrap; }
 .research-card h3 { margin: 0 0 6px; font-size: 1rem; }
 .research-card h3 button { background: transparent; border: 0; padding: 0; text-align: left; color: inherit; font: inherit; font-weight: 650; }

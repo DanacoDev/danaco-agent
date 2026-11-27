@@ -668,6 +668,9 @@ function research_commit_reflect(PDO $db, array $args): array
                 if (!in_array((string)$parent['status'], ['testing', 'supported', 'narrowed'], true)) {
                     throw new InvalidArgumentException('A child hangs from a hypothesis that is testing, supported, or narrowed.');
                 }
+                if (research_title_words($statement) <= 4) {
+                    throw new InvalidArgumentException('A child is one full sentence, not a short title.');
+                }
             } elseif (!$rootsOk) {
                 throw new InvalidArgumentException('A new hypothesis needs parent_id. A root is only the first three.');
             }
@@ -835,7 +838,7 @@ function research_reflect_packet(PDO $db, string $slug): array
         ],
         'message' => research_search_due($db)
             ? 'These hypotheses are approved. For each testing hypothesis, add falsification queries, up to five in total. A query is searched with arxiv and the web on the next pass. Do not add a new hypothesis in this pass. Then stop.'
-            : 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A root is a short title of one to four words. A child refines, corrects, or extends its parent and is a claim a source can check. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That lesson is carried up the tree. Do not read a paper in this pass.',
+            : 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A child is one full sentence, not a short title. The one-to-four-word title is only for the first roots. A child refines, corrects, or extends its parent and is a claim a source can check. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That lesson is carried up the tree. Do not read a paper in this pass.',
     ];
 }
 
@@ -1422,7 +1425,7 @@ function research_phase(array $view, ?array $directed): string
 
 function research_ideate_message(int $parentId): string
 {
-    return 'Propose at most three child hypotheses under #' . $parentId . '. Each item is {"statement":"one sentence","status":"proposed","parent_id":' . $parentId . '}. A child refines, corrects, or extends that parent. It is a claim a source can check, not a repeat of the parent or of a sibling. Read constraints.lessons. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. Then stop. Do not ingest.';
+    return 'Propose at most three child hypotheses under #' . $parentId . '. Each item is {"statement":"one full sentence","status":"proposed","parent_id":' . $parentId . '}. A child is one full sentence, not a short title. The one-to-four-word title is only for the first roots. A child refines, corrects, or extends that parent. It is a claim a source can check, not a repeat of the parent or of a sibling. Read constraints.lessons. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. Then stop. Do not ingest.';
 }
 
 function research_park_branch(PDO $db, int $id): int
