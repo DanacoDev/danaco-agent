@@ -857,8 +857,8 @@
             const data = await this.api('/api/research/board?project_id=' + this.projectId + '&name=' + encodeURIComponent(this.researchSlug));
             this.researchBoard = data;
             const ids = this.researchMap().nodes.map((node) => node.id);
-            if (!ids.includes(this.researchSelected)) {
-              this.researchSelected = (data.best && data.best.id) || ids[0] || 0;
+            if (this.researchSelected && !ids.includes(this.researchSelected)) {
+              this.researchSelected = 0;
             }
             if (!this.researchDirectionFocused) {
               const node = this.researchMap().nodes.find((item) => item.id === this.researchSelected);
@@ -1022,28 +1022,43 @@
             node.h = height;
             if (node.depth > maxDepth) maxDepth = node.depth;
           });
+          const open = this.researchSelected ? nodes.find((node) => node.id === this.researchSelected) : null;
+          if (open) {
+            const idea = this.researchIdeaOpen && this.researchIdeaParent === open.id;
+            open.w = 320;
+            open.h = idea ? 360 : (open.goal ? 220 : 590);
+            const extraW = open.w - width;
+            const extraH = open.h - height;
+            nodes.forEach((node) => {
+              if (node.depth > open.depth) node.x += extraW;
+              if (node.id !== open.id && node.y >= open.y + height - 1) node.y += extraH;
+            });
+          }
           const byId = {};
           nodes.forEach((node) => { byId[node.id] = node; });
           const edges = [];
+          const anchor = height / 2;
           nodes.forEach((node) => {
             if (node.goal) return;
             const parent = byId[node.parent_id] || byId.mission;
             if (!parent) return;
             const x1 = parent.x + parent.w;
-            const y1 = parent.y + parent.h / 2;
+            const y1 = parent.y + anchor;
             const x2 = node.x;
-            const y2 = node.y + node.h / 2;
+            const y2 = node.y + anchor;
             const bend = Math.max(28, (x2 - x1) / 2);
             edges.push({
               id: parent.id + '-' + node.id,
               d: 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + bend) + ' ' + y1 + ', ' + (x2 - bend) + ' ' + y2 + ', ' + x2 + ' ' + y2
             });
           });
+          const extraW = open ? open.w - width : 0;
+          const extraH = open ? open.h - height : 0;
           return {
             nodes: nodes,
             edges: edges,
-            width: pad + (maxDepth + 1) * (width + gapX) + pad,
-            height: Math.max(pad * 2 + height, pad + row * (height + gapY))
+            width: pad + (maxDepth + 1) * (width + gapX) + extraW + pad,
+            height: Math.max(pad * 2 + height, pad + row * (height + gapY)) + extraH
           };
         },
         researchCurrent() {
@@ -1131,11 +1146,22 @@
           if (!this.researchDirectionFocused) this.researchDirection = node.direction || '';
           await this.reviewResearch(decision);
         },
+        researchNodeOpen(node) {
+          return !!node && this.researchSelected === node.id;
+        },
         selectResearchNode(node) {
+          if (this.researchSelected === node.id) {
+            this.researchIdeaOpen = false;
+            this.researchIdeaText = '';
+            this.researchSelected = 0;
+            this.researchError = '';
+            return;
+          }
           this.researchIdeaOpen = false;
           this.researchSelected = node.id;
           if (!this.researchDirectionFocused) this.researchDirection = node.direction || '';
           this.researchStatement = node.statement || '';
+          this.researchError = '';
         },
         researchBranchTitle(item) {
           const nodes = this.researchNodes();
@@ -1179,11 +1205,14 @@
           }
         },
         startResearchIdea(node) {
-          this.researchSelected = 0;
-          this.researchIdeaParent = node && node.goal ? 'mission' : (node ? node.id : 'mission');
+          const id = node && node.goal ? 'mission' : (node ? node.id : 'mission');
+          this.researchSelected = id;
+          this.researchIdeaParent = id;
           this.researchIdeaText = '';
           this.researchIdeaOpen = true;
           this.researchError = '';
+          if (node && !this.researchDirectionFocused) this.researchDirection = node.direction || '';
+          this.researchStatement = node ? (node.statement || '') : '';
         },
         closeResearchIdea() {
           this.researchIdeaOpen = false;
@@ -1227,7 +1256,19 @@
           const node = this.researchMap().nodes.find((item) => item.id === id);
           if (!node) return;
           this.researchTreeOpen = true;
-          this.selectResearchNode(node);
+          this.researchIdeaOpen = false;
+          this.researchSelected = node.id;
+          if (!this.researchDirectionFocused) this.researchDirection = node.direction || '';
+          this.researchStatement = node.statement || '';
+          this.researchError = '';
+          this.$nextTick(() => {
+            const board = this.$refs.researchCanvas;
+            const placed = this.researchMap().nodes.find((item) => item.id === id);
+            if (!board || !placed) return;
+            const zoom = this.researchZoom || 1;
+            board.scrollLeft = Math.max(0, placed.x * zoom - 48);
+            board.scrollTop = Math.max(0, placed.y * zoom - 48);
+          });
         },
         researchPanStart(event) {
           if (event.button !== 0) return;

@@ -832,10 +832,13 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
 .research-dash .count { margin-left: 6px; }
 .research-cards { display: flex; flex-direction: column; gap: 10px; }
 .research-card { position: relative; padding: 12px 14px; min-height: 0; }
-.research-card:has(.research-actions) h3,
-.research-card:has(.research-actions) .research-edit,
-.research-card:has(.research-actions) h3 + p { padding-right: 220px; }
-.research-card:has(.research-actions) .research-branch { max-width: calc(100% - 220px); }
+.research-card:has(.research-actions:not(.is-locate)) h3,
+.research-card:has(.research-actions:not(.is-locate)) .research-edit,
+.research-card:has(.research-actions:not(.is-locate)) h3 + p { padding-right: 264px; }
+.research-card:has(.research-actions:not(.is-locate)) .research-branch { max-width: calc(100% - 264px); }
+.research-card:has(.research-actions.is-locate) h3,
+.research-card:has(.research-actions.is-locate) h3 + p { padding-right: 48px; }
+.research-card:has(.research-actions.is-locate) .research-branch { max-width: calc(100% - 48px); }
 .research-card .research-actions { position: absolute; top: 12px; right: 14px; margin: 0; flex-wrap: nowrap; }
 .research-card h3 { margin: 0 0 6px; font-size: 1rem; }
 .research-card h3 button { background: transparent; border: 0; padding: 0; text-align: left; color: inherit; font: inherit; font-weight: 650; }
@@ -864,15 +867,30 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
 .research-node {
   position: absolute; display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
   padding: 10px 12px; text-align: left; background: var(--panel); border: 1px solid var(--line);
-  border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; cursor: pointer;
+  border-radius: 12px; box-shadow: var(--shadow); overflow: hidden;
 }
+.research-node.is-open { overflow: auto; }
+.research-node-hit {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  width: 100%; margin: 0; padding: 0; border: 0; background: transparent;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.research-node-body { width: 100%; margin-top: 8px; }
+.research-node-body .field { margin-top: 8px; }
+.research-node-body textarea { width: 100%; }
+.research-node-body .research-actions { position: static; margin: 8px 0; }
 .research-node-wrap { position: absolute; }
 .research-node-wrap .research-node { inset: 0; width: auto; height: auto; }
 .research-add {
-  position: absolute; right: -14px; top: 50%; z-index: 2; transform: translateY(-50%);
+  position: absolute; right: -14px; top: 48px; z-index: 2; transform: translateY(-50%);
   width: 28px; height: 28px; border-radius: 999px; border: 1px solid var(--line);
   background: #fff; color: var(--gold-text); font-size: 1.15rem; line-height: 1;
 }
+.research-locate {
+  width: 32px; height: 32px; padding: 0; display: grid; place-items: center;
+  border-radius: 10px; color: var(--gold-text);
+}
+.research-locate .ico { width: 16px; height: 16px; }
 .research-branch {
   display: inline-block; margin: 0 0 8px; padding: 2px 8px; border-radius: 999px;
   background: rgba(232, 184, 109, 0.35); color: var(--gold-ink); font-size: 0.75rem; font-weight: 650;
