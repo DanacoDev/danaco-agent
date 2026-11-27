@@ -30,6 +30,7 @@ class Api
         $router->add('POST', '#^/api/tasks/finished/clear$#', $this->guard(fn() => $this->clearFinishedTasks()));
         $router->add('GET', '#^/api/research$#', $this->guard(fn() => $this->researchMissions()));
         $router->add('GET', '#^/api/research/board$#', $this->guard(fn() => $this->researchBoard()));
+        $router->add('POST', '#^/api/research/ask$#', $this->guard(fn() => $this->researchAsk()));
         $router->add('POST', '#^/api/research/mission$#', $this->guard(fn() => $this->researchMission()));
         $router->add('POST', '#^/api/research/review$#', $this->guard(fn() => $this->researchReview()));
         $router->add('POST', '#^/api/research/idea$#', $this->guard(fn() => $this->researchIdea()));
@@ -335,6 +336,250 @@ class Api
         }
         $payload['running'] = $this->researchRunning($projectId, $slug);
         $this->json($payload);
+    }
+
+    private function researchAsk(): void
+    {
+        @set_time_limit(0);
+        $body = $this->input();
+        $projectId = (int)($body['project_id'] ?? 0);
+        $slug = $this->researchSlug((string)($body['name'] ?? ''));
+        if ($slug === null) {
+            return;
+        }
+        $id = (int)($body['id'] ?? 0);
+        $question = trim((string)($body['message'] ?? ''));
+        if ($id <= 0 || $question === '' || mb_strlen($question) > 4000) {
+            $this->json(['error' => 'Ask about one idea.'], 422);
+            return;
+        }
+        $load = $this->modelLoadStatus();
+        if (empty($load['ready'])) {
+            $this->json(['error' => 'The model is still loading.'], 409);
+            return;
+        }
+        if ($this->db->modelInUse()) {
+            $this->json(['error' => 'The model is in the middle of a pass. Ask when it is free.'], 409);
+            return;
+        }
+        $board = $this->researchCall($projectId, ['action' => 'board', 'name' => $slug]);
+        if ($board === null) {
+            return;
+        }
+        $focus = $this->researchAskNode(is_array($board['tree'] ?? null) ? $board['tree'] : [], $id);
+        if ($focus === null) {
+            $this->json(['error' => 'That idea is not on this mission.'], 404);
+            return;
+        }
+        $history = [];
+        $sent = $body['history'] ?? [];
+        if (is_array($sent)) {
+            foreach (array_slice($sent, -8) as $turn) {
+                if (!is_array($turn)) {
+                    continue;
+                }
+                $role = (string)($turn['role'] ?? '');
+                $text = trim((string)($turn['text'] ?? ''));
+                if (!in_array($role, ['user', 'assistant'], true) || $text === '') {
+                    continue;
+                }
+                if (strlen($text) > 4000) {
+                    $text = substr($text, 0, 4000);
+                }
+                $history[] = ['role' => $role, 'content' => $text];
+            }
+        }
+        $messages = [[
+            'role' => 'system',
+            'content' => "You answer questions about one research idea. The notes below are that idea and the tree. To check the mission notes or a stored source, call research_loop with action read and name " . $slug . ". Omit source_id to list the sources and the notes. Pass source_id to read that source. Pass chunk_id to read one page. Do not call another action or another skill. Do not search the web. Do not change the mission. Answer from the notes and those sources. If they do not say, say that they do not say. Reply in plain sentences.\n\nWhen you need a lookup, emit exactly this and stop:\n<<tool>>\n{\"name\":\"research_loop\",\"args\":{\"action\":\"read\",\"name\":\"" . $slug . "\"}}\n<<end>>\n\n" . $this->researchAskNotes($board, $focus),
+        ]];
+        foreach ($history as $turn) {
+            $messages[] = $turn;
+        }
+        $messages[] = ['role' => 'user', 'content' => $question];
+        $paused = $this->db->heartbeatPaused($projectId);
+        if (!$paused) {
+            $this->db->pauseHeartbeat($projectId);
+        }
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
+        try {
+            $reply = '';
+            for ($look = 0; $look < 4; $look++) {
+                $reply = trim(app_services()['llm']->stream($messages, static function (): void {
+                }, null, null, false, 'orchestrator'));
+                $tool = $this->researchAskTool($reply);
+                if ($tool === null) {
+                    break;
+                }
+                $args = is_array($tool['args'] ?? null) ? $tool['args'] : [];
+                $action = strtolower(trim((string)($args['action'] ?? 'read')));
+                $note = $action === 'read' && (string)($tool['name'] ?? '') === 'research_loop'
+                    ? $this->researchAskRead($projectId, $slug, $args)
+                    : 'Only research_loop action read is available. Omit source_id to list sources. Pass source_id or chunk_id to read one.';
+                $messages[] = ['role' => 'assistant', 'content' => $reply];
+                $messages[] = ['role' => 'user', 'content' => "TOOL RESULT research_loop:\n" . $note];
+            }
+            if ($this->researchAskTool($reply) !== null) {
+                $messages[] = ['role' => 'user', 'content' => 'Answer the question now from what you have. Do not call a tool.'];
+                $reply = trim(app_services()['llm']->stream($messages, static function (): void {
+                }, null, null, false, 'orchestrator'));
+            }
+            $reply = $this->researchAskVisible($reply);
+        } catch (Throwable $e) {
+            if (!$paused) {
+                $this->db->resumeHeartbeat($projectId);
+            }
+            $this->json(['error' => $e->getMessage() !== '' ? $e->getMessage() : 'The model did not reply.'], 422);
+            return;
+        }
+        if (!$paused) {
+            $this->db->resumeHeartbeat($projectId);
+        }
+        if ($reply === '') {
+            $this->json(['error' => 'The model returned an empty answer.'], 422);
+            return;
+        }
+        $this->json(['reply' => $reply]);
+    }
+
+    private function researchAskTool(string $text): ?array
+    {
+        $start = strpos($text, '<<tool>>');
+        if ($start === false) {
+            return null;
+        }
+        $end = strpos($text, '<<end>>', $start);
+        $json = $end === false ? substr($text, $start + 8) : substr($text, $start + 8, $end - ($start + 8));
+        $payload = json_decode(trim($json), true);
+        return is_array($payload) ? $payload : ['name' => '', 'args' => []];
+    }
+
+    private function researchAskVisible(string $text): string
+    {
+        $start = strpos($text, '<<tool>>');
+        if ($start !== false) {
+            $text = substr($text, 0, $start);
+        }
+        return trim($text);
+    }
+
+    private function researchAskRead(int $projectId, string $slug, array $args): string
+    {
+        $project = $this->db->project($projectId);
+        if (!$project) {
+            return 'Project not found.';
+        }
+        $call = [
+            'action' => 'read',
+            'name' => $slug,
+        ];
+        $sourceId = (int)($args['source_id'] ?? 0);
+        $chunkId = (int)($args['chunk_id'] ?? 0);
+        if ($sourceId > 0) {
+            $call['source_id'] = $sourceId;
+        }
+        if ($chunkId > 0) {
+            $call['chunk_id'] = $chunkId;
+        }
+        try {
+            $result = app_services()['skills']->run('research_loop', $call, (string)$project['folder_name'], false, false);
+        } catch (Throwable $e) {
+            return $e->getMessage() !== '' ? $e->getMessage() : 'Research did not answer.';
+        }
+        $text = trim((string)($result['stdout'] ?? ''));
+        if ($text === '') {
+            $text = trim((string)($result['stderr'] ?? ''));
+        }
+        if ($text === '') {
+            return 'Research did not answer.';
+        }
+        if (strlen($text) > 8000) {
+            $text = substr($text, 0, 8000);
+        }
+        return $text;
+    }
+
+    private function researchAskNode(array $nodes, int $id): ?array
+    {
+        foreach ($nodes as $node) {
+            if (!is_array($node)) {
+                continue;
+            }
+            if ((int)($node['id'] ?? 0) === $id) {
+                return $node;
+            }
+            $children = $node['children'] ?? [];
+            if (is_array($children)) {
+                $found = $this->researchAskNode($children, $id);
+                if ($found !== null) {
+                    return $found;
+                }
+            }
+        }
+        return null;
+    }
+
+    private function researchAskNotes(array $board, array $focus): string
+    {
+        $lines = [
+            'Mission: ' . trim((string)($board['title'] ?? '')),
+            'Question: ' . trim((string)($board['question'] ?? '')),
+        ];
+        $scope = trim((string)($board['scope'] ?? ''));
+        if ($scope !== '') {
+            $lines[] = 'Scope: ' . $scope;
+        }
+        $lines[] = '';
+        $lines[] = 'This idea is #' . (int)($focus['id'] ?? 0) . '.';
+        $lines[] = 'Statement: ' . trim((string)($focus['statement'] ?? ''));
+        $lines[] = 'Status: ' . trim((string)($focus['status'] ?? ''));
+        foreach (['insight' => 'Conclusion', 'direction' => 'Direction', 'inherited' => 'From the branch', 'falsification' => 'Would falsify it'] as $key => $label) {
+            $text = trim((string)($focus[$key] ?? ''));
+            if ($text !== '') {
+                $lines[] = $label . ': ' . $text;
+            }
+        }
+        $claims = [];
+        foreach (is_array($focus['claims'] ?? null) ? $focus['claims'] : [] as $claim) {
+            if (is_array($claim) && trim((string)($claim['text'] ?? '')) !== '') {
+                $claims[] = trim((string)$claim['text']);
+            }
+        }
+        if ($claims !== []) {
+            $lines[] = 'Claims: ' . implode(' ', $claims);
+        }
+        $lines[] = '';
+        $lines[] = 'The rest of the mission:';
+        $this->researchAskTree(is_array($board['tree'] ?? null) ? $board['tree'] : [], 0, $lines);
+        $text = implode("\n", $lines);
+        if (strlen($text) > 14000) {
+            $text = substr($text, 0, 14000);
+        }
+        return $text;
+    }
+
+    private function researchAskTree(array $nodes, int $depth, array &$lines): void
+    {
+        if ($depth > 8 || count($lines) > 180) {
+            return;
+        }
+        foreach ($nodes as $node) {
+            if (!is_array($node)) {
+                continue;
+            }
+            $pad = str_repeat('  ', $depth);
+            $lines[] = $pad . '- #' . (int)($node['id'] ?? 0) . ' [' . trim((string)($node['status'] ?? '')) . '] ' . trim((string)($node['statement'] ?? ''));
+            $insight = trim((string)($node['insight'] ?? ''));
+            if ($insight !== '') {
+                $lines[] = $pad . '  conclusion: ' . $insight;
+            }
+            $children = $node['children'] ?? [];
+            if (is_array($children) && $children !== []) {
+                $this->researchAskTree($children, $depth + 1, $lines);
+            }
+        }
     }
 
     private function researchMission(): void

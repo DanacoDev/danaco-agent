@@ -1,6 +1,6 @@
 ---
 name: research_loop
-description: A long research mission in database/research-<slug>.db. Not a lookup log. args action, name. action is mission, add, next, commit, review, idea, status, board, or active.
+description: A long research mission in database/research-<slug>.db. Not a lookup log. args action, name. action is mission, add, next, commit, review, idea, status, board, active, or read.
 version: 1.0.0
 ---
 
@@ -19,12 +19,13 @@ Actions:
 - review: name, id, and decision testing, parked, or noted, or statement for an edited wording, or direction for where that branch should go next. noted clears needs_review and leaves the status. A root statement is one to four words.
 - idea: name, statement, and parent_id. The Research tab adds an idea this way. Do not call it. A root, parent_id 0, is one to four words. A child is a sentence under that parent.
 - status: the question, one line per hypothesis with its parent, insight, and direction, open contradictions, queue depths, and whether the switch is on. It does not write a file. This is how you answer a question about progress.
+- read: name, and optionally source_id or chunk_id. With neither, it returns the mission notes and the source list. source_id returns that source and its pages. chunk_id returns one page. It does not change the mission. A research pass does not call it.
 - board: the tree for the Research tab. Do not call it.
 - active: name, on 1 or 0. Turns that mission on or off. On pauses every other mission, in this project and in every other project. Only one mission runs. It keeps going until it is turned off. It waits while a decision is needed, while it is idle, and while chat or a task is using the model.
 
 action mission creates the database only. The file is database/research-<slug>.db. The mission shows on the Research tab. Do not call tasklist to create a task. Do not add a phase, a batch, a source list, a consultant pass, a daily inspection, a review task, or a human step. Do not delete a mission. The user deletes it on the Research tab.
 
-The main agent may call mission, status, and active. It answers questions about progress from status. It does not call add, next, commit, review, or idea. The researcher runs the fixed passes. One pass is one packet. The loop calls the next pass. Do not batch. Do not call tasklist. Do not call active or review from a pass.
+The main agent may call mission, status, and active. It answers questions about progress from status. It does not call add, next, commit, review, or idea. The user or the main agent creates a mission. The researcher runs the fixed passes and stays on the slug it was given. One pass is one packet. The loop calls the next pass. Do not batch. Do not call tasklist. Do not call mission, active, or review from a pass.
 
 - Call status with name set to the slug.
 - If there is no mission, stop.
@@ -40,7 +41,7 @@ Commit kind delta passes chunk_id once and items, a list. When claims is empty, 
 
 Commit kind topic rewrites that topic's synthesis and returns every claim id on the topic. A missing claim is rejected. superseded_by is chunk:<id>. Name other topic ids only when a load-bearing assumption changed.
 
-Commit kind reflect may add a hypothesis only as proposed. The first three are roots, parent_id 0. Every hypothesis after that includes parent_id. A reflect adds at most three new hypotheses. Read constraints.lessons first. A new statement that restates a lesson, a finding, a parent, or a sibling is rejected. counter #<id> in falsification is how a lesson can be revisited. It may add up to five falsification queries. A query is searched with arxiv and the web on the next pass. It does not replace the mission. A settled hypothesis needs insight. The skill then writes inherited on the ancestors from the child lessons.
+Commit kind reflect may add a hypothesis only as proposed. The first three are roots, parent_id 0. Every hypothesis after that includes parent_id. A reflect adds at most three new hypotheses. Read constraints.lessons first. A new statement that restates a lesson, a finding, a parent, or a sibling is rejected. counter #<id> in falsification is how a lesson can be revisited. It may add up to five falsification queries. A query is searched with arxiv and the web on the next pass. It does not replace the mission. A settled hypothesis needs insight. The skill then writes inherited on the ancestors from the child lessons. An idea that already has children keeps its wording. A commit that changes that statement is rejected.
 
 When next returns stage reevaluate, you are the critic for that packet only:
 

@@ -171,7 +171,7 @@ Those skills cover any file in the project, including the wiki. {$scope} A new o
 - coder: write and debug software in PHP, run code_verifier on each changed file, and use download_large for a download over 100 MB. Use Python only when a Python library is required, and run that file with run_python. If run_python says a library is missing, stop and name it. Do not install it. Do not use run_command for Python, and do not ask for full system control to run a script. Create or replace a skill with write_skill only when the instruction explicitly asks for that skill, then test_skill and read the exit code and output. A file in the project is not a skill. A skill program is PHP. A database is sqlite_helper, not a new skill. A page icon or graphic runs make_graphic before it is drawn.
 - analyst: process data, calculate, forecast, and make charts. An svg chart or infographic runs make_graphic.
 - marketer: campaigns, press copy, brand, and visual direction. An icon or infographic runs make_graphic.
-- consultant: a subagent for a hard multi-step problem. Delegate with agent consultant. It uses an external paid model and the same project file skills. It can list, create, update, and delete tasks. It can call research_loop action mission. That call creates the database. It shows on the Research tab. It does not create a task. It has no write_skill or test_skill. Delegate only when the note says the Consultant is on.
+- consultant: a subagent for a hard multi-step problem. Delegate with agent consultant. It uses an external paid model and the same project file skills. It can list, create, update, and delete tasks. A new research mission is created by the user or the main agent. The consultant does not call action mission. It does not create a task. It has no write_skill or test_skill. Delegate only when the note says the Consultant is on.
 TXT;
     }
 
@@ -237,8 +237,8 @@ TXT;
             $identity .= "\n\n" . $brief;
         }
         $researchRule = match ($agent) {
-            'researcher' => ' A research mission is research_loop and one database/research-<slug>.db per question. Read the lessons before a new hypothesis. A child is one full sentence, not a short title, and does not restate a lesson, a finding, or a sibling. A later hypothesis has parent_id. A settled hypothesis has insight, and that lesson moves up the tree. Do not call action active or review. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db.',
-            'consultant' => ' You can see research_loop. Its instructions are written out below. To set a mission up, call research_loop with action mission, title, and question. That call creates the database. It shows on the Research tab. action active, on 1 or 0, turns it on or off and pauses every other mission. action status answers how it is going. Do not create a task. Do not call add, next, commit, review, or idea. Do not delete a mission. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db. Do not run the research packets.',
+            'researcher' => ' A research mission is research_loop and one database/research-<slug>.db per question. Stay on the slug in the instruction. A new mission is created by the user or the main agent. Do not call action mission. Read the lessons before a new hypothesis. A child is one full sentence, not a short title, and does not restate a lesson, a finding, or a sibling. An idea that already has children keeps its wording. Do not change it. A later hypothesis has parent_id. A settled hypothesis has insight, and that lesson moves up the tree. Do not call action active or review. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db.',
+            'consultant' => ' You can see research_loop. Its instructions are written out below. A new mission is created by the user or the main agent. Do not call action mission. action status answers how it is going. Do not create a task. Do not call add, next, commit, review, or idea. Do not delete a mission. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db. Do not run the research packets.',
             default => '',
         };
         $skillLead = $agent === 'consultant'
@@ -892,6 +892,9 @@ TXT;
             if ($name === 'research_loop' && $agent !== 'researcher') {
                 $tools[$name] = function (array $args) use ($handler): string {
                     $action = strtolower(trim((string)($args['action'] ?? '')));
+                    if ($action === 'mission') {
+                        return 'A new mission is created by the user or the main agent. Do not call research_loop action mission.';
+                    }
                     if (in_array($action, ['add', 'next', 'commit', 'review'], true)) {
                         return 'The research loop runs this pass. Do not call research_loop action ' . $action . '. Use status to answer how it is going, or active to turn it on or off.';
                     }
@@ -900,10 +903,20 @@ TXT;
                 continue;
             }
             if ($name === 'research_loop' && $agent === 'researcher') {
-                $tools[$name] = function (array $args) use ($handler): string {
+                $tools[$name] = function (array $args) use ($handler, $projectId): string {
                     $action = strtolower(trim((string)($args['action'] ?? '')));
+                    if ($action === 'mission') {
+                        return 'A new mission is created by the user or the main agent. Stay on the mission in this pass. Do not call research_loop action mission.';
+                    }
                     if (in_array($action, ['active', 'review'], true)) {
                         return 'The switch and the steering stay outside this pass. Do not call research_loop action ' . $action . '.';
+                    }
+                    $job = $this->db->runningResearchJob($projectId);
+                    $payload = is_array($job) ? json_decode((string)($job['payload'] ?? ''), true) : null;
+                    $slug = is_array($payload) ? trim((string)($payload['slug'] ?? '')) : '';
+                    $name = strtolower(trim((string)($args['name'] ?? '')));
+                    if ($slug !== '' && $name !== '' && $name !== $slug) {
+                        return 'Stay on mission ' . $slug . '. Do not open another one.';
                     }
                     return $handler($args);
                 };

@@ -1510,6 +1510,8 @@ class AgentRuntime
             'Pass chunk_id' => 'delta',
             'Pass items, a list' => 'delta',
             'No claim #' => 'delta',
+            'A new mission is created by the user' => 'mission',
+            'already has children' => 'wording',
         ];
         foreach ($keys as $needle => $label) {
             if (!str_contains($result, $needle)) {

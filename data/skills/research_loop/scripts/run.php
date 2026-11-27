@@ -26,8 +26,8 @@ foreach (['sql', 'table', 'columns', 'database', 'filename'] as $banned) {
 }
 
 $action = strtolower(trim((string)($args['action'] ?? '')));
-if (!in_array($action, ['mission', 'add', 'next', 'commit', 'review', 'idea', 'status', 'board', 'active'], true)) {
-    research_out(['message' => 'action is mission, add, next, commit, review, idea, status, board, or active.'], 1);
+if (!in_array($action, ['mission', 'add', 'next', 'commit', 'review', 'idea', 'status', 'board', 'active', 'read'], true)) {
+    research_out(['message' => 'action is mission, add, next, commit, review, idea, status, board, active, or read.'], 1);
 }
 
 if ($action === 'mission') {
@@ -67,6 +67,9 @@ if ($action === 'idea') {
 }
 if ($action === 'board') {
     research_out(research_board($db, $slug));
+}
+if ($action === 'read') {
+    research_read($db, $slug, $args);
 }
 if ($action === 'active') {
     research_active($db, $slug, $args);
@@ -715,6 +718,15 @@ function research_commit_reflect(PDO $db, array $args): array
         if (!$current) {
             throw new InvalidArgumentException('No hypothesis #' . $id . '.');
         }
+        $kids = research_one($db, 'SELECT COUNT(*) AS n FROM hypotheses WHERE parent_id = ?', [$id]);
+        if ((int)($kids['n'] ?? 0) > 0) {
+            $kept = trim(preg_replace('/\s+/u', ' ', (string)$current['statement']) ?? '');
+            $next = trim(preg_replace('/\s+/u', ' ', $statement) ?? '');
+            if ($next !== $kept) {
+                throw new InvalidArgumentException('Hypothesis #' . $id . ' already has children. Its wording stays. Do not change it.');
+            }
+            $statement = (string)$current['statement'];
+        }
         if ($insight === '') {
             $insight = (string)$current['insight'];
         }
@@ -1333,6 +1345,80 @@ function research_migrate(PDO $db): void
     if ($changed) {
         research_propagate($db);
     }
+}
+
+function research_read(PDO $db, string $slug, array $args): void
+{
+    $chunkId = (int)($args['chunk_id'] ?? 0);
+    if ($chunkId > 0) {
+        $chunk = research_one($db, 'SELECT c.id, c.section, c.text, c.source_id, s.title AS source_title, s.year AS source_year FROM chunks c JOIN sources s ON s.id = c.source_id WHERE c.id = ?', [$chunkId]);
+        if (!$chunk) {
+            research_out(['message' => 'No chunk #' . $chunkId . '.'], 1);
+        }
+        $text = (string)$chunk['text'];
+        if (strlen($text) > 4000) {
+            $text = substr($text, 0, 4000);
+        }
+        research_out([
+            'name' => $slug,
+            'chunk_id' => $chunkId,
+            'source_id' => (int)$chunk['source_id'],
+            'source_title' => (string)$chunk['source_title'],
+            'year' => (string)$chunk['source_year'],
+            'section' => (string)$chunk['section'],
+            'text' => $text,
+        ]);
+    }
+    $sourceId = (int)($args['source_id'] ?? 0);
+    if ($sourceId > 0) {
+        $source = research_one($db, 'SELECT id, title, year, authors, url, status FROM sources WHERE id = ?', [$sourceId]);
+        if (!$source) {
+            research_out(['message' => 'No source #' . $sourceId . '.'], 1);
+        }
+        $chunks = $db->prepare('SELECT id, section, text FROM chunks WHERE source_id = ? ORDER BY position, id');
+        $chunks->execute([$sourceId]);
+        $rows = [];
+        foreach ($chunks->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            if (count($rows) >= 6) {
+                break;
+            }
+            $text = (string)$row['text'];
+            if (strlen($text) > 1200) {
+                $text = substr($text, 0, 1200);
+            }
+            $rows[] = ['id' => (int)$row['id'], 'section' => (string)$row['section'], 'text' => $text];
+        }
+        research_out([
+            'name' => $slug,
+            'source' => [
+                'id' => (int)$source['id'],
+                'title' => (string)$source['title'],
+                'year' => (string)$source['year'],
+                'authors' => (string)$source['authors'],
+                'url' => (string)$source['url'],
+                'status' => (string)$source['status'],
+            ],
+            'chunks' => $rows,
+            'message' => 'Source #' . $sourceId . '. Pass chunk_id to read one page.',
+        ]);
+    }
+    $sources = [];
+    foreach ($db->query('SELECT id, title, year, status FROM sources ORDER BY id') as $row) {
+        if (count($sources) >= 40) {
+            break;
+        }
+        $sources[] = [
+            'id' => (int)$row['id'],
+            'title' => (string)$row['title'],
+            'year' => (string)$row['year'],
+            'status' => (string)$row['status'],
+        ];
+    }
+    research_out([
+        'name' => $slug,
+        'message' => research_status_text($db, $slug),
+        'sources' => $sources,
+    ]);
 }
 
 function research_board(PDO $db, string $slug): array

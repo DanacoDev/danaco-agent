@@ -893,13 +893,20 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
 .research-card:has(.research-actions:not(.is-locate)) h3,
 .research-card:has(.research-actions:not(.is-locate)) .research-edit,
 .research-card:has(.research-actions:not(.is-locate)) h3 + p { padding-right: 264px; }
-.research-card:has(.research-actions:not(.is-locate)) .research-branch { max-width: calc(100% - 264px); }
+.research-card:has(.research-actions) .research-card-mark { max-width: calc(100% - 264px); }
+.research-card-mark { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; min-width: 0; }
+.research-card-mark .research-branch { margin: 0; max-width: 100%; }
+.research-ask { width: min(640px, 100%); max-height: calc(100dvh - 36px); display: flex; flex-direction: column; }
+.research-ask h2 { font-size: 1.05rem; line-height: 1.35; }
+.research-ask-log { min-height: 120px; max-height: 46vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.research-ask-log p { margin: 0; padding: 8px 10px; border-radius: 12px; white-space: pre-wrap; }
+.research-ask-log .is-user { background: rgba(232, 184, 109, 0.28); }
+.research-ask-log .is-agent { background: var(--bg); }
 .research-card:has(.research-actions.is-locate) h3,
 .research-card:has(.research-actions.is-locate) h3 + p { padding-right: 48px; }
 .research-card:has(.research-actions.is-locate) .research-branch { max-width: calc(100% - 48px); }
 .research-card .research-actions { position: absolute; top: 12px; right: 14px; margin: 0; flex-wrap: nowrap; }
-.research-card h3 { margin: 0 0 6px; font-size: 1rem; }
-.research-card h3 button { background: transparent; border: 0; padding: 0; text-align: left; color: inherit; font: inherit; font-weight: 650; }
+.research-card h3 { margin: 0 0 6px; font-size: 1rem; font-weight: 650; }
 .research-card p { margin: 0 0 6px; }
 .research-card .is-exploring { color: var(--ok); font-weight: 650; }
 .research-zoom { display: inline-flex; gap: 6px; }

@@ -200,6 +200,11 @@
           researchIdeaText: '',
           researchZoom: 1,
           researchOpenHeight: 0,
+          researchAsk: null,
+          researchAskLog: [],
+          researchAskText: '',
+          researchAskBusy: false,
+          researchAskError: '',
           researchPanning: null,
           researchPoll: 0,
           messages: [],
@@ -1238,6 +1243,9 @@
             };
             await this.api('/api/research/review', { method: 'POST', body });
             this.researchDirectionFocused = false;
+            this.researchIdeaOpen = false;
+            this.researchSelected = 0;
+            this.researchOpenHeight = 0;
             await this.loadResearchBoard();
           } catch (error) {
             this.researchError = error.message;
@@ -1293,6 +1301,46 @@
             this.researchBusy = false;
           }
         },
+        openResearchAsk(item) {
+          if (!item || !item.id) return;
+          this.researchAsk = { id: item.id, statement: item.statement || '' };
+          this.researchAskLog = [];
+          this.researchAskText = '';
+          this.researchAskError = '';
+        },
+        closeResearchAsk() {
+          if (this.researchAskBusy) return;
+          this.researchAsk = null;
+          this.researchAskLog = [];
+          this.researchAskText = '';
+          this.researchAskError = '';
+        },
+        async sendResearchAsk() {
+          const text = this.researchAskText.trim();
+          if (!text || this.researchAskBusy || !this.researchAsk) return;
+          const history = this.researchAskLog.map((turn) => ({ role: turn.role, text: turn.text }));
+          this.researchAskLog.push({ role: 'user', text: text });
+          this.researchAskText = '';
+          this.researchAskError = '';
+          this.researchAskBusy = true;
+          try {
+            const data = await this.api('/api/research/ask', {
+              method: 'POST',
+              body: {
+                project_id: this.projectId,
+                name: this.researchSlug,
+                id: this.researchAsk.id,
+                message: text,
+                history: history
+              }
+            });
+            this.researchAskLog.push({ role: 'assistant', text: data.reply || '' });
+          } catch (error) {
+            this.researchAskError = error.message;
+          } finally {
+            this.researchAskBusy = false;
+          }
+        },
         selectResearchNodeId(id) {
           const node = this.researchMap().nodes.find((item) => item.id === id);
           if (!node) return;
@@ -1321,7 +1369,8 @@
             y: event.clientY,
             left: board.scrollLeft,
             top: board.scrollTop,
-            id: event.pointerId
+            id: event.pointerId,
+            moved: false
           };
           board.setPointerCapture(event.pointerId);
         },
@@ -1329,12 +1378,22 @@
           if (!this.researchPanning || this.researchPanning.id !== event.pointerId) return;
           const board = this.$refs.researchCanvas;
           if (!board) return;
-          board.scrollLeft = this.researchPanning.left - (event.clientX - this.researchPanning.x);
-          board.scrollTop = this.researchPanning.top - (event.clientY - this.researchPanning.y);
+          const dx = event.clientX - this.researchPanning.x;
+          const dy = event.clientY - this.researchPanning.y;
+          if (Math.abs(dx) > 4 || Math.abs(dy) > 4) this.researchPanning.moved = true;
+          board.scrollLeft = this.researchPanning.left - dx;
+          board.scrollTop = this.researchPanning.top - dy;
         },
         researchPanEnd(event) {
           if (this.researchPanning && event && this.researchPanning.id !== event.pointerId) return;
+          const click = event && event.type === 'pointerup' && this.researchPanning && !this.researchPanning.moved;
           this.researchPanning = null;
+          if (!click || !this.researchSelected) return;
+          this.researchIdeaOpen = false;
+          this.researchIdeaText = '';
+          this.researchSelected = 0;
+          this.researchOpenHeight = 0;
+          this.researchError = '';
         },
         async onProjectChange() {
           localStorage.setItem('projectId', String(this.projectId || 0));

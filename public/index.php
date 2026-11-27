@@ -567,15 +567,20 @@ header('X-Danaco: 1');
                 <div class="research-cards">
                   <p v-if="!researchDashItems().length" class="muted">{{ researchDashEmpty() }}</p>
                   <article v-for="item in researchDashItems()" :key="item.id" class="research-card panel">
-                    <p v-if="researchBranchTitle(item)" class="research-branch">{{ researchBranchTitle(item) }}</p>
-                    <textarea v-if="researchEditId === item.id" class="research-edit" v-model="researchEditText" rows="3"></textarea>
-                    <h3 v-else><button type="button" @click="selectResearchNodeId(item.id)">{{ item.statement }}</button></h3>
-                    <p class="muted"><span :class="{ 'is-exploring': item.status === 'testing' }">{{ item.status === 'testing' ? 'Exploring' : item.status }}</span><template v-if="item.confidence"> · {{ item.confidence }}</template></p>
-                    <p v-if="item.insight">{{ item.insight }}</p>
-                    <div class="research-actions" :class="{ 'is-locate': item.status !== 'proposed' && item.status !== 'testing' && !item.needs_review }">
+                    <div class="research-card-mark">
+                      <p v-if="researchBranchTitle(item)" class="research-branch">{{ researchBranchTitle(item) }}</p>
                       <button class="research-locate" type="button" aria-label="Show in tree" @click="selectResearchNodeId(item.id)">
                         <svg class="ico" aria-hidden="true"><use href="#i-research"></use></svg>
                       </button>
+                      <button class="research-locate" type="button" aria-label="Ask about this idea" @click="openResearchAsk(item)">
+                        <svg class="ico" aria-hidden="true"><use href="#i-chat"></use></svg>
+                      </button>
+                    </div>
+                    <textarea v-if="researchEditId === item.id" class="research-edit" v-model="researchEditText" rows="3"></textarea>
+                    <h3 v-else>{{ item.statement }}</h3>
+                    <p class="muted"><span :class="{ 'is-exploring': item.status === 'testing' }">{{ item.status === 'testing' ? 'Exploring' : item.status }}</span><template v-if="item.confidence"> · {{ item.confidence }}</template></p>
+                    <p v-if="item.insight">{{ item.insight }}</p>
+                    <div v-if="researchEditId === item.id || item.needs_review || item.status === 'proposed' || item.status === 'testing'" class="research-actions">
                       <template v-if="researchEditId === item.id">
                         <button class="btn btn-gold" type="button" :disabled="researchBusy" @click="saveResearchWording(item.id, researchEditText)">Save</button>
                         <button class="btn" type="button" :disabled="researchBusy" @click="researchEditId = 0">Cancel</button>
@@ -663,6 +668,23 @@ header('X-Danaco: 1');
                   </div>
                 </div>
               </div>
+            </div>
+            <div v-if="researchAsk" class="modal-back" @click.self="closeResearchAsk">
+              <form class="modal research-ask" @submit.prevent="sendResearchAsk">
+                <h2>{{ researchAsk.statement }}</h2>
+                <div class="research-ask-log">
+                  <p v-for="(turn, index) in researchAskLog" :key="index" :class="turn.role === 'user' ? 'is-user' : 'is-agent'">{{ turn.text }}</p>
+                  <p v-if="researchAskBusy" class="is-agent muted">Thinking.</p>
+                </div>
+                <label class="field">Ask about this idea
+                  <textarea v-model="researchAskText" rows="4" placeholder="A question about this idea"></textarea>
+                </label>
+                <p v-if="researchAskError" class="form-error">{{ researchAskError }}</p>
+                <div class="view-actions">
+                  <button class="btn btn-gold" type="submit" :disabled="researchAskBusy">Ask</button>
+                  <button class="btn" type="button" @click="closeResearchAsk">Close</button>
+                </div>
+              </form>
             </div>
             <div v-if="researchFormOpen" class="modal-back" @click.self="researchFormOpen = false">
               <form class="modal project-modal" @submit.prevent="createResearch">
