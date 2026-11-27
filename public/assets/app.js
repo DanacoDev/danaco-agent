@@ -199,6 +199,7 @@
           researchIdeaParent: 0,
           researchIdeaText: '',
           researchZoom: 1,
+          researchOpenHeight: 0,
           researchPanning: null,
           researchPoll: 0,
           messages: [],
@@ -632,6 +633,12 @@
         projectForm: {
           handler() { this.rememberProjectForm(); },
           deep: true
+        },
+        researchSelected() {
+          this.$nextTick(() => this.researchFitOpen());
+        },
+        researchIdeaOpen() {
+          this.$nextTick(() => this.researchFitOpen());
         }
       },
       mounted() {
@@ -1026,7 +1033,7 @@
           if (open) {
             const idea = this.researchIdeaOpen && this.researchIdeaParent === open.id;
             open.w = 320;
-            open.h = idea ? 360 : (open.goal ? 220 : 590);
+            open.h = this.researchOpenHeight > height ? this.researchOpenHeight : (idea ? 220 : (open.goal ? 160 : 220));
             const extraW = open.w - width;
             const extraH = open.h - height;
             nodes.forEach((node) => {
@@ -1149,11 +1156,24 @@
         researchNodeOpen(node) {
           return !!node && this.researchSelected === node.id;
         },
+        researchFitOpen() {
+          if (!this.researchSelected) {
+            if (this.researchOpenHeight) this.researchOpenHeight = 0;
+            return;
+          }
+          const el = document.querySelector('.research-node.is-open');
+          if (!el) return;
+          const hit = el.querySelector('.research-node-hit');
+          const body = el.querySelector('.research-node-body');
+          const needed = Math.ceil((hit ? hit.offsetHeight : 0) + (body ? body.scrollHeight : 0) + 36);
+          if (needed > 96 && Math.abs(needed - this.researchOpenHeight) > 4) this.researchOpenHeight = needed;
+        },
         selectResearchNode(node) {
           if (this.researchSelected === node.id) {
             this.researchIdeaOpen = false;
             this.researchIdeaText = '';
             this.researchSelected = 0;
+            this.researchOpenHeight = 0;
             this.researchError = '';
             return;
           }
@@ -1197,6 +1217,27 @@
             });
             this.researchEditId = 0;
             this.researchStatement = text;
+            await this.loadResearchBoard();
+          } catch (error) {
+            this.researchError = error.message;
+          } finally {
+            this.researchBusy = false;
+          }
+        },
+        async saveResearchNode(node) {
+          if (this.researchBusy || !node || !node.id || node.id === 'mission') return;
+          this.researchError = '';
+          this.researchBusy = true;
+          try {
+            const body = {
+              project_id: this.projectId,
+              name: this.researchSlug,
+              id: node.id,
+              direction: this.researchDirection
+            };
+            if (node.status === 'proposed') body.statement = this.researchStatement;
+            await this.api('/api/research/review', { method: 'POST', body });
+            this.researchDirectionFocused = false;
             await this.loadResearchBoard();
           } catch (error) {
             this.researchError = error.message;

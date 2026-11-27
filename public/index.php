@@ -610,10 +610,11 @@ header('X-Danaco: 1');
                         <path v-for="edge in researchMap().edges" :key="edge.id" :d="edge.d"></path>
                       </svg>
                       <div v-for="node in researchMap().nodes" :key="node.id" class="research-node-wrap" :style="{ left: node.x + 'px', top: node.y + 'px', width: node.w + 'px', height: node.h + 'px' }">
-                        <div class="research-node" :class="['is-' + node.status, { 'is-on': researchSelected === node.id, 'is-open': researchNodeOpen(node), 'is-best': researchBoard.best && researchBoard.best.id === node.id }]">
+                        <div class="research-node" :class="['is-' + node.status, { 'is-on': researchSelected === node.id, 'is-open': researchNodeOpen(node), 'is-best': researchBoard.best && researchBoard.best.id === node.id }]" @click="selectResearchNode(node)">
                           <button type="button" class="research-node-hit" @click.stop="selectResearchNode(node)">
-                            <span v-if="!node.goal" class="research-chip">{{ node.status }}</span>
-                            <strong>{{ node.statement }}</strong>
+                            <span v-if="!node.goal && node.status !== 'testing'" class="research-chip">{{ node.status }}</span>
+                            <span v-else-if="node.goal && researchNodeOpen(node)" class="research-chip is-goal">Goal</span>
+                            <strong v-if="!researchNodeOpen(node)">{{ node.statement }}</strong>
                           </button>
                           <div v-if="researchNodeOpen(node)" class="research-node-body" @click.stop @pointerdown.stop>
                             <template v-if="researchIdeaOpen && researchIdeaParent === node.id">
@@ -633,11 +634,13 @@ header('X-Danaco: 1');
                               <p v-if="node.scope" class="muted">{{ node.scope }}</p>
                             </template>
                             <template v-else>
-                              <p class="muted">{{ node.parent_id ? 'Parent #' + node.parent_id : 'Goal' }} · #{{ node.id }}</p>
-                              <label v-if="node.status === 'proposed'" class="field">Wording
-                                <textarea v-model="researchStatement" rows="3" :placeholder="node.parent_id ? 'The idea' : 'One to four words'"></textarea>
-                              </label>
-                              <button v-if="node.status === 'proposed'" class="btn" type="button" :disabled="researchBusy" @click="saveResearchWording(node.id, researchStatement)">Save wording</button>
+                              <div v-if="node.status === 'proposed'" class="field">
+                                <textarea v-model="researchStatement" rows="6" :placeholder="node.parent_id ? 'The idea' : 'One to four words'"></textarea>
+                              </div>
+                              <div class="field">
+                                <textarea v-model="researchDirection" rows="3" placeholder="Where this branch should go next" @focus="researchDirectionFocused = true" @blur="researchDirectionFocused = false"></textarea>
+                              </div>
+                              <button class="btn" type="button" :disabled="researchBusy" @click="saveResearchNode(node)">Save</button>
                               <p v-if="node.insight"><strong>Conclusion.</strong> {{ node.insight }}</p>
                               <p v-else class="muted">No conclusion on this node yet.</p>
                               <p v-if="node.inherited"><strong>From the branch.</strong> {{ node.inherited }}</p>
@@ -650,10 +653,6 @@ header('X-Danaco: 1');
                                 <button v-else-if="node.needs_review" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearch('noted')">Keep</button>
                                 <button v-if="node.needs_review || node.status === 'proposed' || node.status === 'testing'" class="btn" type="button" :disabled="researchBusy" title="Park this node and the open nodes under it" @click="reviewResearch('parked')">Park</button>
                               </div>
-                              <label class="field">Direction
-                                <textarea v-model="researchDirection" rows="3" placeholder="Where this branch should go next" @focus="researchDirectionFocused = true" @blur="researchDirectionFocused = false"></textarea>
-                              </label>
-                              <button class="btn" type="button" :disabled="researchBusy" @click="reviewResearch('', true)">Save direction</button>
                               <p v-if="researchError" class="form-error">{{ researchError }}</p>
                             </template>
                           </div>

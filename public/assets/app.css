@@ -886,6 +886,7 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
   width: 28px; height: 28px; border-radius: 999px; border: 1px solid var(--line);
   background: #fff; color: var(--gold-text); font-size: 1.15rem; line-height: 1;
 }
+.research-node-wrap:has(.is-open) .research-add { top: 26px; }
 .research-locate {
   width: 32px; height: 32px; padding: 0; display: grid; place-items: center;
   border-radius: 10px; color: var(--gold-text);
