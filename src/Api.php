@@ -35,6 +35,7 @@ class Api
         $router->add('POST', '#^/api/research/review$#', $this->guard(fn() => $this->researchReview()));
         $router->add('POST', '#^/api/research/idea$#', $this->guard(fn() => $this->researchIdea()));
         $router->add('POST', '#^/api/research/run$#', $this->guard(fn() => $this->researchRun()));
+        $router->add('POST', '#^/api/research/auto$#', $this->guard(fn() => $this->researchAuto()));
         $router->add('POST', '#^/api/research/stop$#', $this->guard(fn() => $this->researchStop()));
         $router->add('POST', '#^/api/research/delete$#', $this->guard(fn() => $this->researchDelete()));
         $router->add('GET', '#^/api/messages$#', $this->guard(fn() => $this->messages()));
@@ -700,6 +701,22 @@ class Api
         }
         $payload['active'] = true;
         $payload['running'] = true;
+        $this->json($payload);
+    }
+
+    private function researchAuto(): void
+    {
+        $body = $this->input();
+        $projectId = (int)($body['project_id'] ?? 0);
+        $slug = $this->researchSlug((string)($body['name'] ?? ''));
+        if ($slug === null) {
+            return;
+        }
+        $on = !empty($body['on']) ? 1 : 0;
+        $payload = $this->researchCall($projectId, ['action' => 'auto', 'name' => $slug, 'on' => $on]);
+        if ($payload === null) {
+            return;
+        }
         $this->json($payload);
     }
 

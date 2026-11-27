@@ -5,10 +5,10 @@ if (!is_array($args)) {
     $args = [];
 }
 
-const RESEARCH_SCHEMA = 4;
+const RESEARCH_SCHEMA = 5;
 
 const RESEARCH_TABLES = [
-    'meta' => ['id', 'schema_version', 'title', 'question', 'scope', 'cycle', 'last_reflect_cycle', 'last_lint_cycle', 'ingest_since_reflect', 'active'],
+    'meta' => ['id', 'schema_version', 'title', 'question', 'scope', 'cycle', 'last_reflect_cycle', 'last_lint_cycle', 'ingest_since_reflect', 'active', 'auto'],
     'sources' => ['id', 'title', 'year', 'authors', 'path', 'url', 'kind', 'status', 'skip_reason', 'dedupe'],
     'chunks' => ['id', 'source_id', 'section', 'text', 'position'],
     'topics' => ['id', 'title', 'title_key', 'synthesis', 'status', 'updated_cycle'],
@@ -26,8 +26,8 @@ foreach (['sql', 'table', 'columns', 'database', 'filename'] as $banned) {
 }
 
 $action = strtolower(trim((string)($args['action'] ?? '')));
-if (!in_array($action, ['mission', 'add', 'next', 'commit', 'review', 'idea', 'status', 'board', 'active', 'read'], true)) {
-    research_out(['message' => 'action is mission, add, next, commit, review, idea, status, board, active, or read.'], 1);
+if (!in_array($action, ['mission', 'add', 'next', 'commit', 'review', 'idea', 'status', 'board', 'active', 'auto', 'read'], true)) {
+    research_out(['message' => 'action is mission, add, next, commit, review, idea, status, board, active, auto, or read.'], 1);
 }
 
 if ($action === 'mission') {
@@ -73,6 +73,9 @@ if ($action === 'read') {
 }
 if ($action === 'active') {
     research_active($db, $slug, $args);
+}
+if ($action === 'auto') {
+    research_auto($db, $slug, $args);
 }
 research_out(['name' => $slug, 'message' => research_status_text($db, $slug), 'view' => research_status_view($db)]);
 
@@ -220,6 +223,9 @@ function research_add(PDO $db, string $slug, array $args): void
 function research_next(PDO $db, string $slug): void
 {
     research_reclaim($db);
+    if (research_auto_on($db)) {
+        research_auto_promote($db);
+    }
     $view = research_status_view($db);
     if ((int)$view['hypotheses'] === 0) {
         research_out([
@@ -228,7 +234,7 @@ function research_next(PDO $db, string $slug): void
             'message' => 'No hypotheses yet. Commit kind reflect. The list argument is hypotheses. At most three roots. Each one is {"statement":"one to four words","status":"proposed","parent_id":0}. A root is a short title of that direction, not a sentence. Do not ingest.',
         ]);
     }
-    if ((int)$view['proposed'] > 0 && (int)$view['testing'] === 0) {
+    if ((int)$view['proposed'] > 0 && (int)$view['testing'] === 0 && !research_auto_on($db)) {
         research_out([
             'name' => $slug,
             'stage' => 'awaiting',
@@ -250,7 +256,16 @@ function research_next(PDO $db, string $slug): void
     if ($cycle > 0 && $cycle % 50 === 0 && (int)$meta['last_lint_cycle'] < $cycle) {
         research_out(research_lint_packet($db, $slug));
     }
+    if (research_auto_closed($db)) {
+        research_out(research_solution_packet($db, $slug));
+    }
+    if (research_auto_conclude($db)) {
+        research_out(research_conclude_packet($db, $slug));
+    }
     if ((int)$meta['ingest_since_reflect'] >= 10) {
+        if (research_auto_on($db) && research_count($db, 'hypotheses') >= 9) {
+            research_out(research_conclude_packet($db, $slug));
+        }
         research_out(research_reflect_packet($db, $slug));
     }
     $row = research_queue_row($db, 'ingest');
@@ -261,7 +276,13 @@ function research_next(PDO $db, string $slug): void
         research_out(research_packet($db, $slug, $stage, $row));
     }
     if ((int)$meta['ingest_since_reflect'] > 0 || research_search_due($db)) {
+        if (research_auto_on($db) && research_count($db, 'hypotheses') >= 9 && !research_search_due($db)) {
+            research_out(research_conclude_packet($db, $slug));
+        }
         research_out(research_reflect_packet($db, $slug));
+    }
+    if (research_auto_on($db) && (int)$view['testing'] > 0) {
+        research_out(research_conclude_packet($db, $slug));
     }
     research_out([
         'name' => $slug,
@@ -651,6 +672,26 @@ function research_commit_reflect(PDO $db, array $args): array
     if ($fresh > 3) {
         throw new InvalidArgumentException('A reflect proposes at most three hypotheses.');
     }
+    $auto = research_auto_on($db);
+    $conclude = research_auto_conclude($db);
+    if ($auto && ($conclude || research_count($db, 'hypotheses') >= 9) && $fresh > 0) {
+        throw new InvalidArgumentException('The conclusion uses an existing idea. Do not add another.');
+    }
+    if ($conclude) {
+        $moves = false;
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $nextStatus = strtolower(trim((string)($item['status'] ?? '')));
+            if ((int)($item['id'] ?? 0) > 0 && in_array($nextStatus, ['supported', 'narrowed', 'refuted', 'parked'], true)) {
+                $moves = true;
+            }
+        }
+        if (!$moves) {
+            throw new InvalidArgumentException('Settle or park the open ideas. One idea becomes supported or narrowed, and its insight is the conclusion or the design. Park the rest.');
+        }
+    }
     $review = false;
     $parents = [];
     $rootsOk = research_count($db, 'hypotheses') === 0;
@@ -706,12 +747,15 @@ function research_commit_reflect(PDO $db, array $args): array
             } elseif (!$rootsOk) {
                 throw new InvalidArgumentException('A new hypothesis needs parent_id. A root is only the first three.');
             }
-            $db->prepare('INSERT INTO hypotheses (statement, status, confidence, claim_ids, falsification, needs_review, parent_id, insight, direction, inherited) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)')
-                ->execute([$statement, 'proposed', $confidence, $claimIds, $falseText, $parentId, '', '', '']);
+            $stored = $auto ? 'testing' : 'proposed';
+            $db->prepare('INSERT INTO hypotheses (statement, status, confidence, claim_ids, falsification, needs_review, parent_id, insight, direction, inherited) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+                ->execute([$statement, $stored, $confidence, $claimIds, $falseText, $auto ? 0 : 1, $parentId, '', '', '']);
             if ($parentId > 0) {
                 $parents[$parentId] = true;
             }
-            $review = true;
+            if (!$auto) {
+                $review = true;
+            }
             continue;
         }
         $current = research_one($db, 'SELECT * FROM hypotheses WHERE id = ?', [$id]);
@@ -734,12 +778,29 @@ function research_commit_reflect(PDO $db, array $args): array
             throw new InvalidArgumentException('A settled hypothesis needs insight, one or two sentences.');
         }
         $flag = (int)$current['needs_review'];
-        if ((string)$current['status'] === 'testing' && in_array($status, ['supported', 'refuted', 'narrowed'], true)) {
+        if (!$auto && (string)$current['status'] === 'testing' && in_array($status, ['supported', 'refuted', 'narrowed'], true)) {
             $flag = 1;
             $review = true;
         }
+        if ($status === 'parked') {
+            $flag = 0;
+        }
         $db->prepare('UPDATE hypotheses SET statement = ?, status = ?, confidence = ?, claim_ids = ?, falsification = ?, needs_review = ?, insight = ? WHERE id = ?')
             ->execute([$statement, $status, $confidence, $claimIds, $falseText, $flag, $insight, $id]);
+        if ($auto && $status === 'parked' && (string)$current['status'] !== 'parked') {
+            research_park_branch($db, $id);
+        }
+    }
+    if ($conclude) {
+        $kept = (int)$db->query("SELECT COUNT(*) FROM hypotheses WHERE status IN ('supported', 'narrowed')")->fetchColumn();
+        if ($kept > 0) {
+            $left = $db->query("SELECT id FROM hypotheses WHERE status = 'testing'")->fetchAll(PDO::FETCH_ASSOC);
+            $park = $db->prepare("UPDATE hypotheses SET status = 'parked', needs_review = 0, direction = '' WHERE id = ?");
+            foreach ($left as $row) {
+                $park->execute([(int)$row['id']]);
+                research_park_branch($db, (int)$row['id']);
+            }
+        }
     }
     foreach (array_keys($parents) as $parentId) {
         $db->prepare("UPDATE hypotheses SET direction = '' WHERE id = ?")->execute([$parentId]);
@@ -771,11 +832,16 @@ function research_commit_reflect(PDO $db, array $args): array
     $cycle = (int)$meta['cycle'] + 1;
     $lint = (int)$meta['last_lint_cycle'];
     $testingNow = (int)$db->query("SELECT COUNT(*) FROM hypotheses WHERE status = 'testing'")->fetchColumn();
+    $ingestFlag = 0;
     if ($testingNow > 0 && $added === 0 && research_count($db, 'sources') === 0) {
-        $lint = $cycle;
+        if ($auto && $lint < $cycle) {
+            $ingestFlag = 1;
+        } else {
+            $lint = $cycle;
+        }
     }
-    $db->prepare('UPDATE meta SET cycle = ?, ingest_since_reflect = 0, last_reflect_cycle = ?, last_lint_cycle = ? WHERE id = 1')
-        ->execute([$cycle, $cycle, $lint]);
+    $db->prepare('UPDATE meta SET cycle = ?, ingest_since_reflect = ?, last_reflect_cycle = ?, last_lint_cycle = ? WHERE id = 1')
+        ->execute([$cycle, $ingestFlag, $cycle, $lint]);
     return [
         'kind' => 'reflect',
         'needs_review' => $review,
@@ -946,8 +1012,11 @@ function research_status_text(PDO $db, string $slug): string
     $lines[] = 'Queue: ingest ' . $view['ingest'] . ', reevaluate ' . $view['reevaluate'];
     $lines[] = 'Cycle: ' . $view['cycle'];
     $lines[] = 'Switch: ' . (!empty($view['active']) ? 'on' : 'off');
-    if ((int)$view['proposed'] > 0 && (int)$view['testing'] === 0) {
+    if (empty($view['auto']) && (int)$view['proposed'] > 0 && (int)$view['testing'] === 0) {
         $lines[] = 'awaiting approval';
+    }
+    if (!empty($view['auto'])) {
+        $lines[] = 'autonomous';
     }
     if ((int)$view['needs_review'] > 0) {
         $lines[] = 'needs_review';
@@ -991,6 +1060,7 @@ function research_status_view(PDO $db): array
         'approved' => $approved,
         'needs_review' => $needs,
         'active' => (int)($meta['active'] ?? 0) === 1,
+        'auto' => (int)($meta['auto'] ?? 0) === 1,
         'ingest' => research_count_where($db, "SELECT COUNT(*) FROM queue WHERE kind = 'ingest' AND status != 'done'"),
         'reevaluate' => research_count_where($db, "SELECT COUNT(*) FROM queue WHERE kind = 'reevaluate' AND status != 'done'"),
     ];
@@ -1096,6 +1166,91 @@ function research_active(PDO $db, string $slug, array $args): void
     ]);
 }
 
+function research_auto(PDO $db, string $slug, array $args): void
+{
+    $on = $args['on'] ?? null;
+    if (is_string($on)) {
+        $on = strtolower(trim($on));
+    }
+    $flag = -1;
+    if (in_array($on, [1, '1', true, 'true', 'on', 'yes'], true)) {
+        $flag = 1;
+    } elseif (in_array($on, [0, '0', false, 'false', 'off', 'no'], true)) {
+        $flag = 0;
+    }
+    if ($flag < 0) {
+        research_out(['message' => 'Pass on as 1 or 0.'], 1);
+    }
+    $db->prepare('UPDATE meta SET auto = ? WHERE id = 1')->execute([$flag]);
+    if ($flag === 1) {
+        research_auto_promote($db);
+    }
+    research_out([
+        'name' => $slug,
+        'auto' => $flag === 1,
+        'message' => $flag === 1
+            ? 'Mission ' . $slug . ' keeps its own ideas and stops at a conclusion.'
+            : 'Mission ' . $slug . ' waits for ideas to be kept or parked.',
+    ]);
+}
+
+function research_auto_on(PDO $db): bool
+{
+    $meta = research_meta($db);
+    return (int)($meta['auto'] ?? 0) === 1;
+}
+
+function research_auto_promote(PDO $db): void
+{
+    $rows = $db->query("SELECT id FROM hypotheses WHERE status = 'proposed'")->fetchAll(PDO::FETCH_ASSOC);
+    if ($rows === []) {
+        return;
+    }
+    $upd = $db->prepare("UPDATE hypotheses SET status = 'testing', needs_review = 0 WHERE id = ?");
+    foreach ($rows as $row) {
+        $upd->execute([(int)$row['id']]);
+    }
+    $meta = research_meta($db);
+    $queued = research_count_where($db, "SELECT COUNT(*) FROM queue WHERE status != 'done'");
+    if ((int)$meta['ingest_since_reflect'] === 0 && $queued === 0 && research_count($db, 'sources') === 0) {
+        $db->prepare('UPDATE meta SET ingest_since_reflect = 1 WHERE id = 1')->execute();
+    }
+}
+
+function research_auto_closed(PDO $db): bool
+{
+    if (!research_auto_on($db)) {
+        return false;
+    }
+    $view = research_status_view($db);
+    if ((int)$view['hypotheses'] < 1 || (int)$view['testing'] > 0 || (int)$view['proposed'] > 0) {
+        return false;
+    }
+    return (int)$view['ingest'] === 0 && (int)$view['reevaluate'] === 0;
+}
+
+function research_auto_conclude(PDO $db): bool
+{
+    if (!research_auto_on($db) || research_auto_closed($db)) {
+        return false;
+    }
+    $view = research_status_view($db);
+    if ((int)$view['testing'] < 1 || (int)$view['ingest'] > 0 || (int)$view['reevaluate'] > 0) {
+        return false;
+    }
+    if (research_search_due($db)) {
+        return false;
+    }
+    $meta = research_meta($db);
+    if ((int)$meta['ingest_since_reflect'] > 0) {
+        return false;
+    }
+    if (research_count($db, 'hypotheses') >= 9 || research_count($db, 'sources') > 0) {
+        return true;
+    }
+    return (int)$meta['cycle'] > 0 && (int)$meta['last_lint_cycle'] >= (int)$meta['cycle'];
+}
+
 function research_pause_others(string $keep): void
 {
     $keepReal = realpath($keep) ?: $keep;
@@ -1192,7 +1347,8 @@ function research_create_schema(PDO $db): void
         last_reflect_cycle INTEGER NOT NULL DEFAULT 0,
         last_lint_cycle INTEGER NOT NULL DEFAULT 0,
         ingest_since_reflect INTEGER NOT NULL DEFAULT 0,
-        active INTEGER NOT NULL DEFAULT 0
+        active INTEGER NOT NULL DEFAULT 0,
+        auto INTEGER NOT NULL DEFAULT 0
     )');
     $db->exec("CREATE TABLE sources (
         id INTEGER PRIMARY KEY,
@@ -1335,6 +1491,10 @@ function research_migrate(PDO $db): void
     }
     if (!in_array('active', $metaHave, true)) {
         $db->exec('ALTER TABLE meta ADD COLUMN active INTEGER NOT NULL DEFAULT 0');
+        $changed = true;
+    }
+    if (!in_array('auto', $metaHave, true)) {
+        $db->exec('ALTER TABLE meta ADD COLUMN auto INTEGER NOT NULL DEFAULT 0');
         $changed = true;
     }
     $version = (int)$db->query('SELECT schema_version FROM meta WHERE id = 1')->fetchColumn();
@@ -1487,9 +1647,11 @@ function research_board(PDO $db, string $slug): array
             $settledReview++;
         }
     }
-    $waiting = $settledReview > 0 || ((int)$view['testing'] === 0 && ((int)$view['proposed'] > 0 || (int)$view['needs_review'] > 0));
+    $auto = research_auto_on($db);
+    $closed = research_auto_closed($db);
+    $waiting = $closed || (!$auto && ($settledReview > 0 || ((int)$view['testing'] === 0 && ((int)$view['proposed'] > 0 || (int)$view['needs_review'] > 0))));
     $pendingReflect = (int)research_meta($db)['ingest_since_reflect'] > 0 || research_search_due($db);
-    $idle = !$waiting && $directed === null && (int)$view['ingest'] === 0 && (int)$view['reevaluate'] === 0 && !$pendingReflect && count($nodes) > 0;
+    $idle = !$auto && !$waiting && $directed === null && (int)$view['ingest'] === 0 && (int)$view['reevaluate'] === 0 && !$pendingReflect && count($nodes) > 0;
     $backpropagated = false;
     foreach ($nodes as $node) {
         if (trim((string)$node['inherited']) !== '') {
@@ -1511,6 +1673,8 @@ function research_board(PDO $db, string $slug): array
         'testing' => $view['testing'],
         'needs_review' => $view['needs_review'],
         'active' => !empty($view['active']),
+        'auto' => $auto,
+        'solution' => $closed,
         'waiting' => $waiting,
         'idle' => $idle,
         'direction' => $directed ? ['id' => (int)$directed['id'], 'text' => (string)$directed['direction']] : null,
@@ -1539,6 +1703,51 @@ function research_phase(array $view, ?array $directed): string
         return 'test';
     }
     return 'observe';
+}
+
+function research_solution_packet(PDO $db, string $slug): array
+{
+    $best = research_best(research_board_nodes($db));
+    $text = is_array($best) ? trim((string)($best['insight'] ?? '')) : '';
+    if ($text === '' && is_array($best)) {
+        $text = trim((string)($best['statement'] ?? ''));
+    }
+    return [
+        'name' => $slug,
+        'stage' => 'solution',
+        'message' => $text !== ''
+            ? 'A conclusion is ready. Stop. Do not add a hypothesis. Do not turn the mission off. ' . $text
+            : 'The branches are closed. Stop. Do not add a hypothesis. Do not turn the mission off.',
+    ];
+}
+
+function research_conclude_packet(PDO $db, string $slug): array
+{
+    $view = research_status_view($db);
+    $open = [];
+    foreach ($view['lines'] as $line) {
+        if ((string)$line['status'] === 'testing') {
+            $open[] = (int)$line['id'];
+        }
+    }
+    return [
+        'name' => $slug,
+        'stage' => 'conclude',
+        'hypotheses' => $view['lines'],
+        'constraints' => research_constraints($db),
+        'open_ids' => $open,
+        'message' => 'Aggregate the important findings into one final conclusion or design. Commit kind reflect on the existing ideas. Set one testing idea to supported or narrowed. Its insight is that conclusion or design, one or two sentences. Park every other testing idea. Parking closes the open nodes under it. Do not add a new hypothesis. Then stop.',
+    ];
+}
+
+function research_board_nodes(PDO $db): array
+{
+    $rows = $db->query('SELECT id, parent_id, statement, status, confidence, insight FROM hypotheses ORDER BY id')->fetchAll(PDO::FETCH_ASSOC);
+    $nodes = [];
+    foreach ($rows as $row) {
+        $nodes[(int)$row['id']] = $row;
+    }
+    return $nodes;
 }
 
 function research_ideate_message(int $parentId): string

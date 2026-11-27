@@ -113,6 +113,7 @@ header('X-Danaco: 1');
   <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6-6 6"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path fill="#000" stroke="#000" stroke-linejoin="round" stroke-width="1" d="M12 3.2 2.2 20.8h19.6z"/><path fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" d="M12 9v5.2"/><circle cx="12" cy="16.9" r="0.95" fill="#fff" stroke="none"/></symbol>
+  <symbol id="i-flash" viewBox="0 0 24 24"><path fill="currentColor" d="M13.2 2 4.2 13.2h6.4L9.6 22l9.8-12.4h-6.6z"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.2v13.6l12-6.8z"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M6 5h4.2v14H6zM13.8 5H18v14h-4.2z"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" d="M4.5 5.5h5.5v13H4.5z"/><circle cx="8" cy="12" r="0.8" fill="currentColor" stroke="none"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12.5 12H20M16.8 8.8 20 12l-3.2 3.2"/></symbol>
@@ -540,6 +541,9 @@ header('X-Danaco: 1');
                 </button>
                 <button v-else class="btn research-icon" type="button" aria-label="Start" :disabled="researchBusy || !researchSlug" @click="runResearch">
                   <svg class="ico" aria-hidden="true"><use href="#i-play"></use></svg>
+                </button>
+                <button class="btn research-icon" :class="{ 'is-on': researchBoard && researchBoard.auto }" type="button" :aria-label="researchBoard && researchBoard.auto ? 'Autonomous on' : 'Autonomous'" :disabled="researchBusy || !researchSlug" @click="toggleResearchAuto">
+                  <svg class="ico" aria-hidden="true"><use href="#i-flash"></use></svg>
                 </button>
                 <button class="btn research-icon" type="button" aria-label="Open tree" :disabled="!researchBoard" @click="researchTreeOpen = true">
                   <svg class="ico" aria-hidden="true"><use href="#i-research"></use></svg>

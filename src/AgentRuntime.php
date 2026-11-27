@@ -1512,6 +1512,8 @@ class AgentRuntime
             'No claim #' => 'delta',
             'A new mission is created by the user' => 'mission',
             'already has children' => 'wording',
+            'The conclusion uses an existing idea' => 'conclude',
+            'Settle or park the open ideas' => 'conclude',
         ];
         foreach ($keys as $needle => $label) {
             if (!str_contains($result, $needle)) {

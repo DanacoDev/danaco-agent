@@ -237,7 +237,7 @@ TXT;
             $identity .= "\n\n" . $brief;
         }
         $researchRule = match ($agent) {
-            'researcher' => ' A research mission is research_loop and one database/research-<slug>.db per question. Stay on the slug in the instruction. A new mission is created by the user or the main agent. Do not call action mission. Read the lessons before a new hypothesis. A child is one full sentence, not a short title, and does not restate a lesson, a finding, or a sibling. An idea that already has children keeps its wording. Do not change it. A later hypothesis has parent_id. A settled hypothesis has insight, and that lesson moves up the tree. Do not call action active or review. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db.',
+            'researcher' => ' A research mission is research_loop and one database/research-<slug>.db per question. Stay on the slug in the instruction. A new mission is created by the user or the main agent. Do not call action mission. Read the lessons before a new hypothesis. A child is one full sentence, not a short title, and does not restate a lesson, a finding, or a sibling. An idea that already has children keeps its wording. Do not change it. A later hypothesis has parent_id. A settled hypothesis has insight, and that lesson moves up the tree. Do not call action active, auto, or review. When the packet stage is conclude, one existing idea becomes the conclusion or the design and the other open ideas are parked. Do not add another idea. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db.',
             'consultant' => ' You can see research_loop. Its instructions are written out below. A new mission is created by the user or the main agent. Do not call action mission. action status answers how it is going. Do not create a task. Do not call add, next, commit, review, or idea. Do not delete a mission. Do not create a wiki markdown for a finding, a source list, a hypothesis, or a phase. Do not open that database with sqlite_helper. Do not invent research1.db. Do not run the research packets.',
             default => '',
         };
@@ -908,7 +908,7 @@ TXT;
                     if ($action === 'mission') {
                         return 'A new mission is created by the user or the main agent. Stay on the mission in this pass. Do not call research_loop action mission.';
                     }
-                    if (in_array($action, ['active', 'review'], true)) {
+                    if (in_array($action, ['active', 'auto', 'review'], true)) {
                         return 'The switch and the steering stay outside this pass. Do not call research_loop action ' . $action . '.';
                     }
                     $job = $this->db->runningResearchJob($projectId);

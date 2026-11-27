@@ -833,6 +833,7 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
 .research-icon {
   width: 40px; height: 40px; padding: 0; display: grid; place-items: center;
 }
+.research-view .view-actions .research-icon.is-on { background: rgba(232, 184, 109, 0.45); color: var(--gold-ink); }
 .research-icon .ico { width: 24px; height: 24px; }
 .research-goal {
   position: relative; background: #fff; border: 1px solid var(--line); border-radius: 14px;

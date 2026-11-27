@@ -927,6 +927,22 @@
             this.researchBusy = false;
           }
         },
+        async toggleResearchAuto() {
+          if (this.researchBusy || !this.researchSlug || !this.researchBoard) return;
+          this.researchError = '';
+          this.researchBusy = true;
+          try {
+            await this.api('/api/research/auto', {
+              method: 'POST',
+              body: { project_id: this.projectId, name: this.researchSlug, on: this.researchBoard.auto ? 0 : 1 }
+            });
+            await this.loadResearchBoard();
+          } catch (error) {
+            this.researchError = error.message;
+          } finally {
+            this.researchBusy = false;
+          }
+        },
         async stopResearch() {
           if (this.researchBusy || !this.researchSlug) return;
           this.researchError = '';
@@ -1134,6 +1150,10 @@
           const board = this.researchBoard;
           if (!board) return '';
           const groups = this.researchGroups();
+          if (board.auto && board.solution) {
+            return board.best ? 'A conclusion is ready to review.' : 'The branches are closed. No conclusion was supported.';
+          }
+          if (board.auto && groups.testing.length) return 'Autonomous. Checking: ' + groups.testing[0].statement;
           const ideas = groups.waiting.filter((node) => node.status === 'proposed').length;
           const review = groups.waiting.filter((node) => node.needs_review && node.status !== 'proposed').length;
           if (review && ideas) return 'Keep each idea you want checked. A finished result is also waiting.';
