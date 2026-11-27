@@ -26,8 +26,8 @@ foreach (['sql', 'table', 'columns', 'database', 'filename'] as $banned) {
 }
 
 $action = strtolower(trim((string)($args['action'] ?? '')));
-if (!in_array($action, ['mission', 'add', 'next', 'commit', 'review', 'status', 'board', 'active'], true)) {
-    research_out(['message' => 'action is mission, add, next, commit, review, status, board, or active.'], 1);
+if (!in_array($action, ['mission', 'add', 'next', 'commit', 'review', 'idea', 'status', 'board', 'active'], true)) {
+    research_out(['message' => 'action is mission, add, next, commit, review, idea, status, board, or active.'], 1);
 }
 
 if ($action === 'mission') {
@@ -61,6 +61,9 @@ if ($action === 'commit') {
 }
 if ($action === 'review') {
     research_review($db, $slug, $args);
+}
+if ($action === 'idea') {
+    research_idea($db, $slug, $args);
 }
 if ($action === 'board') {
     research_out(research_board($db, $slug));
@@ -219,7 +222,7 @@ function research_next(PDO $db, string $slug): void
         research_out([
             'name' => $slug,
             'stage' => 'propose',
-            'message' => 'No hypotheses yet. Commit kind reflect with hypotheses, a list of at most three. Each item is {"statement":"one sentence","status":"proposed","parent_id":0}. Do not ingest.',
+            'message' => 'No hypotheses yet. Commit kind reflect with hypotheses, a list of at most three. Each item is {"statement":"one to four words","status":"proposed","parent_id":0}. A root is a short title of that direction, not a sentence. Do not ingest.',
         ]);
     }
     if ((int)$view['proposed'] > 0 && (int)$view['testing'] === 0) {
@@ -316,11 +319,17 @@ function research_review(PDO $db, string $slug, array $args): void
     if (strlen($text) > 400) {
         research_out(['message' => 'The hypothesis statement is too long.'], 1);
     }
+    if ($statement !== '' && (int)$row['parent_id'] === 0 && research_title_words($text) > 4) {
+        research_out(['message' => 'A direction title is one to four words.'], 1);
+    }
     $note = $decision === 'parked' ? '' : ($hasDirection ? (string)$direction : (string)$row['direction']);
     if (strlen($note) > 300) {
         research_out(['message' => 'Shorten the direction to 300 characters.'], 1);
     }
-    $flag = $decision === '' && $statement === '' ? (int)$row['needs_review'] : 0;
+    $flag = (int)$row['needs_review'];
+    if ($decision !== '') {
+        $flag = 0;
+    }
     $db->prepare('UPDATE hypotheses SET status = ?, statement = ?, direction = ?, needs_review = ? WHERE id = ?')->execute([$status, $text, $note, $flag, $id]);
     if ($decision === 'testing' && (string)$row['status'] !== 'testing') {
         $meta = research_meta($db);
@@ -340,6 +349,50 @@ function research_review(PDO $db, string $slug, array $args): void
         'name' => $slug,
         'id' => $id,
         'message' => $message,
+        'view' => research_status_view($db),
+    ]);
+}
+
+function research_title_words(string $statement): int
+{
+    $parts = preg_split('/\s+/u', trim($statement)) ?: [];
+    $count = 0;
+    foreach ($parts as $part) {
+        if ($part !== '') {
+            $count++;
+        }
+    }
+    return $count;
+}
+
+function research_idea(PDO $db, string $slug, array $args): void
+{
+    $statement = trim((string)($args['statement'] ?? ''));
+    $parentId = (int)($args['parent_id'] ?? 0);
+    if ($statement === '') {
+        research_out(['message' => 'Write the idea.'], 1);
+    }
+    if (strlen($statement) > 400) {
+        research_out(['message' => 'Shorten it to 400 characters.'], 1);
+    }
+    if ($parentId < 0) {
+        research_out(['message' => 'Pass the parent idea.'], 1);
+    }
+    if ($parentId === 0 && research_title_words($statement) > 4) {
+        research_out(['message' => 'A direction title is one to four words.'], 1);
+    }
+    if ($parentId > 0) {
+        $parent = research_one($db, 'SELECT id FROM hypotheses WHERE id = ?', [$parentId]);
+        if (!$parent) {
+            research_out(['message' => 'No hypothesis #' . $parentId . '.'], 1);
+        }
+    }
+    $db->prepare('INSERT INTO hypotheses (statement, status, confidence, claim_ids, falsification, needs_review, parent_id, insight, direction, inherited) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)')
+        ->execute([$statement, 'proposed', 'low', '', '', $parentId, '', '', '']);
+    research_out([
+        'name' => $slug,
+        'id' => (int)$db->lastInsertId(),
+        'message' => 'Idea added.',
         'view' => research_status_view($db),
     ]);
 }
@@ -603,6 +656,9 @@ function research_commit_reflect(PDO $db, array $args): array
             if ($parentId < 0) {
                 throw new InvalidArgumentException('parent_id is the parent hypothesis, or 0 for a root.');
             }
+            if ($parentId === 0 && research_title_words($statement) > 4) {
+                throw new InvalidArgumentException('A root is a short title of one to four words, not a sentence.');
+            }
             research_lesson_clash($db, $statement, $falseText, $parentId);
             if ($parentId > 0) {
                 $parent = research_one($db, 'SELECT * FROM hypotheses WHERE id = ?', [$parentId]);
@@ -779,7 +835,7 @@ function research_reflect_packet(PDO $db, string $slug): array
         ],
         'message' => research_search_due($db)
             ? 'These hypotheses are approved. For each testing hypothesis, add falsification queries, up to five in total. A query is a source to fetch next. Do not add a new hypothesis in this pass. Then stop.'
-            : 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A root is a direction. A child refines, corrects, or extends its parent and is a claim a source can check. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That lesson is carried up the tree. Do not read a paper in this pass.',
+            : 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A root is a short title of one to four words. A child refines, corrects, or extends its parent and is a claim a source can check. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That lesson is carried up the tree. Do not read a paper in this pass.',
     ];
 }
 
@@ -806,7 +862,7 @@ function research_status_text(PDO $db, string $slug): string
     $view = research_status_view($db);
     $lines = ['Mission: ' . $view['title'], 'Question: ' . $view['question'], 'Slug: ' . $slug];
     if ($view['lines'] === []) {
-        $lines[] = 'Hypotheses: none yet. The researcher commits kind reflect. Each item is {"statement":"one sentence","status":"proposed","parent_id":0}. At most three.';
+        $lines[] = 'Hypotheses: none yet. The researcher commits kind reflect. Each item is {"statement":"one to four words","status":"proposed","parent_id":0}. A root is a short title, not a sentence. At most three.';
     } else {
         $lines[] = 'Hypotheses:';
         foreach ($view['lines'] as $line) {

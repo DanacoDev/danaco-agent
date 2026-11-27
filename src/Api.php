@@ -32,6 +32,7 @@ class Api
         $router->add('GET', '#^/api/research/board$#', $this->guard(fn() => $this->researchBoard()));
         $router->add('POST', '#^/api/research/mission$#', $this->guard(fn() => $this->researchMission()));
         $router->add('POST', '#^/api/research/review$#', $this->guard(fn() => $this->researchReview()));
+        $router->add('POST', '#^/api/research/idea$#', $this->guard(fn() => $this->researchIdea()));
         $router->add('POST', '#^/api/research/run$#', $this->guard(fn() => $this->researchRun()));
         $router->add('POST', '#^/api/research/stop$#', $this->guard(fn() => $this->researchStop()));
         $router->add('POST', '#^/api/research/delete$#', $this->guard(fn() => $this->researchDelete()));
@@ -376,6 +377,26 @@ class Api
             $args['direction'] = trim((string)$body['direction']);
         }
         $payload = $this->researchCall($projectId, $args);
+        if ($payload === null) {
+            return;
+        }
+        $this->json($payload);
+    }
+
+    private function researchIdea(): void
+    {
+        $body = $this->input();
+        $projectId = (int)($body['project_id'] ?? 0);
+        $slug = $this->researchSlug((string)($body['name'] ?? ''));
+        if ($slug === null) {
+            return;
+        }
+        $payload = $this->researchCall($projectId, [
+            'action' => 'idea',
+            'name' => $slug,
+            'parent_id' => (int)($body['parent_id'] ?? 0),
+            'statement' => trim((string)($body['statement'] ?? '')),
+        ]);
         if ($payload === null) {
             return;
         }

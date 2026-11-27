@@ -192,6 +192,12 @@
           researchSelected: 0,
           researchDirection: '',
           researchDirectionFocused: false,
+          researchStatement: '',
+          researchEditId: 0,
+          researchEditText: '',
+          researchIdeaOpen: false,
+          researchIdeaParent: 0,
+          researchIdeaText: '',
           researchZoom: 1,
           researchPanning: null,
           researchPoll: 0,
@@ -1064,6 +1070,7 @@
           const testing = nodes.filter((node) => node.status === 'testing');
           const proposed = nodes.filter((node) => node.status === 'proposed');
           const conclusions = nodes.filter((node) => node.status === 'supported' || node.status === 'narrowed');
+          const parked = nodes.filter((node) => node.status === 'parked');
           const results = nodes.filter((node) => node.status === 'refuted' || node.status === 'parked');
           const waiting = nodes.filter((node) => node.needs_review);
           if (!testing.length) {
@@ -1071,13 +1078,13 @@
               if (!waiting.some((item) => item.id === node.id)) waiting.push(node);
             });
           }
-          return { testing: testing, proposed: proposed, conclusions: conclusions, results: results, waiting: waiting };
+          return { testing: testing, proposed: proposed, parked: parked, conclusions: conclusions, results: results, waiting: waiting };
         },
         researchDashTabs() {
           const groups = this.researchGroups();
           return [
             { id: 'review', label: 'New ideas to review', count: groups.proposed.length },
-            { id: 'ideas', label: 'Ideas', count: groups.proposed.length + groups.testing.length },
+            { id: 'ideas', label: 'Ideas', count: groups.testing.length + groups.parked.length },
             { id: 'conclusions', label: 'Conclusions', count: groups.conclusions.length },
             { id: 'results', label: 'Results', count: groups.results.length }
           ];
@@ -1087,11 +1094,11 @@
           if (this.researchDash === 'review') return groups.proposed;
           if (this.researchDash === 'conclusions') return groups.conclusions;
           if (this.researchDash === 'results') return groups.results;
-          return groups.testing.concat(groups.proposed);
+          return groups.testing.concat(groups.parked);
         },
         researchDashEmpty() {
           if (this.researchDash === 'review') return 'No new ideas to review.';
-          if (this.researchDash === 'ideas') return 'No ideas yet. They show up after the next pass.';
+          if (this.researchDash === 'ideas') return 'No ideas yet. Keep or park one and it shows up here.';
           if (this.researchDash === 'conclusions') return 'No conclusion yet. Findings that hold up show up here.';
           if (this.researchDash === 'results') return 'Nothing has been ruled out or parked yet.';
           return 'Nothing is waiting on you.';
@@ -1125,8 +1132,96 @@
           await this.reviewResearch(decision);
         },
         selectResearchNode(node) {
+          this.researchIdeaOpen = false;
           this.researchSelected = node.id;
           if (!this.researchDirectionFocused) this.researchDirection = node.direction || '';
+          this.researchStatement = node.statement || '';
+        },
+        researchBranchTitle(item) {
+          const nodes = this.researchNodes();
+          const byId = {};
+          nodes.forEach((node) => { byId[node.id] = node; });
+          let node = byId[item.id];
+          if (!node || !node.parent_id) return '';
+          let guard = 0;
+          while (node && node.parent_id && byId[node.parent_id] && guard < 20) {
+            node = byId[node.parent_id];
+            guard += 1;
+          }
+          return node && node.id !== item.id ? (node.statement || '') : '';
+        },
+        beginResearchEdit(item) {
+          this.researchEditId = item.id;
+          this.researchEditText = item.statement || '';
+          this.researchError = '';
+        },
+        async saveResearchWording(id, text) {
+          if (this.researchBusy || !id || id === 'mission') return;
+          this.researchError = '';
+          this.researchBusy = true;
+          try {
+            await this.api('/api/research/review', {
+              method: 'POST',
+              body: {
+                project_id: this.projectId,
+                name: this.researchSlug,
+                id: id,
+                statement: text
+              }
+            });
+            this.researchEditId = 0;
+            this.researchStatement = text;
+            await this.loadResearchBoard();
+          } catch (error) {
+            this.researchError = error.message;
+          } finally {
+            this.researchBusy = false;
+          }
+        },
+        startResearchIdea(node) {
+          this.researchSelected = 0;
+          this.researchIdeaParent = node && node.goal ? 'mission' : (node ? node.id : 'mission');
+          this.researchIdeaText = '';
+          this.researchIdeaOpen = true;
+          this.researchError = '';
+        },
+        closeResearchIdea() {
+          this.researchIdeaOpen = false;
+          this.researchIdeaText = '';
+          this.researchError = '';
+        },
+        async saveResearchIdea() {
+          if (this.researchBusy || !this.researchSlug) return;
+          const text = String(this.researchIdeaText || '').trim();
+          if (text === '') {
+            this.researchError = 'Write the idea.';
+            return;
+          }
+          const parent = this.researchIdeaParent === 'mission' ? 0 : Number(this.researchIdeaParent) || 0;
+          if (parent === 0 && text.split(/\s+/).filter(Boolean).length > 4) {
+            this.researchError = 'A direction title is one to four words.';
+            return;
+          }
+          this.researchError = '';
+          this.researchBusy = true;
+          try {
+            await this.api('/api/research/idea', {
+              method: 'POST',
+              body: {
+                project_id: this.projectId,
+                name: this.researchSlug,
+                parent_id: parent,
+                statement: text
+              }
+            });
+            this.researchIdeaOpen = false;
+            this.researchIdeaText = '';
+            await this.loadResearchBoard();
+          } catch (error) {
+            this.researchError = error.message;
+          } finally {
+            this.researchBusy = false;
+          }
         },
         selectResearchNodeId(id) {
           const node = this.researchMap().nodes.find((item) => item.id === id);

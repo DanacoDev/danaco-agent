@@ -832,8 +832,10 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
 .research-dash .count { margin-left: 6px; }
 .research-cards { display: flex; flex-direction: column; gap: 10px; }
 .research-card { position: relative; padding: 12px 14px; min-height: 0; }
+.research-card:has(.research-actions) .research-branch,
 .research-card:has(.research-actions) h3,
-.research-card:has(.research-actions) h3 + p { padding-right: 156px; }
+.research-card:has(.research-actions) .research-edit,
+.research-card:has(.research-actions) h3 + p { padding-right: 220px; }
 .research-card .research-actions { position: absolute; top: 12px; right: 14px; margin: 0; flex-wrap: nowrap; }
 .research-card h3 { margin: 0 0 6px; font-size: 1rem; }
 .research-card h3 button { background: transparent; border: 0; padding: 0; text-align: left; color: inherit; font: inherit; font-weight: 650; }
@@ -864,6 +866,18 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
   padding: 10px 12px; text-align: left; background: var(--panel); border: 1px solid var(--line);
   border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; cursor: pointer;
 }
+.research-node-wrap { position: absolute; }
+.research-node-wrap .research-node { inset: 0; width: auto; height: auto; }
+.research-add {
+  position: absolute; right: -14px; top: 50%; z-index: 2; transform: translateY(-50%);
+  width: 28px; height: 28px; border-radius: 999px; border: 1px solid var(--line);
+  background: #fff; color: var(--gold-text); font-size: 1.15rem; line-height: 1;
+}
+.research-branch {
+  display: inline-block; margin: 0 0 8px; padding: 2px 8px; border-radius: 999px;
+  background: rgba(232, 184, 109, 0.35); color: var(--gold-ink); font-size: 0.75rem; font-weight: 650;
+}
+.research-edit { width: 100%; margin: 0 0 8px; }
 .research-node strong {
   font-size: 0.86rem; font-weight: 650; line-height: 1.3;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;

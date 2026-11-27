@@ -567,14 +567,23 @@ header('X-Danaco: 1');
                 <div class="research-cards">
                   <p v-if="!researchDashItems().length" class="muted">{{ researchDashEmpty() }}</p>
                   <article v-for="item in researchDashItems()" :key="item.id" class="research-card panel">
-                    <h3><button type="button" @click="selectResearchNodeId(item.id)">{{ item.statement }}</button></h3>
+                    <p v-if="researchBranchTitle(item)" class="research-branch">{{ researchBranchTitle(item) }}</p>
+                    <textarea v-if="researchEditId === item.id" class="research-edit" v-model="researchEditText" rows="3"></textarea>
+                    <h3 v-else><button type="button" @click="selectResearchNodeId(item.id)">{{ item.statement }}</button></h3>
                     <p class="muted"><span :class="{ 'is-exploring': item.status === 'testing' }">{{ item.status === 'testing' ? 'Exploring' : item.status }}</span><template v-if="item.confidence"> · {{ item.confidence }}</template></p>
                     <p v-if="item.insight">{{ item.insight }}</p>
-                    <p v-else-if="item.needs_review" class="muted">This result is waiting for you.</p>
-                    <div v-if="researchDash === 'review' || researchDash === 'ideas' || item.needs_review" class="research-actions">
-                      <button v-if="item.status === 'proposed'" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearchNode(item.id, 'testing')">Keep</button>
-                      <button v-else-if="item.needs_review" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearchNode(item.id, 'noted')">Keep</button>
-                      <button v-if="item.needs_review || item.status === 'proposed' || item.status === 'testing'" class="btn" type="button" :disabled="researchBusy" title="Park this node and the open nodes under it" @click="reviewResearchNode(item.id, 'parked')">Park</button>
+                    <p v-else-if="item.needs_review && researchEditId !== item.id" class="muted">This result is waiting for you.</p>
+                    <div v-if="item.status === 'proposed' || item.status === 'testing' || item.needs_review" class="research-actions">
+                      <template v-if="researchEditId === item.id">
+                        <button class="btn btn-gold" type="button" :disabled="researchBusy" @click="saveResearchWording(item.id, researchEditText)">Save</button>
+                        <button class="btn" type="button" :disabled="researchBusy" @click="researchEditId = 0">Cancel</button>
+                      </template>
+                      <template v-else>
+                        <button v-if="item.status === 'proposed'" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearchNode(item.id, 'testing')">Keep</button>
+                        <button v-else-if="item.needs_review" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearchNode(item.id, 'noted')">Keep</button>
+                        <button v-if="item.needs_review || item.status === 'proposed' || item.status === 'testing'" class="btn" type="button" :disabled="researchBusy" title="Park this node and the open nodes under it" @click="reviewResearchNode(item.id, 'parked')">Park</button>
+                        <button v-if="item.status === 'proposed'" class="btn" type="button" :disabled="researchBusy" @click="beginResearchEdit(item)">Edit</button>
+                      </template>
                     </div>
                   </article>
                 </div>
@@ -598,19 +607,33 @@ header('X-Danaco: 1');
                       <svg class="research-lines" :width="researchMap().width" :height="researchMap().height">
                         <path v-for="edge in researchMap().edges" :key="edge.id" :d="edge.d"></path>
                       </svg>
-                      <button v-for="node in researchMap().nodes" :key="node.id" type="button" class="research-node" :class="['is-' + node.status, { 'is-on': researchSelected === node.id, 'is-best': researchBoard.best && researchBoard.best.id === node.id }]" :style="{ left: node.x + 'px', top: node.y + 'px', width: node.w + 'px', height: node.h + 'px' }" @click.stop="selectResearchNode(node)">
-                        <span v-if="!node.goal" class="research-chip">{{ node.status }}</span>
-                        <strong>{{ node.statement }}</strong>
-                      </button>
+                      <div v-for="node in researchMap().nodes" :key="node.id" class="research-node-wrap" :style="{ left: node.x + 'px', top: node.y + 'px', width: node.w + 'px', height: node.h + 'px' }">
+                        <button type="button" class="research-node" :class="['is-' + node.status, { 'is-on': researchSelected === node.id, 'is-best': researchBoard.best && researchBoard.best.id === node.id }]" @click.stop="selectResearchNode(node)">
+                          <span v-if="!node.goal" class="research-chip">{{ node.status }}</span>
+                          <strong>{{ node.statement }}</strong>
+                        </button>
+                        <button class="research-add" type="button" aria-label="Add an idea" @click.stop="startResearchIdea(node)">+</button>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
-              <aside v-if="researchCurrent()" class="research-detail">
-                <button class="research-detail-close" type="button" aria-label="Close" @click="researchSelected = 0">
+              <aside v-if="researchIdeaOpen || researchCurrent()" class="research-detail">
+                <button class="research-detail-close" type="button" aria-label="Close" @click="researchIdeaOpen ? closeResearchIdea() : researchSelected = 0">
                   <svg class="ico" aria-hidden="true"><use href="#i-close"></use></svg>
                 </button>
-                <template v-if="researchCurrent().goal">
+                <template v-if="researchIdeaOpen">
+                  <p class="research-chip is-goal">{{ researchIdeaParent === 'mission' ? 'New direction' : 'New idea' }}</p>
+                  <label class="field">{{ researchIdeaParent === 'mission' ? 'Title' : 'Idea' }}
+                    <textarea v-model="researchIdeaText" rows="3" :placeholder="researchIdeaParent === 'mission' ? 'One to four words' : 'The idea to check on this branch'"></textarea>
+                  </label>
+                  <p v-if="researchError" class="form-error">{{ researchError }}</p>
+                  <div class="research-actions">
+                    <button class="btn btn-gold" type="button" :disabled="researchBusy" @click="saveResearchIdea">Add</button>
+                    <button class="btn" type="button" :disabled="researchBusy" @click="closeResearchIdea">Cancel</button>
+                  </div>
+                </template>
+                <template v-else-if="researchCurrent().goal">
                   <p class="research-chip is-goal">Goal</p>
                   <h3>{{ researchCurrent().statement }}</h3>
                   <p>{{ researchCurrent().question }}</p>
@@ -620,6 +643,10 @@ header('X-Danaco: 1');
                   <p class="research-chip" :class="'is-' + researchCurrent().status">{{ researchCurrent().status }} · {{ researchCurrent().confidence }}</p>
                   <h3>{{ researchCurrent().statement }}</h3>
                   <p class="muted">{{ researchCurrent().parent_id ? 'Parent #' + researchCurrent().parent_id : 'Goal' }} · #{{ researchCurrent().id }}</p>
+                  <label v-if="researchCurrent().status === 'proposed'" class="field">Wording
+                    <textarea v-model="researchStatement" rows="3" :placeholder="researchCurrent().parent_id ? 'The idea' : 'One to four words'"></textarea>
+                  </label>
+                  <button v-if="researchCurrent().status === 'proposed'" class="btn" type="button" :disabled="researchBusy" @click="saveResearchWording(researchCurrent().id, researchStatement)">Save wording</button>
                   <p v-if="researchCurrent().insight"><strong>Conclusion.</strong> {{ researchCurrent().insight }}</p>
                   <p v-else class="muted">No conclusion on this node yet.</p>
                   <p v-if="researchCurrent().inherited"><strong>From the branch.</strong> {{ researchCurrent().inherited }}</p>
