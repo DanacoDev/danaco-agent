@@ -1301,10 +1301,20 @@ class LLMClient
         $this->markCpu(true);
     }
 
+    private function allowsOffload(): bool
+    {
+        $vram = $this->hardware->gpuMemory();
+        $total = is_array($vram) ? (int)($vram['total_mb'] ?? 0) : 0;
+        return $total > 0 && $total < 8192;
+    }
+
     private function watchSplit(string $model): bool
     {
         if ($this->offloadStopped) {
             return true;
+        }
+        if ($this->allowsOffload()) {
+            return false;
         }
         if (microtime(true) < $this->splitNext) {
             return false;
@@ -1420,9 +1430,12 @@ class LLMClient
         $options = ['num_predict' => 1];
         $gpu = $this->gpuOptions($model, $this->hardware->effectiveContext('local'));
         if ($gpu === []) {
-            return false;
+            if (!$this->allowsOffload()) {
+                return false;
+            }
+        } else {
+            $options = array_merge($options, $gpu);
         }
-        $options = array_merge($options, $gpu);
         $payload = json_encode([
             'model' => $model,
             'prompt' => 'hi',

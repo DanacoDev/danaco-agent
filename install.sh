@@ -375,8 +375,12 @@ fi
 
 FAILSAFE_MODEL="qwen2.5:0.5b"
 SUGGESTED_MODE="local"
-if [[ "$VRAM_MB" -gt 0 ]]; then
-  SUGGESTED_MODEL="Maternion/sage-a1.5:35b-q4_K_M"
+gpu="$VRAM_MB"
+if [[ "$OS" == "Darwin" && "$(uname -m)" == "arm64" && "$gpu" -eq 0 ]]; then
+  gpu="$RAM_MB"
+fi
+if [[ "$gpu" -gt 0 ]]; then
+  SUGGESTED_MODEL="hf.co/unsloth/gemma-4-E4B-it-GGUF:gemma-4-E4B-it-Q4_K_M.gguf"
 elif [[ "$RAM_MB" -ge 7168 ]]; then
   SUGGESTED_MODEL="qwen3.5:9b-q4_K_M"
 else
