@@ -1504,7 +1504,7 @@ class AgentRuntime
             'That research task is fixed' => 'task rewrite',
             'Pass hypotheses, a list' => 'hypotheses',
             'A hypothesis is one statement' => 'hypotheses',
-            'Pass statement, one sentence' => 'hypotheses',
+            'Pass statement. A root is one to four words' => 'hypotheses',
             'A root is a short title' => 'hypotheses',
         ];
         foreach ($keys as $needle => $label) {

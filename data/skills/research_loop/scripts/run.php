@@ -222,7 +222,7 @@ function research_next(PDO $db, string $slug): void
         research_out([
             'name' => $slug,
             'stage' => 'propose',
-            'message' => 'No hypotheses yet. Commit kind reflect with hypotheses, a list of at most three. Each item is {"statement":"one to four words","status":"proposed","parent_id":0}. A root is a short title of that direction, not a sentence. Do not ingest.',
+            'message' => 'No hypotheses yet. Commit kind reflect. The list argument is hypotheses. At most three roots. Each one is {"statement":"one to four words","status":"proposed","parent_id":0}. A root is a short title of that direction, not a sentence. Do not ingest.',
         ]);
     }
     if ((int)$view['proposed'] > 0 && (int)$view['testing'] === 0) {
@@ -599,7 +599,7 @@ function research_hypothesis_text(array $item): string
 
 function research_commit_reflect(PDO $db, array $args): array
 {
-    $items = $args['hypotheses'] ?? $args['hypothesis'] ?? null;
+    $items = $args['hypotheses'] ?? $args['hypothesis'] ?? $args['items'] ?? null;
     if (is_string($items)) {
         $decoded = json_decode($items, true);
         $items = is_array($decoded) ? $decoded : null;
@@ -608,7 +608,7 @@ function research_commit_reflect(PDO $db, array $args): array
         $items = [$items];
     }
     if (!is_array($items)) {
-        throw new InvalidArgumentException('Pass hypotheses, a list. Each item is {"statement":"one sentence","status":"proposed"}.');
+        throw new InvalidArgumentException('Pass hypotheses, a list. The argument name is hypotheses. Each one is {"statement":"one to four words","status":"proposed","parent_id":0} for a root.');
     }
     $fresh = 0;
     foreach ($items as $item) {
@@ -636,7 +636,7 @@ function research_commit_reflect(PDO $db, array $args): array
             throw new InvalidArgumentException('Confidence is low, moderate, or high.');
         }
         if ($statement === '') {
-            throw new InvalidArgumentException('Pass statement, one sentence. Each hypothesis is {"statement":"one sentence","status":"proposed"}.');
+            throw new InvalidArgumentException('Pass statement. A root is one to four words. A child is one sentence.');
         }
         if (strlen($statement) > 400) {
             throw new InvalidArgumentException('Shorten the statement to 400 characters.');
@@ -862,7 +862,7 @@ function research_status_text(PDO $db, string $slug): string
     $view = research_status_view($db);
     $lines = ['Mission: ' . $view['title'], 'Question: ' . $view['question'], 'Slug: ' . $slug];
     if ($view['lines'] === []) {
-        $lines[] = 'Hypotheses: none yet. The researcher commits kind reflect. Each item is {"statement":"one to four words","status":"proposed","parent_id":0}. A root is a short title, not a sentence. At most three.';
+        $lines[] = 'Hypotheses: none yet. The researcher commits kind reflect. The list argument is hypotheses. Each one is {"statement":"one to four words","status":"proposed","parent_id":0}. A root is a short title, not a sentence. At most three.';
     } else {
         $lines[] = 'Hypotheses:';
         foreach ($view['lines'] as $line) {
