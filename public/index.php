@@ -545,7 +545,7 @@ header('X-Danaco: 1');
                 <button class="btn research-icon" :class="{ 'is-on': researchBoard && researchBoard.auto }" type="button" :aria-label="researchBoard && researchBoard.auto ? 'Autonomous on' : 'Autonomous'" :disabled="researchBusy || !researchSlug" @click="toggleResearchAuto">
                   <svg class="ico" aria-hidden="true"><use href="#i-flash"></use></svg>
                 </button>
-                <button class="btn research-icon" type="button" aria-label="Open tree" :disabled="!researchBoard" @click="researchTreeOpen = true">
+                <button class="btn research-icon" type="button" aria-label="Open tree" :disabled="!researchBoard" @click="openResearchTree">
                   <svg class="ico" aria-hidden="true"><use href="#i-research"></use></svg>
                 </button>
                 <button class="btn research-icon" type="button" aria-label="Delete" :disabled="researchBusy || !researchSlug" @click="deleteResearch">
@@ -557,7 +557,7 @@ header('X-Danaco: 1');
             <div v-if="researchBoard" class="research-body">
               <div class="research-main">
                 <article class="research-goal">
-                  <p>{{ researchBoard.question || researchBoard.title }}</p>
+                  <p class="research-brief">{{ researchBoard.question || researchBoard.title }}</p>
                   <p v-if="researchBoard.scope" class="muted">{{ researchBoard.scope }}</p>
                 </article>
                 <div class="research-progress">
@@ -608,7 +608,7 @@ header('X-Danaco: 1');
               </button>
               <div class="research-screen-bar">
                 <span class="research-zoom">
-                  <button type="button" @click="researchZoom = Math.max(0.55, Math.round((researchZoom - 0.15) * 100) / 100)">−</button>
+                  <button type="button" @click="researchZoom = Math.max(0.4, Math.round((researchZoom - 0.15) * 100) / 100)">−</button>
                   <button type="button" @click="researchZoom = Math.min(1.6, Math.round((researchZoom + 0.15) * 100) / 100)">+</button>
                 </span>
               </div>
@@ -622,7 +622,7 @@ header('X-Danaco: 1');
                       <div v-for="node in researchMap().nodes" :key="node.id" class="research-node-wrap" :style="{ left: node.x + 'px', top: node.y + 'px', width: node.w + 'px', height: node.h + 'px' }">
                         <div class="research-node" :class="['is-' + node.status, { 'is-on': researchSelected === node.id, 'is-open': researchNodeOpen(node), 'is-best': researchBoard.best && researchBoard.best.id === node.id }]" @click="selectResearchNode(node)">
                           <button type="button" class="research-node-hit" @click.stop="selectResearchNode(node)">
-                            <span v-if="!node.goal && node.status !== 'testing'" class="research-chip">{{ node.status }}</span>
+                            <span v-if="researchNodeOpen(node) && !node.goal && node.status !== 'testing'" class="research-chip">{{ node.status }}</span>
                             <span v-else-if="node.goal && researchNodeOpen(node)" class="research-chip is-goal">Goal</span>
                             <strong v-if="node.goal || !researchNodeOpen(node)">{{ node.statement }}</strong>
                           </button>
@@ -639,7 +639,7 @@ header('X-Danaco: 1');
                               </div>
                             </template>
                             <template v-else-if="node.goal">
-                              <p>{{ node.question }}</p>
+                              <p class="research-brief">{{ node.question }}</p>
                               <p v-if="node.scope" class="muted">{{ node.scope }}</p>
                             </template>
                             <template v-else>
@@ -696,6 +696,7 @@ header('X-Danaco: 1');
                 <h2>New mission</h2>
                 <label class="field">Short name<input v-model="researchForm.title" required></label>
                 <label class="field">Goal<textarea v-model="researchForm.question" rows="4" required placeholder="What this mission should find out"></textarea></label>
+                <label class="field">Requirements and limitations<textarea v-model="researchForm.limits" rows="3" placeholder="Cost, size, materials, or other limits the answer has to respect"></textarea></label>
                 <p class="form-error">{{ researchError }}</p>
                 <div class="view-actions">
                   <button class="btn btn-gold" type="submit" :disabled="researchBusy">Create mission</button>

@@ -188,7 +188,7 @@
           researchFormOpen: false,
           researchTreeOpen: false,
           researchDash: 'review',
-          researchForm: { title: '', question: '' },
+          researchForm: { title: '', question: '', limits: '' },
           researchSelected: 0,
           researchDirection: '',
           researchDirectionFocused: false,
@@ -868,6 +868,7 @@
           try {
             const data = await this.api('/api/research/board?project_id=' + this.projectId + '&name=' + encodeURIComponent(this.researchSlug));
             this.researchBoard = data;
+            if (data.auto && this.researchDash === 'review') this.researchDash = 'ideas';
             const ids = this.researchMap().nodes.map((node) => node.id);
             if (this.researchSelected && !ids.includes(this.researchSelected)) {
               this.researchSelected = 0;
@@ -892,15 +893,20 @@
           this.researchError = '';
           this.researchBusy = true;
           try {
+            let question = String(this.researchForm.question || '').trim();
+            const limits = String(this.researchForm.limits || '').trim();
+            if (limits !== '') {
+              question += '\n\nRequirements and limitations:\n' + limits;
+            }
             const data = await this.api('/api/research/mission', {
               method: 'POST',
               body: {
                 project_id: this.projectId,
                 title: this.researchForm.title,
-                question: this.researchForm.question
+                question: question
               }
             });
-            this.researchForm = { title: '', question: '' };
+            this.researchForm = { title: '', question: '', limits: '' };
             this.researchFormOpen = false;
             this.researchSlug = data.name || '';
             await this.loadResearch();
@@ -1023,9 +1029,9 @@
           const roots = board ? [mission] : [];
           const nodes = [];
           const width = 232;
-          const height = 96;
-          const gapX = 84;
-          const gapY = 36;
+          const height = 78;
+          const gapX = 68;
+          const gapY = 22;
           const pad = 28;
           let row = 0;
           const place = (node, depth) => {
@@ -1121,12 +1127,15 @@
         },
         researchDashTabs() {
           const groups = this.researchGroups();
-          return [
-            { id: 'review', label: 'New ideas to review', count: groups.proposed.length },
+          const tabs = [
             { id: 'ideas', label: 'Ideas', count: groups.testing.length + groups.parked.length },
             { id: 'conclusions', label: 'Conclusions', count: groups.conclusions.length },
             { id: 'results', label: 'Results', count: groups.results.length }
           ];
+          if (!(this.researchBoard && this.researchBoard.auto)) {
+            tabs.unshift({ id: 'review', label: 'New ideas to review', count: groups.proposed.length });
+          }
+          return tabs;
         },
         researchDashItems() {
           const groups = this.researchGroups();
@@ -1371,6 +1380,49 @@
           } finally {
             if (!this.researchAsk || this.researchAsk.id === id) this.researchAskBusy = false;
           }
+        },
+        openResearchTree() {
+          this.researchTreeOpen = true;
+          this.$nextTick(() => {
+            const board = this.$refs.researchCanvas;
+            const map = this.researchMap();
+            const nodes = map.nodes || [];
+            if (!board || !nodes.length) return;
+            let minX = Infinity;
+            let minY = Infinity;
+            let maxX = 0;
+            let maxY = 0;
+            nodes.forEach((node) => {
+              minX = Math.min(minX, node.x);
+              minY = Math.min(minY, node.y);
+              maxX = Math.max(maxX, node.x + node.w);
+              maxY = Math.max(maxY, node.y + node.h);
+            });
+            const contentW = Math.max(1, maxX - minX);
+            const contentH = Math.max(1, maxY - minY);
+            const availW = Math.max(1, board.clientWidth - 80);
+            const availH = Math.max(1, board.clientHeight - 80);
+            const fit = Math.min(availW / contentW, availH / contentH);
+            const steps = [1, 0.85, 0.7, 0.55, 0.4];
+            let zoom = 0.4;
+            if (fit >= 1) {
+              zoom = 1;
+            } else {
+              for (let i = 0; i < steps.length; i++) {
+                if (steps[i] <= fit + 0.001) {
+                  zoom = steps[i];
+                  break;
+                }
+              }
+            }
+            this.researchZoom = zoom;
+            this.$nextTick(() => {
+              const cx = (minX + maxX) / 2;
+              const cy = (minY + maxY) / 2;
+              board.scrollLeft = Math.max(0, cx * zoom - board.clientWidth / 2);
+              board.scrollTop = Math.max(0, cy * zoom - board.clientHeight / 2);
+            });
+          });
         },
         selectResearchNodeId(id) {
           const node = this.researchMap().nodes.find((item) => item.id === id);

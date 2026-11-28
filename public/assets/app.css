@@ -840,6 +840,7 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
   padding: 16px;
 }
 .research-goal p { margin: 0; }
+.research-brief { white-space: pre-wrap; }
 .research-goal .muted { margin-top: 6px; }
 .research-pick { display: flex; align-items: center; min-width: 0; flex: 1 1 220px; max-width: 420px; }
 .research-pick select {
@@ -949,7 +950,7 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
 .research-node-wrap:has(.is-open) { z-index: 4; }
 .research-node-wrap .research-node { inset: 0; width: auto; height: auto; }
 .research-add {
-  position: absolute; right: -14px; top: 48px; z-index: 2; transform: translateY(-50%);
+  position: absolute; right: -14px; top: 50%; z-index: 2; transform: translateY(-50%);
   width: 28px; height: 28px; border-radius: 999px; border: 1px solid var(--line);
   background: #fff; color: var(--gold-text); font-size: 1.15rem; line-height: 1;
 }
@@ -966,7 +967,7 @@ a.file-cite-name { color: inherit; text-decoration: underline; }
 .research-edit { width: 100%; margin: 0 0 8px; }
 .research-node strong {
   font-size: 0.86rem; font-weight: 650; line-height: 1.3;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 .research-node.is-on { box-shadow: inset 0 0 0 2px var(--gold), var(--shadow); }
 .research-node.is-best { border-color: var(--ok); }
