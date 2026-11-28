@@ -1050,17 +1050,15 @@
             node.h = height;
             if (node.depth > maxDepth) maxDepth = node.depth;
           });
+          let mapW = pad + (maxDepth + 1) * (width + gapX) + pad;
+          let mapH = Math.max(pad * 2 + height, pad + row * (height + gapY));
           const open = this.researchSelected ? nodes.find((node) => node.id === this.researchSelected) : null;
           if (open) {
             const idea = this.researchIdeaOpen && this.researchIdeaParent === open.id;
             open.w = 320;
             open.h = this.researchOpenHeight > height ? this.researchOpenHeight : (idea ? 220 : (open.goal ? 160 : 220));
-            const extraW = open.w - width;
-            const extraH = open.h - height;
-            nodes.forEach((node) => {
-              if (node.depth > open.depth) node.x += extraW;
-              if (node.id !== open.id && node.y >= open.y + height - 1) node.y += extraH;
-            });
+            mapW = Math.max(mapW, open.x + open.w + pad);
+            mapH = Math.max(mapH, open.y + open.h + pad);
           }
           const byId = {};
           nodes.forEach((node) => { byId[node.id] = node; });
@@ -1070,7 +1068,7 @@
             if (node.goal) return;
             const parent = byId[node.parent_id] || byId.mission;
             if (!parent) return;
-            const x1 = parent.x + parent.w;
+            const x1 = parent.x + width;
             const y1 = parent.y + anchor;
             const x2 = node.x;
             const y2 = node.y + anchor;
@@ -1080,13 +1078,11 @@
               d: 'M ' + x1 + ' ' + y1 + ' C ' + (x1 + bend) + ' ' + y1 + ', ' + (x2 - bend) + ' ' + y2 + ', ' + x2 + ' ' + y2
             });
           });
-          const extraW = open ? open.w - width : 0;
-          const extraH = open ? open.h - height : 0;
           return {
             nodes: nodes,
             edges: edges,
-            width: pad + (maxDepth + 1) * (width + gapX) + extraW + pad,
-            height: Math.max(pad * 2 + height, pad + row * (height + gapY)) + extraH
+            width: mapW,
+            height: mapH
           };
         },
         researchCurrent() {
