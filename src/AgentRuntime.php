@@ -1513,7 +1513,7 @@ class AgentRuntime
             'A new mission is created by the user' => 'mission',
             'already has children' => 'wording',
             'The conclusion uses an existing idea' => 'conclude',
-            'Settle or park the open ideas' => 'conclude',
+            'Settle one existing idea' => 'conclude',
         ];
         foreach ($keys as $needle => $label) {
             if (!str_contains($result, $needle)) {

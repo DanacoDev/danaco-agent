@@ -263,9 +263,6 @@ function research_next(PDO $db, string $slug): void
         research_out(research_conclude_packet($db, $slug));
     }
     if ((int)$meta['ingest_since_reflect'] >= 10) {
-        if (research_auto_on($db) && research_count($db, 'hypotheses') >= 9) {
-            research_out(research_conclude_packet($db, $slug));
-        }
         research_out(research_reflect_packet($db, $slug));
     }
     $row = research_queue_row($db, 'ingest');
@@ -276,13 +273,10 @@ function research_next(PDO $db, string $slug): void
         research_out(research_packet($db, $slug, $stage, $row));
     }
     if ((int)$meta['ingest_since_reflect'] > 0 || research_search_due($db)) {
-        if (research_auto_on($db) && research_count($db, 'hypotheses') >= 9 && !research_search_due($db)) {
-            research_out(research_conclude_packet($db, $slug));
-        }
         research_out(research_reflect_packet($db, $slug));
     }
     if (research_auto_on($db) && (int)$view['testing'] > 0) {
-        research_out(research_conclude_packet($db, $slug));
+        research_out(research_reflect_packet($db, $slug));
     }
     research_out([
         'name' => $slug,
@@ -350,12 +344,15 @@ function research_review(PDO $db, string $slug, array $args): void
     if (strlen($note) > 300) {
         research_out(['message' => 'Shorten the direction to 300 characters.'], 1);
     }
+    if ($decision === '' && $note !== '' && (string)$row['status'] === 'parked') {
+        $status = 'testing';
+    }
     $flag = (int)$row['needs_review'];
     if ($decision !== '') {
         $flag = 0;
     }
     $db->prepare('UPDATE hypotheses SET status = ?, statement = ?, direction = ?, needs_review = ? WHERE id = ?')->execute([$status, $text, $note, $flag, $id]);
-    if ($decision === 'testing' && (string)$row['status'] !== 'testing') {
+    if ($status === 'testing' && (string)$row['status'] !== 'testing') {
         $meta = research_meta($db);
         $queued = research_count_where($db, "SELECT COUNT(*) FROM queue WHERE status != 'done'");
         if ((int)$meta['ingest_since_reflect'] === 0 && $queued === 0) {
@@ -674,7 +671,7 @@ function research_commit_reflect(PDO $db, array $args): array
     }
     $auto = research_auto_on($db);
     $conclude = research_auto_conclude($db);
-    if ($auto && ($conclude || research_count($db, 'hypotheses') >= 9) && $fresh > 0) {
+    if ($auto && $conclude && $fresh > 0) {
         throw new InvalidArgumentException('The conclusion uses an existing idea. Do not add another.');
     }
     if ($conclude) {
@@ -684,12 +681,12 @@ function research_commit_reflect(PDO $db, array $args): array
                 continue;
             }
             $nextStatus = strtolower(trim((string)($item['status'] ?? '')));
-            if ((int)($item['id'] ?? 0) > 0 && in_array($nextStatus, ['supported', 'narrowed', 'refuted', 'parked'], true)) {
+            if ((int)($item['id'] ?? 0) > 0 && in_array($nextStatus, ['supported', 'narrowed', 'refuted'], true)) {
                 $moves = true;
             }
         }
         if (!$moves) {
-            throw new InvalidArgumentException('Settle or park the open ideas. One idea becomes supported or narrowed, and its insight is the conclusion or the design. Park the rest.');
+            throw new InvalidArgumentException('Settle one existing idea. Set it to supported or narrowed and pass its insight. Leave every other branch as it is.');
         }
     }
     $review = false;
@@ -708,7 +705,8 @@ function research_commit_reflect(PDO $db, array $args): array
         if (!in_array($confidence, ['low', 'moderate', 'high'], true)) {
             throw new InvalidArgumentException('Confidence is low, moderate, or high.');
         }
-        if ($statement === '') {
+        $id = (int)($item['id'] ?? 0);
+        if ($statement === '' && $id <= 0) {
             throw new InvalidArgumentException('Pass statement. A root is one to four words. A child is one sentence.');
         }
         if (strlen($statement) > 400) {
@@ -720,9 +718,11 @@ function research_commit_reflect(PDO $db, array $args): array
         if (strlen($insight) > 500) {
             throw new InvalidArgumentException('Shorten the insight to 500 characters.');
         }
-        $id = (int)($item['id'] ?? 0);
         if ($id <= 0) {
             if ($status !== 'proposed') {
+                if (research_count($db, 'hypotheses') > 0) {
+                    throw new InvalidArgumentException('The conclusion uses an existing idea. Pass its id. Do not add another.');
+                }
                 throw new InvalidArgumentException('A new hypothesis is proposed. Review sets it to testing.');
             }
             $parentId = (int)($item['parent_id'] ?? 0);
@@ -738,8 +738,11 @@ function research_commit_reflect(PDO $db, array $args): array
                 if (!$parent) {
                     throw new InvalidArgumentException('No parent hypothesis #' . $parentId . '.');
                 }
-                if (!in_array((string)$parent['status'], ['testing', 'supported', 'narrowed'], true)) {
-                    throw new InvalidArgumentException('A child hangs from a hypothesis that is testing, supported, or narrowed.');
+                $parentStatus = (string)$parent['status'];
+                $parentDirected = trim((string)$parent['direction']) !== '';
+                $directedSettle = $parentDirected && in_array($parentStatus, ['supported', 'narrowed', 'refuted', 'parked'], true);
+                if ($parentStatus !== 'testing' && !$directedSettle) {
+                    throw new InvalidArgumentException('A child hangs from a testing hypothesis. A settled or parked hypothesis needs a direction.');
                 }
                 if (research_title_words($statement) <= 4) {
                     throw new InvalidArgumentException('A child is one full sentence, not a short title.');
@@ -761,6 +764,9 @@ function research_commit_reflect(PDO $db, array $args): array
         $current = research_one($db, 'SELECT * FROM hypotheses WHERE id = ?', [$id]);
         if (!$current) {
             throw new InvalidArgumentException('No hypothesis #' . $id . '.');
+        }
+        if ($statement === '') {
+            $statement = (string)$current['statement'];
         }
         $kids = research_one($db, 'SELECT COUNT(*) AS n FROM hypotheses WHERE parent_id = ?', [$id]);
         if ((int)($kids['n'] ?? 0) > 0) {
@@ -789,17 +795,6 @@ function research_commit_reflect(PDO $db, array $args): array
             ->execute([$statement, $status, $confidence, $claimIds, $falseText, $flag, $insight, $id]);
         if ($auto && $status === 'parked' && (string)$current['status'] !== 'parked') {
             research_park_branch($db, $id);
-        }
-    }
-    if ($conclude) {
-        $kept = (int)$db->query("SELECT COUNT(*) FROM hypotheses WHERE status IN ('supported', 'narrowed')")->fetchColumn();
-        if ($kept > 0) {
-            $left = $db->query("SELECT id FROM hypotheses WHERE status = 'testing'")->fetchAll(PDO::FETCH_ASSOC);
-            $park = $db->prepare("UPDATE hypotheses SET status = 'parked', needs_review = 0, direction = '' WHERE id = ?");
-            foreach ($left as $row) {
-                $park->execute([(int)$row['id']]);
-                research_park_branch($db, (int)$row['id']);
-            }
         }
     }
     foreach (array_keys($parents) as $parentId) {
@@ -948,7 +943,7 @@ function research_reflect_packet(PDO $db, string $slug): array
         ],
         'message' => research_search_due($db)
             ? 'These hypotheses are approved. For each testing hypothesis, add falsification queries, up to five in total. A query is searched with arxiv and the web on the next pass. Do not add a new hypothesis in this pass. Then stop.'
-            : 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A child is one full sentence, not a short title. The one-to-four-word title is only for the first roots. A child refines, corrects, or extends its parent and is a claim a source can check. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That lesson is carried up the tree. Do not read a paper in this pass.',
+            : 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A child is one full sentence, not a short title. The one-to-four-word title is only for the first roots. A child refines, corrects, or extends its parent and is a claim a source can check. A new child hangs from a testing hypothesis. A settled or parked hypothesis gets a child only when it has a direction. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That settles only that node. Every other testing branch stays testing. That lesson is carried up the tree. Do not read a paper in this pass.',
     ];
 }
 
@@ -1189,7 +1184,7 @@ function research_auto(PDO $db, string $slug, array $args): void
         'name' => $slug,
         'auto' => $flag === 1,
         'message' => $flag === 1
-            ? 'Mission ' . $slug . ' keeps its own ideas and stops at a conclusion.'
+            ? 'Mission ' . $slug . ' keeps its own ideas. A settled branch stops. The other branches keep going.'
             : 'Mission ' . $slug . ' waits for ideas to be kept or parked.',
     ]);
 }
@@ -1226,7 +1221,15 @@ function research_auto_closed(PDO $db): bool
     if ((int)$view['hypotheses'] < 1 || (int)$view['testing'] > 0 || (int)$view['proposed'] > 0) {
         return false;
     }
-    return (int)$view['ingest'] === 0 && (int)$view['reevaluate'] === 0;
+    if ((int)$view['ingest'] > 0 || (int)$view['reevaluate'] > 0) {
+        return false;
+    }
+    foreach ($view['lines'] as $line) {
+        if (in_array((string)$line['status'], ['supported', 'narrowed'], true)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 function research_auto_conclude(PDO $db): bool
@@ -1235,20 +1238,13 @@ function research_auto_conclude(PDO $db): bool
         return false;
     }
     $view = research_status_view($db);
-    if ((int)$view['testing'] < 1 || (int)$view['ingest'] > 0 || (int)$view['reevaluate'] > 0) {
+    if ((int)$view['testing'] > 0 || (int)$view['proposed'] > 0) {
         return false;
     }
-    if (research_search_due($db)) {
+    if ((int)$view['ingest'] > 0 || (int)$view['reevaluate'] > 0) {
         return false;
     }
-    $meta = research_meta($db);
-    if ((int)$meta['ingest_since_reflect'] > 0) {
-        return false;
-    }
-    if (research_count($db, 'hypotheses') >= 9 || research_count($db, 'sources') > 0) {
-        return true;
-    }
-    return (int)$meta['cycle'] > 0 && (int)$meta['last_lint_cycle'] >= (int)$meta['cycle'];
+    return (int)$view['hypotheses'] > 0;
 }
 
 function research_pause_others(string $keep): void
@@ -1432,7 +1428,7 @@ function research_create_schema(PDO $db): void
 
 function research_open_direction(PDO $db): ?array
 {
-    $rows = $db->query("SELECT * FROM hypotheses WHERE direction != '' AND status IN ('testing', 'supported', 'narrowed') ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+    $rows = $db->query("SELECT * FROM hypotheses WHERE direction != '' AND status IN ('testing', 'supported', 'narrowed', 'refuted') ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
     foreach ($rows as $row) {
         $child = research_one($db, "SELECT id FROM hypotheses WHERE parent_id = ? AND status = 'proposed'", [(int)$row['id']]);
         if (!$child) {
@@ -1730,13 +1726,21 @@ function research_conclude_packet(PDO $db, string $slug): array
             $open[] = (int)$line['id'];
         }
     }
+    if ($open === []) {
+        foreach ($view['lines'] as $line) {
+            if (in_array((string)$line['status'], ['parked', 'refuted'], true)) {
+                $open[] = (int)$line['id'];
+            }
+        }
+    }
+    $which = $open === [] ? 'an existing idea' : ('one of #' . implode(', #', array_slice($open, 0, 12)));
     return [
         'name' => $slug,
         'stage' => 'conclude',
         'hypotheses' => $view['lines'],
         'constraints' => research_constraints($db),
         'open_ids' => $open,
-        'message' => 'Aggregate the important findings into one final conclusion or design. Commit kind reflect on the existing ideas. Set one testing idea to supported or narrowed. Its insight is that conclusion or design, one or two sentences. Park every other testing idea. Parking closes the open nodes under it. Do not add a new hypothesis. Then stop.',
+        'message' => 'No branch is still testing. Commit kind reflect on the existing ideas. Set ' . $which . ' to supported or narrowed. Pass its id and insight. Omit statement to keep its wording. Do not change any other idea. Do not add a new hypothesis. Then stop.',
     ];
 }
 
@@ -1752,7 +1756,7 @@ function research_board_nodes(PDO $db): array
 
 function research_ideate_message(int $parentId): string
 {
-    return 'Propose at most three child hypotheses under #' . $parentId . '. Each item is {"statement":"one full sentence","status":"proposed","parent_id":' . $parentId . '}. A child is one full sentence, not a short title. The one-to-four-word title is only for the first roots. A child refines, corrects, or extends that parent. It is a claim a source can check, not a repeat of the parent or of a sibling. Read constraints.lessons. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. Then stop. Do not ingest.';
+    return 'Propose at most three child hypotheses under #' . $parentId . '. Each item is {"statement":"one full sentence","status":"proposed","parent_id":' . $parentId . '}. A child is one full sentence, not a short title. The one-to-four-word title is only for the first roots. A child refines, corrects, or extends that parent. It is a claim a source can check, not a repeat of the parent or of a sibling. Leave every other testing branch as testing. Read constraints.lessons. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. Then stop. Do not ingest.';
 }
 
 function research_park_branch(PDO $db, int $id): int
