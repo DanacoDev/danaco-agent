@@ -1217,6 +1217,19 @@
           }
           return node && node.id !== item.id ? (node.statement || '') : '';
         },
+        researchAncestorParked(item) {
+          if (!item || item.goal || item.id === 'mission') return false;
+          const byId = {};
+          this.researchNodes().forEach((node) => { byId[node.id] = node; });
+          let node = byId[item.id];
+          let guard = 0;
+          while (node && node.parent_id && byId[node.parent_id] && guard < 40) {
+            node = byId[node.parent_id];
+            guard += 1;
+            if (node.status === 'parked') return true;
+          }
+          return false;
+        },
         beginResearchEdit(item) {
           this.researchEditId = item.id;
           this.researchEditText = item.statement || '';

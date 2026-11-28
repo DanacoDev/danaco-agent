@@ -591,7 +591,7 @@ header('X-Danaco: 1');
                       </template>
                       <template v-else>
                         <button v-if="item.status === 'proposed'" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearchNode(item.id, 'testing')">Keep</button>
-                        <button v-else-if="item.status === 'parked'" class="btn btn-gold" type="button" :disabled="researchBusy" title="Continue this branch" @click="reviewResearchNode(item.id, 'testing')">Continue</button>
+                        <button v-else-if="item.status === 'parked' && !researchAncestorParked(item)" class="btn btn-gold" type="button" :disabled="researchBusy" title="Continue this branch" @click="reviewResearchNode(item.id, 'testing')">Continue</button>
                         <button v-else-if="item.needs_review" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearchNode(item.id, 'noted')">Keep</button>
                         <button v-if="item.needs_review || item.status === 'proposed' || item.status === 'testing'" class="btn" type="button" :disabled="researchBusy" title="Park this node and the open nodes under it" @click="reviewResearchNode(item.id, 'parked')">Park</button>
                         <button v-if="item.status === 'proposed'" class="btn" type="button" :disabled="researchBusy" @click="beginResearchEdit(item)">Edit</button>
@@ -659,7 +659,7 @@ header('X-Danaco: 1');
                               </ul>
                               <div class="research-actions">
                                 <button v-if="node.status === 'proposed'" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearch('testing')">Keep</button>
-                                <button v-else-if="node.status === 'parked'" class="btn btn-gold" type="button" :disabled="researchBusy" title="Continue this branch" @click="reviewResearch('testing')">Continue</button>
+                                <button v-else-if="node.status === 'parked' && !researchAncestorParked(node)" class="btn btn-gold" type="button" :disabled="researchBusy" title="Continue this branch" @click="reviewResearch('testing')">Continue</button>
                                 <button v-else-if="node.needs_review" class="btn btn-gold" type="button" :disabled="researchBusy" @click="reviewResearch('noted')">Keep</button>
                                 <button v-if="node.needs_review || node.status === 'proposed' || node.status === 'testing'" class="btn" type="button" :disabled="researchBusy" title="Park this node and the open nodes under it" @click="reviewResearch('parked')">Park</button>
                               </div>
@@ -667,7 +667,7 @@ header('X-Danaco: 1');
                             </template>
                           </div>
                         </div>
-                        <button class="research-add" type="button" aria-label="Add an idea" @click.stop="startResearchIdea(node)">+</button>
+                        <button v-if="node.goal || (node.status !== 'parked' && !researchAncestorParked(node))" class="research-add" type="button" aria-label="Add an idea" @click.stop="startResearchIdea(node)">+</button>
                       </div>
                     </div>
                   </div>

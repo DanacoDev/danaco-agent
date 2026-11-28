@@ -223,6 +223,7 @@ function research_add(PDO $db, string $slug, array $args): void
 function research_next(PDO $db, string $slug): void
 {
     research_reclaim($db);
+    research_quiesce_parked($db);
     if (research_auto_on($db)) {
         research_auto_promote($db);
     }
@@ -344,6 +345,14 @@ function research_review(PDO $db, string $slug, array $args): void
     if (strlen($note) > 300) {
         research_out(['message' => 'Shorten the direction to 300 characters.'], 1);
     }
+    $blocked = research_ancestor_parked(research_hypothesis_index($db), $id);
+    if ($blocked > 0) {
+        $reopen = $decision === 'testing' || ($note !== '' && (string)$row['status'] === 'parked');
+        $steer = $note !== '' && $note !== trim((string)$row['direction']);
+        if ($reopen || $steer) {
+            research_out(['message' => 'Hypothesis #' . $id . ' is under parked #' . $blocked . '. Continue that one first. A finding there stays, and it gets no children.'], 1);
+        }
+    }
     if ($decision === '' && $note !== '' && (string)$row['status'] === 'parked') {
         $status = 'testing';
     }
@@ -403,9 +412,15 @@ function research_idea(PDO $db, string $slug, array $args): void
         research_out(['message' => 'A direction title is one to four words.'], 1);
     }
     if ($parentId > 0) {
-        $parent = research_one($db, 'SELECT id FROM hypotheses WHERE id = ?', [$parentId]);
+        $parent = research_one($db, 'SELECT id, parent_id, status FROM hypotheses WHERE id = ?', [$parentId]);
         if (!$parent) {
             research_out(['message' => 'No hypothesis #' . $parentId . '.'], 1);
+        }
+        $index = research_hypothesis_index($db);
+        $index[$parentId] = $parent;
+        $blocked = (string)$parent['status'] === 'parked' ? $parentId : research_ancestor_parked($index, $parentId);
+        if ($blocked > 0) {
+            research_out(['message' => 'Hypothesis #' . $blocked . ' is parked. It closes the open cards under it. A finding there stays, and it gets no children.'], 1);
         }
     }
     $db->prepare('INSERT INTO hypotheses (statement, status, confidence, claim_ids, falsification, needs_review, parent_id, insight, direction, inherited) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)')
@@ -740,9 +755,14 @@ function research_commit_reflect(PDO $db, array $args): array
                 }
                 $parentStatus = (string)$parent['status'];
                 $parentDirected = trim((string)$parent['direction']) !== '';
-                $directedSettle = $parentDirected && in_array($parentStatus, ['supported', 'narrowed', 'refuted', 'parked'], true);
+                $index = research_hypothesis_index($db);
+                $blocked = $parentStatus === 'parked' ? $parentId : research_ancestor_parked($index, $parentId);
+                if ($blocked > 0) {
+                    throw new InvalidArgumentException('A parked hypothesis closes the open cards under it. A finding there stays, and it gets no children.');
+                }
+                $directedSettle = $parentDirected && in_array($parentStatus, ['supported', 'narrowed', 'refuted'], true);
                 if ($parentStatus !== 'testing' && !$directedSettle) {
-                    throw new InvalidArgumentException('A child hangs from a testing hypothesis. A settled or parked hypothesis needs a direction.');
+                    throw new InvalidArgumentException('A child hangs from a testing hypothesis. A settled hypothesis needs a direction.');
                 }
                 if (research_title_words($statement) <= 4) {
                     throw new InvalidArgumentException('A child is one full sentence, not a short title.');
@@ -943,7 +963,7 @@ function research_reflect_packet(PDO $db, string $slug): array
         ],
         'message' => research_search_due($db)
             ? 'These hypotheses are approved. For each testing hypothesis, add falsification queries, up to five in total. A query is searched with arxiv and the web on the next pass. Do not add a new hypothesis in this pass. Then stop.'
-            : 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A child is one full sentence, not a short title. The one-to-four-word title is only for the first roots. A child refines, corrects, or extends its parent and is a claim a source can check. A new child hangs from a testing hypothesis. A settled or parked hypothesis gets a child only when it has a direction. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That settles only that node. Every other testing branch stays testing. That lesson is carried up the tree. Do not read a paper in this pass.',
+            : 'Ideate from the tree. Read constraints.lessons before a new hypothesis. A child is one full sentence, not a short title. The one-to-four-word title is only for the first roots. A child refines, corrects, or extends its parent and is a claim a source can check. A new child hangs from a testing hypothesis. A settled hypothesis gets a child only when it has a direction. A parked hypothesis gets no children. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. A new hypothesis needs parent_id, except the first three roots. A settled hypothesis needs insight. That settles only that node. Every other testing branch stays testing. That lesson is carried up the tree. Do not read a paper in this pass.',
     ];
 }
 
@@ -1428,8 +1448,12 @@ function research_create_schema(PDO $db): void
 
 function research_open_direction(PDO $db): ?array
 {
+    $index = research_hypothesis_index($db);
     $rows = $db->query("SELECT * FROM hypotheses WHERE direction != '' AND status IN ('testing', 'supported', 'narrowed', 'refuted') ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
     foreach ($rows as $row) {
+        if (research_ancestor_parked($index, (int)$row['id']) > 0) {
+            continue;
+        }
         $child = research_one($db, "SELECT id FROM hypotheses WHERE parent_id = ? AND status = 'proposed'", [(int)$row['id']]);
         if (!$child) {
             return $row;
@@ -1757,6 +1781,43 @@ function research_board_nodes(PDO $db): array
 function research_ideate_message(int $parentId): string
 {
     return 'Propose at most three child hypotheses under #' . $parentId . '. Each item is {"statement":"one full sentence","status":"proposed","parent_id":' . $parentId . '}. A child is one full sentence, not a short title. The one-to-four-word title is only for the first roots. A child refines, corrects, or extends that parent. It is a claim a source can check, not a repeat of the parent or of a sibling. Leave every other testing branch as testing. Read constraints.lessons. Do not restate a refuted or parked lesson. To revisit one, put counter #<id> in falsification. Then stop. Do not ingest.';
+}
+
+function research_hypothesis_index(PDO $db): array
+{
+    $byId = [];
+    foreach ($db->query('SELECT id, parent_id, status FROM hypotheses') as $row) {
+        $byId[(int)$row['id']] = $row;
+    }
+    return $byId;
+}
+
+function research_ancestor_parked(array $byId, int $id): int
+{
+    $cursor = isset($byId[$id]) ? (int)$byId[$id]['parent_id'] : 0;
+    $guard = 0;
+    while ($cursor > 0 && isset($byId[$cursor]) && $guard < 40) {
+        if ((string)$byId[$cursor]['status'] === 'parked') {
+            return $cursor;
+        }
+        $cursor = (int)$byId[$cursor]['parent_id'];
+        $guard++;
+    }
+    return 0;
+}
+
+function research_quiesce_parked(PDO $db): void
+{
+    $byId = research_hypothesis_index($db);
+    $park = $db->prepare("UPDATE hypotheses SET status = 'parked', needs_review = 0, direction = '' WHERE id = ?");
+    foreach ($byId as $id => $row) {
+        if (!in_array((string)$row['status'], ['proposed', 'testing'], true)) {
+            continue;
+        }
+        if (research_ancestor_parked($byId, (int)$id) > 0) {
+            $park->execute([(int)$id]);
+        }
+    }
 }
 
 function research_park_branch(PDO $db, int $id): int
