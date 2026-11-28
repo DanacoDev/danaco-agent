@@ -1461,6 +1461,9 @@ SQL);
             $agent = is_array($payload) ? trim((string)($payload['agent'] ?? '')) : '';
             return $agent !== '' ? $agent : 'subagent';
         }
+        if ($kind === 'research') {
+            return 'researcher';
+        }
         if ($kind === 'task' && $this->parallelWork()) {
             return 'scheduler';
         }

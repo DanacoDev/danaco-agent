@@ -158,6 +158,7 @@ class Heartbeat
             return null;
         }
         $parallel = $this->db->parallelWork();
+        $research = null;
         foreach ($fresh as $job) {
             $kind = (string)$job['kind'];
             if ($name === 'orchestrator' && $kind === 'chat') {
@@ -169,8 +170,11 @@ class Heartbeat
             if ($kind === 'subagent' && (string)($job['payload']['agent'] ?? '') === $name) {
                 return $job;
             }
+            if ($name === 'researcher' && $kind === 'research' && $research === null) {
+                $research = $job;
+            }
         }
-        return null;
+        return $research;
     }
 
     public function runTask(array $task, ?int $jobId = null): void
