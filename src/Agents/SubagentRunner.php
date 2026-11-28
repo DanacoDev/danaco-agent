@@ -28,7 +28,7 @@ class SubagentRunner
         if ($instruction === '') {
             throw new RuntimeException('The subagent needs an instruction.');
         }
-        if (!$this->db->tryLock('subagent_lock', 900)) {
+        if (!$this->db->tryLock('subagent_lock', Heartbeat::STALE_SECONDS)) {
             throw new RuntimeException('Only one subagent can run at a time.');
         }
         $this->capabilities->blockedInstalls = [];
@@ -42,8 +42,12 @@ class SubagentRunner
             ['role' => 'user', 'content' => $user],
         ];
         $watch = function () use ($shouldStop): bool {
+            if ($shouldStop && $shouldStop()) {
+                $this->db->unlock('subagent_lock');
+                return true;
+            }
             $this->db->setSetting('subagent_lock', (string)time());
-            return $shouldStop && $shouldStop();
+            return false;
         };
         try {
             $result = $this->runtime->run($agent, $messages, $this->traced($this->tools($agent, $projectFolder, $projectId, $emit, $watch)), $emit, $this->runtime->maxTurns(), $projectId, $watch, false, $scheduled, fn(array $running): array => $this->refreshSystem($running, $agent, $projectFolder, $projectId));

@@ -461,7 +461,7 @@ class Api
     {
         $deadline = time() + 900;
         while (time() < $deadline) {
-            if (!$this->db->foregroundWork() && $this->db->tryLock('subagent_lock', 900)) {
+            if (!$this->db->foregroundWork() && $this->db->tryLock('subagent_lock', Heartbeat::STALE_SECONDS)) {
                 return true;
             }
             sleep(2);
@@ -1452,7 +1452,7 @@ class Api
 
     private function settlePreviousChat(int $projectId): void
     {
-        if ($this->db->lockFresh('subagent_lock', 900)) {
+        if ($this->db->lockFresh('subagent_lock', Heartbeat::STALE_SECONDS)) {
             return;
         }
         $job = $this->db->runningChatJob($projectId);
@@ -1555,9 +1555,6 @@ class Api
             } else {
                 $this->db->finishJob($id);
             }
-        }
-        if ($ids && $projectId > 0) {
-            $this->db->pauseHeartbeat($projectId);
         }
         $this->db->addMessage($projectId, 'notice', 'All processes stopped by user. Waiting for further instructions.', 'orchestrator');
         $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'heartbeat', 'process', 'Stopped by user');

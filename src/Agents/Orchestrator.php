@@ -1294,7 +1294,7 @@ TXT;
                         if ($e->getMessage() === 'Only one subagent can run at a time.') {
                             $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' closed · one already running');
                             $this->db->finishJob($jobId);
-                            return 'Only one subagent can run at a time. Wait for the current one to finish, then delegate the next task.' . $note;
+                            return 'The delegation did not start. No subagent is running this task. The subagent slot was busy. in_progress means the step is still open, not that a subagent is working. Delegate this step again. Do not wait.';
                         }
                         $this->db->failJob($jobId, $e->getMessage(), Heartbeat::MAX_ATTEMPTS);
                         $this->db->loop($agent, 'process', 'Subagent job ' . $jobId . ' failed · ' . $e->getMessage());

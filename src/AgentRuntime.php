@@ -685,6 +685,7 @@ class AgentRuntime
         $finishChecks = 0;
         $planSteers = 0;
         $calledTries = 0;
+        $sameResults = [];
         $skipCompact = false;
         $savedWritePath = '';
         $savedWriteBody = null;
@@ -1090,8 +1091,8 @@ class AgentRuntime
                 }
                 if ($this->mainVoice($agent) && $this->finishCheckSaysContinue($messages, $turnText, $scheduled, $shouldStop, $agent)) {
                     if ($finishChecks >= 2) {
-                        $this->db->loop($agent, 'steer', 'finish-check · still going', $projectId);
-                        $finishChecks = 1;
+                        $this->db->loop($agent, 'stop', 'finish-check · stopped', $projectId);
+                        throw new RuntimeException('The same reply was still unfinished.');
                     }
                     $finishChecks++;
                     $this->db->loop($agent, 'steer', 'finish-check continue · ' . $finishChecks . '/2', $projectId);
@@ -1112,8 +1113,8 @@ class AgentRuntime
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
                 return $this->finishVisible($visible);
             }
-            $finishChecks = 0;
             $calledTries = 0;
+            $sameSteer = false;
             $called = trim(strip_chat_tags(strip_tool_markers($raw !== '' ? $raw : $turnText)));
             if ($called === '' || $this->onlyCalledATool($called)) {
                 $called = $this->calledTools($tail['tools']);
@@ -1186,6 +1187,10 @@ class AgentRuntime
                     $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
                     return $this->finishVisible($result);
                 }
+                $repeat = $this->repeatedToolResult($toolName, $result, $sameResults);
+                if ($repeat === 'changed') {
+                    $finishChecks = 0;
+                }
                 $messages[] = ['role' => 'user', 'content' => "TOOL RESULT {$tool['name']}:\n{$result}"];
                 $refused = $this->repeatedRefusal($result, $sameRefusal);
                 if ($refused !== null) {
@@ -1194,10 +1199,24 @@ class AgentRuntime
                     $emit(['type' => 'status', 'agent' => $agent, 'status' => 'completed']);
                     return $this->finishVisible($result);
                 }
+                if ($repeat === 'stop') {
+                    $this->db->loop($agent, 'stop', 'same result · ' . $toolName, $projectId);
+                    throw new RuntimeException('The same tool result came back again.');
+                }
+                if ($repeat === 'steer') {
+                    $this->db->loop($agent, 'steer', 'same result · ' . $toolName . ' · 1/1', $projectId);
+                    $messages[] = ['role' => 'user', 'content' => 'That result has not changed. Do the open step or stop. Do not call that tool again.'];
+                    $sameSteer = true;
+                    break;
+                }
                 if ($this->kanbanFollowsDelegate($agent, (string)($tool['name'] ?? ''), $result)) {
                     $this->db->loop($agent, 'steer', 'tasklist after delegate', $projectId);
                     $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the task list and read the result. If the id you passed is not in that list, the task was never created and nothing was done. Do not tell the user it is finished. An empty delegate result is not a finished piece. Create the task, list the tasks, and read the id. If the list says scheduled, do not delegate. The scheduler starts it. If the task is done, do not delegate it again. If a step is still open, delegate only that step. If that step is assigned to human, ask the user and wait. Do not delegate it. Do not start a finished step over. If the result says the task is not done, do not tell the user the task is finished. Do not set a task to done yourself. A run-once task becomes done when every step is crossed off. Leave a repeating task in progress. Do not archive it. A subagent reports the result and crosses off the step that just finished. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has tasks. Do not explain these steps in place of listing the tasks.'];
                 }
+            }
+            if ($sameSteer) {
+                $skipCompact = true;
+                continue;
             }
             if (!$cutOff && $planSteers < 1 && $this->tasklistWithoutPlan($agent, $projectId, $messages, $tail['tools'])) {
                 $planSteers++;
@@ -1495,6 +1514,24 @@ class AgentRuntime
             $prompt .= ' Use path ' . $path . ' when that is the file you meant.';
         }
         return $prompt;
+    }
+
+    private function repeatedToolResult(string $tool, string $result, array &$seen): string
+    {
+        $prior = $seen[$tool] ?? null;
+        if (is_array($prior) && (string)($prior['body'] ?? '') === $result) {
+            $count = (int)($prior['count'] ?? 0) + 1;
+            $seen[$tool] = ['body' => $result, 'count' => $count];
+            if ($count >= 3) {
+                return 'stop';
+            }
+            if ($count === 2) {
+                return 'steer';
+            }
+            return 'same';
+        }
+        $seen[$tool] = ['body' => $result, 'count' => 1];
+        return 'changed';
     }
 
     private function repeatedRefusal(string $result, array &$seen): ?string
@@ -1906,6 +1943,7 @@ class AgentRuntime
             'Do not write "Called a tool."',
             'The last tool failed.',
             'Tell the user this result and stop.',
+            'That result has not changed.',
         ] as $prefix) {
             if (str_starts_with($content, $prefix)) {
                 return true;
@@ -1917,7 +1955,7 @@ class AgentRuntime
     private function finishSteer(bool $scheduled): string
     {
         if ($scheduled) {
-            return 'The scheduled task is not finished. Nobody is here to answer, so do not ask a question. If hypotheses are waiting, list them and stop with the line awaiting approval. Do not ask the user to approve. If the last tool failed, fix that call and run it again. Otherwise call the tool that is still needed, then stop.';
+            return 'The scheduled task is not finished. Nobody is here to answer, so do not ask a question. in_progress means the step is still open. It does not mean a subagent is running. If the list does not say a subagent is working, nobody is. Delegate the open step now. Do not wait. If hypotheses are waiting, list them and stop with the line awaiting approval. Do not ask the user to approve. If the last tool failed, fix that call and run it again. Otherwise call the tool that is still needed, then stop.';
         }
         return 'The job is not finished. You stopped before the work was done. If the last tool failed, fix that call and run it again. If you described a next step, do it now with a real tool call. Do not only describe it.';
     }

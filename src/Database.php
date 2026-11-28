@@ -977,7 +977,7 @@ SQL);
     public function startJob(string $kind, ?int $projectId, array $payload, ?int $refId = null): int
     {
         $projectId = $projectId && $projectId > 0 ? $projectId : null;
-        if ($kind === 'chat' && !$this->lockFresh('subagent_lock', 900)) {
+        if ($kind === 'chat' && !$this->lockFresh('subagent_lock', Heartbeat::STALE_SECONDS)) {
             if ($projectId) {
                 $close = $this->pdo->prepare("UPDATE jobs SET status = 'done', updated_at = datetime('now') WHERE kind = 'chat' AND project_id = ? AND status IN ('running', 'error')");
                 $close->execute([$projectId]);
@@ -1084,7 +1084,7 @@ SQL);
 
     public function foregroundWork(): bool
     {
-        if ($this->lockFresh('subagent_lock', 900)) {
+        if ($this->lockFresh('subagent_lock', Heartbeat::STALE_SECONDS)) {
             return true;
         }
         $stmt = $this->pdo->query("SELECT 1 FROM jobs WHERE kind IN ('chat', 'subagent', 'task') AND status = 'running' AND updated_at >= datetime('now', '-5 minutes') LIMIT 1");
@@ -1849,9 +1849,6 @@ SQL);
             }
             $this->idleWorker($agent);
             $lines[] = 'Stopped the ' . strtolower($this->workerLabel($agent)) . '. Job ' . $id . '.';
-        }
-        if ($projectId > 0) {
-            $this->pauseHeartbeat($projectId);
         }
         return implode("\n", $lines);
     }

@@ -26,11 +26,11 @@ class Heartbeat
             }
             $attempt = (int)($job['attempts'] ?? 1);
             $this->traceJob($job, 'Due job ' . $id . ' · ' . $job['kind'] . ' · attempt ' . $attempt);
-            if ((string)$job['kind'] === 'subagent' && $this->db->lockFresh('subagent_lock', 900)) {
+            if ((string)$job['kind'] === 'subagent' && $this->db->lockFresh('subagent_lock', self::STALE_SECONDS)) {
                 $this->traceJob($job, 'Skipped job ' . $id . ' · subagent lock held');
                 continue;
             }
-            if ((string)$job['kind'] === 'chat' && $this->db->lockFresh('subagent_lock', 900)) {
+            if ((string)$job['kind'] === 'chat' && $this->db->lockFresh('subagent_lock', self::STALE_SECONDS)) {
                 $this->traceJob($job, 'Skipped job ' . $id . ' · subagent still working');
                 continue;
             }
@@ -111,7 +111,7 @@ class Heartbeat
                     if ($age !== null) {
                         $this->db->clearRunStop($stopProject);
                     }
-                    if ($this->db->lockFresh('subagent_lock', 900)) {
+                    if ($this->db->lockFresh('subagent_lock', self::STALE_SECONDS)) {
                         $projectId = $stuckProject;
                         $out[$name] = [
                             'status' => $status,
@@ -443,6 +443,7 @@ class Heartbeat
         $job = $this->db->runningResearchJob($projectId);
         if ($job && $this->researchJobSlug($job) === $slug) {
             $this->db->interruptJob((int)$job['id']);
+            $this->db->unlock('subagent_lock');
             $this->db->loopWrite((int)$job['id'], $projectId, 'researcher', 'process', 'Research ' . $slug . ' stopped');
         }
     }
@@ -646,7 +647,7 @@ class Heartbeat
         if ($kind === 'subagent') {
             $this->db->loopPush($id, $projectId > 0 ? $projectId : null);
             try {
-                if ($this->db->lockFresh('subagent_lock', 900)) {
+                if ($this->db->lockFresh('subagent_lock', self::STALE_SECONDS)) {
                     $this->db->loop('heartbeat', 'process', 'Skipped · subagent lock held · job ' . $id);
                     return false;
                 }

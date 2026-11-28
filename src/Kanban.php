@@ -336,10 +336,14 @@ class Kanban
         }
         $text = $lines ? implode("\n", $lines) : 'No open tasks.';
         if ($projectId !== null && $projectId > 0) {
-            $working = $this->db->workingLines($projectId);
-            if ($working) {
-                $text .= "\n" . implode("\n", $working);
+            $busy = [];
+            foreach ($this->db->workingJobs($projectId) as $job) {
+                if ((string)($job['kind'] ?? '') !== 'subagent') {
+                    continue;
+                }
+                $busy[] = ucfirst($this->db->jobWorker($job)) . ' is working. Job ' . (int)$job['id'] . '.';
             }
+            $text .= "\n" . ($busy ? implode("\n", $busy) : 'No subagent is running.');
         }
         return $text;
     }
