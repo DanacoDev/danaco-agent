@@ -4,7 +4,7 @@ class Kanban
 {
     public const RESTART_DELAY = 120;
 
-    private array $lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0, 'still_open' => 0, 'already_done' => 0, 'open_titles' => []];
+    private array $lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0, 'still_open' => 0, 'already_done' => 0, 'open_titles' => [], 'human' => []];
 
     public function __construct(private Database $db)
     {
@@ -30,14 +30,13 @@ class Kanban
         if (!$byUser) {
             $this->requireStepDetail($steps);
         }
-        $description = implode("\n", array_map(fn(array $step): string => $step['title'], $steps));
         $agent = $this->agent((string)($args['agent'] ?? $args['assigned_agent'] ?? 'orchestrator'));
         if (!$byUser) {
             $stepTask = $this->openStepTask($projectId, $title);
             if ($stepTask) {
                 throw new InvalidArgumentException('Error: Task #' . $stepTask['id'] . ' already has that open step: ' . $title . '. It was not added. Update that task. Do not create a new one.');
             }
-            $duplicate = $this->exactDuplicate($projectId, $title, $description, $agent, $schedule, $recurrence);
+            $duplicate = $this->exactDuplicate($projectId, $title);
             if ($duplicate) {
                 throw new InvalidArgumentException('Error: Task #' . $duplicate['id'] . ' is already on the task list as ' . $this->column($duplicate) . ' and matches this task exactly: ' . $duplicate['title'] . '. It was not added. Use that task.');
             }
@@ -89,6 +88,13 @@ class Kanban
                 }
             }
             if ($match) {
+                $stepAgent = strtolower(trim((string)($sub['assigned_agent'] ?? '')));
+                if ($stepAgent === '') {
+                    $stepAgent = strtolower(trim((string)($task['assigned_agent'] ?? '')));
+                }
+                if ($stepAgent === 'human' || $stepAgent === 'user') {
+                    continue;
+                }
                 $fields = ['status' => 'done'];
                 $line = trim($result);
                 if ($line !== '' && !$all && trim((string)($sub['result'] ?? '')) === '') {
@@ -118,7 +124,7 @@ class Kanban
         return $saved;
     }
 
-    public function move(int $id, array $args, bool $byUser): array
+    public function move(int $id, array $args, bool $byUser, bool $allowHuman = false): array
     {
         $existing = $this->db->task($id);
         if (!$existing) {
@@ -207,7 +213,7 @@ class Kanban
         }
         if ($saved && $steps && $hasInstruction) {
             $taskResult = array_key_exists('result', $args) ? $this->oneLineResult((string)$args['result']) : '';
-            $this->addSteps($id, $steps, !$hasSteps, $hasSteps && $this->wantsReplace($args), $taskResult);
+            $this->addSteps($id, $steps, !$hasSteps, $hasSteps && $this->wantsReplace($args), $taskResult, $byUser || $allowHuman);
             $saved = $this->db->task($id) ?? $saved;
         }
         return $saved ? $this->db->syncTaskFromSteps($saved) : $saved;
@@ -549,6 +555,25 @@ class Kanban
         return ' Those steps are already on the task. To cross one off, pass that step with result set to done, or to one line of what it produced. Do not replace the steps and do not create a new task.';
     }
 
+    public function humanStepsNote(): string
+    {
+        $titles = [];
+        foreach ($this->lastStepWrite['human'] ?? [] as $title) {
+            $title = trim((string)$title);
+            if ($title !== '') {
+                $titles[] = $title;
+            }
+        }
+        if ($titles === []) {
+            return '';
+        }
+        $named = '"' . implode('", "', $titles) . '"';
+        if (count($titles) === 1) {
+            return ' Step ' . $named . ' stays open. It is for the user. Show them the file and wait until they say it is OK.';
+        }
+        return ' Steps ' . $named . ' stay open. They are for the user. Show them the file and wait until they say it is OK.';
+    }
+
     private function requireStepDetail(array $steps): void
     {
         foreach ($steps as $step) {
@@ -585,9 +610,25 @@ class Kanban
         return rtrim($clip, '.,;:') . '…';
     }
 
-    private function addSteps(int $taskId, array $items, bool $onlyIfEmpty, bool $replace = false, string $taskResult = ''): void
+    private function stepIsHuman(string $stored, string $incoming): bool
     {
-        $this->lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0, 'still_open' => 0, 'already_done' => 0, 'open_titles' => []];
+        $stored = strtolower(trim($stored));
+        $incoming = strtolower(trim($incoming));
+        return $stored === 'human' || $stored === 'user' || $incoming === 'human' || $incoming === 'user';
+    }
+
+    private function rememberHuman(string $title): void
+    {
+        $title = trim($title);
+        if ($title === '' || in_array($title, $this->lastStepWrite['human'], true)) {
+            return;
+        }
+        $this->lastStepWrite['human'][] = $title;
+    }
+
+    private function addSteps(int $taskId, array $items, bool $onlyIfEmpty, bool $replace = false, string $taskResult = '', bool $allowHuman = false): void
+    {
+        $this->lastStepWrite = ['added' => 0, 'detailed' => 0, 'removed' => 0, 'crossed' => 0, 'still_open' => 0, 'already_done' => 0, 'open_titles' => [], 'human' => []];
         $task = $this->db->task($taskId);
         if (!$task) {
             return;
@@ -636,6 +677,17 @@ class Kanban
                     }
                     $agent = (string)($item['agent'] ?? '');
                     $haveAgent = strtolower(trim((string)($subs[$matchAt]['assigned_agent'] ?? '')));
+                    $leavingHuman = $agent !== '' && !$this->stepIsHuman($agent, '');
+                    if (!$allowHuman && (string)($subs[$matchAt]['status'] ?? '') !== 'done' && $this->stepIsHuman($haveAgent, '') && ($markDone || $leavingHuman)) {
+                        $this->rememberHuman($haveTitle !== '' ? $haveTitle : $title);
+                        $touched[] = (int)$subs[$matchAt]['id'];
+                        continue;
+                    }
+                    if ($markDone && !$allowHuman && $this->stepIsHuman('', $agent) && (string)($subs[$matchAt]['status'] ?? '') !== 'done') {
+                        $this->rememberHuman($haveTitle !== '' ? $haveTitle : $title);
+                        $touched[] = (int)$subs[$matchAt]['id'];
+                        continue;
+                    }
                     if ($agent !== '' && $agent !== $haveAgent) {
                         $fields['assigned_agent'] = $agent;
                     }
@@ -675,8 +727,13 @@ class Kanban
                 $this->lastStepWrite['already_done']++;
                 continue;
             }
-            $created = $this->db->insertSubtask($taskId, $title, $markDone ? 'done' : 'in_progress', (string)($item['agent'] ?? ''), (string)($item['description'] ?? ''));
-            if ($markDone) {
+            $agent = (string)($item['agent'] ?? '');
+            $blockHuman = $markDone && !$allowHuman && $this->stepIsHuman('', $agent);
+            $created = $this->db->insertSubtask($taskId, $title, $markDone && !$blockHuman ? 'done' : 'in_progress', $agent, (string)($item['description'] ?? ''));
+            if ($blockHuman) {
+                $this->rememberHuman($title);
+                $this->lastStepWrite['added']++;
+            } elseif ($markDone) {
                 $line = $ownResult !== '' ? $this->oneLineResult($ownResult) : $taskResult;
                 if ($line !== '') {
                     $created = $this->db->updateSubtask((int)$created['id'], ['result' => $line]) ?? $created;
@@ -699,6 +756,11 @@ class Kanban
             if ($id <= 0 || in_array($id, $touched, true)) {
                 continue;
             }
+            $agent = strtolower(trim((string)($sub['assigned_agent'] ?? '')));
+            if (!$allowHuman && ($agent === 'human' || $agent === 'user')) {
+                $this->rememberHuman(trim((string)($sub['title'] ?? '')));
+                continue;
+            }
             $this->db->deleteSubtask($id);
             $this->lastStepWrite['removed']++;
         }
@@ -712,7 +774,8 @@ class Kanban
             }
             $title = trim((string)($sub['title'] ?? ''));
             $id = (int)($sub['id'] ?? 0);
-            if ($title === '' || $id <= 0) {
+            $agent = strtolower(trim((string)($sub['assigned_agent'] ?? '')));
+            if ($title === '' || $id <= 0 || $agent === 'human' || $agent === 'user') {
                 continue;
             }
             $doneAt = null;
@@ -890,33 +953,14 @@ class Kanban
         return null;
     }
 
-    private function exactDuplicate(int $projectId, string $title, string $description, string $agent, ?string $schedule, string $recurrence): ?array
+    private function exactDuplicate(int $projectId, string $title): ?array
     {
         foreach ($this->db->tasks($projectId) as $task) {
-            if ($this->column($task) === 'archived' || (string)($task['status'] ?? '') === 'archived') {
+            $column = $this->column($task);
+            if ($column === 'archived' || $column === 'done' || (string)($task['status'] ?? '') === 'archived') {
                 continue;
             }
             if (trim((string)($task['title'] ?? '')) !== $title) {
-                continue;
-            }
-            if ($this->instructionOf($task) !== $description) {
-                continue;
-            }
-            if ((string)($task['assigned_agent'] ?? '') !== $agent) {
-                continue;
-            }
-            $existingSchedule = $task['schedule_time'] ?? null;
-            if ($existingSchedule === '') {
-                $existingSchedule = null;
-            }
-            if ($existingSchedule !== $schedule && !($this->soonWindow($existingSchedule) && $this->soonWindow($schedule))) {
-                continue;
-            }
-            $existingRepeat = strtolower(trim((string)($task['recurrence_interval'] ?? '')));
-            if ($existingRepeat === '') {
-                $existingRepeat = 'none';
-            }
-            if ($existingRepeat !== $recurrence) {
                 continue;
             }
             return $task;

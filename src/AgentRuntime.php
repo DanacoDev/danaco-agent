@@ -1212,7 +1212,10 @@ class AgentRuntime
                 }
                 if ($this->kanbanFollowsDelegate($agent, (string)($tool['name'] ?? ''), $result)) {
                     $this->db->loop($agent, 'steer', 'tasklist after delegate', $projectId);
-                    $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the task list and read the result. If the id you passed is not in that list, the task was never created and nothing was done. Do not tell the user it is finished. An empty delegate result is not a finished piece. Create the task, list the tasks, and read the id. If the list says scheduled, do not delegate. The scheduler starts it. If the task is done, do not delegate it again. If a step is still open, delegate only that step. If that step is assigned to human, ask the user and wait. Do not delegate it. Do not start a finished step over. If the result says the task is not done, do not tell the user the task is finished. Do not set a task to done yourself. A run-once task becomes done when every step is crossed off. Leave a repeating task in progress. Do not archive it. A subagent reports the result and crosses off the step that just finished. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has tasks. Do not explain these steps in place of listing the tasks.'];
+                    $humanSteer = $scheduled
+                        ? 'If the open step is assigned to human, stop. Do not cross it off. Do not ask the user. '
+                        : 'If that step is assigned to human, show the user the file and wait until they say it is OK. Do not cross it off before that. Do not delegate it. ';
+                    $messages[] = ['role' => 'user', 'content' => 'The delegated job just finished. List the task list and read the result. If the id you passed is not in that list, the task was never created and nothing was done. Do not tell the user it is finished. An empty delegate result is not a finished piece. Create the task, list the tasks, and read the id. If the list says scheduled, do not delegate. The scheduler starts it. If the task is done, do not delegate it again. If a step is still open, delegate only that step. ' . $humanSteer . 'Do not start a finished step over. If the result says the task is not done, do not tell the user the task is finished. Do not set a task to done yourself. A run-once task becomes done when every step is crossed off. Leave a repeating task in progress. Do not archive it. A subagent reports the result and crosses off the step that just finished. Do this even if you have no recollection of any tasks in this chat. A cleared or compressed context still has tasks. Do not explain these steps in place of listing the tasks.'];
                 }
             }
             if ($sameSteer) {
@@ -1685,10 +1688,50 @@ class AgentRuntime
         return $agent === 'orchestrator' || $agent === 'scheduler';
     }
 
+    private function scheduledHumanWait(array $messages): bool
+    {
+        $taskId = 0;
+        foreach ($messages as $message) {
+            if (!is_array($message) || ($message['role'] ?? '') !== 'user') {
+                continue;
+            }
+            $text = ltrim((string)($message['content'] ?? ''));
+            if (preg_match('/^Scheduled task:\s*#(\d+)\b/', $text, $match)) {
+                $taskId = (int)$match[1];
+            }
+        }
+        if ($taskId <= 0) {
+            return false;
+        }
+        $task = $this->db->task($taskId);
+        if (!$task) {
+            return false;
+        }
+        $open = false;
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                continue;
+            }
+            $open = true;
+            $agent = strtolower(trim((string)($sub['assigned_agent'] ?? '')));
+            if ($agent === '') {
+                $agent = strtolower(trim((string)($task['assigned_agent'] ?? '')));
+            }
+            if ($agent !== 'human' && $agent !== 'user') {
+                return false;
+            }
+        }
+        return $open;
+    }
+
     private function finishCheckSaysContinue(array $messages, string $reply, bool $scheduled, ?callable $shouldStop, string $agent = 'orchestrator'): bool
     {
         if ($shouldStop && $shouldStop()) {
             throw new ChatStopped('Stopped.');
+        }
+        if ($scheduled && $this->scheduledHumanWait($messages)) {
+            $this->db->loop($agent, 'process', 'finish-check done · human step');
+            return false;
         }
         $prompt = $this->finishCheckPrompt($messages, $reply, $scheduled);
         $this->db->loop($agent, 'model', 'finish-check · ' . strlen($prompt) . ' chars');
@@ -1710,7 +1753,7 @@ class AgentRuntime
         $tools = $this->recentToolResults($messages);
         $reply = clip_text(trim($reply), 1500);
         if ($scheduled) {
-            $question = 'This is a scheduled task and nobody is here to answer. Is this run finished? Answer yes or no. yes if the work for this run is done, or the reply lists hypotheses and says awaiting approval without asking a question. no if it asks the user a question, a tool still needs to run, or a reply only promises to check, add, or save.';
+            $question = 'This is a scheduled task and nobody is here to answer. Is this run finished? Answer yes or no. yes if the work for this run is done, the only open step is assigned to human and the reply leaves that step open, or the reply lists hypotheses and says awaiting approval without asking a question. no if an agent step is still open, a tool still needs to run, or a reply only promises to check, add, or save.';
         } else {
             $question = 'Is the job finished, or is the agent only waiting for the user? Answer yes or no. yes = the requested work is done, or the agent asked the user a real question, or it is waiting for the user to choose, including now versus scheduled. no = work is still unfinished. The last tool failed and was not fixed, the reply describes a next step it did not take, or a tool result only promises to check, add, or save.';
         }
@@ -1956,7 +1999,7 @@ class AgentRuntime
     private function finishSteer(bool $scheduled): string
     {
         if ($scheduled) {
-            return 'The scheduled task is not finished. Nobody is here to answer, so do not ask a question. in_progress means the step is still open. It does not mean a subagent is running. If the list does not say a subagent is working, nobody is. Delegate the open step now. Do not wait. If hypotheses are waiting, list them and stop with the line awaiting approval. Do not ask the user to approve. If the last tool failed, fix that call and run it again. Otherwise call the tool that is still needed, then stop.';
+            return 'The scheduled task is not finished. Nobody is here to answer, so do not ask a question. in_progress means the step is still open. It does not mean a subagent is running. If the list does not say a subagent is working, nobody is. Delegate the open step now. Do not wait. If the only open step is assigned to human, stop. Do not cross it off and do not ask the user. If hypotheses are waiting, list them and stop with the line awaiting approval. Do not ask the user to approve. If the last tool failed, fix that call and run it again. Otherwise call the tool that is still needed, then stop.';
         }
         return 'The job is not finished. You stopped before the work was done. If the last tool failed, fix that call and run it again. If you described a next step, do it now with a real tool call. Do not only describe it.';
     }

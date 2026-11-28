@@ -443,6 +443,13 @@ SQL);
         $stmt->execute([$key, $value]);
     }
 
+    public function clearSubagentRuns(int $projectId): void
+    {
+        $prefix = 'subagent_last_run_' . max(0, $projectId) . '_';
+        $pattern = str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], $prefix) . '%';
+        $this->pdo->prepare("DELETE FROM settings WHERE key LIKE ? ESCAPE '\\'")->execute([$pattern]);
+    }
+
     public function holdContextCompress(int $projectId): void
     {
         $this->setSetting($this->contextCompressLockKey($projectId), (string)time());

@@ -199,6 +199,14 @@ class Heartbeat
             $this->settleIfDue($task);
             return;
         }
+        if (!$ownJob && !$this->repeats((string)($task['recurrence_interval'] ?? 'none'))) {
+            $fresh = $this->db->task($taskId) ?? $task;
+            if ((new Kanban($this->db))->column($fresh) === 'done') {
+                $this->db->finishJob($jobId);
+                $this->db->loopWrite($jobId, $projectId, 'heartbeat', 'process', 'Task ' . $taskId . ' already finished · job ' . $jobId . ' closed');
+                return;
+            }
+        }
         if ((int)($task['held'] ?? 0) === 1) {
             if ($jobId !== null) {
                 $this->db->finishJob($jobId);
@@ -823,6 +831,25 @@ class Heartbeat
         return trim(implode("\n", $lines) . ($result !== '' ? "\n\n" . $result : ''));
     }
 
+    private function openHumanStep(array $task): bool
+    {
+        $open = false;
+        foreach ($task['subtasks'] ?? [] as $sub) {
+            if (!is_array($sub) || (string)($sub['status'] ?? '') === 'done') {
+                continue;
+            }
+            $open = true;
+            $agent = strtolower(trim((string)($sub['assigned_agent'] ?? '')));
+            if ($agent === '') {
+                $agent = strtolower(trim((string)($task['assigned_agent'] ?? '')));
+            }
+            if ($agent !== 'human' && $agent !== 'user') {
+                return false;
+            }
+        }
+        return $open;
+    }
+
     private function settle(array $task, string $result, bool $failed = false, bool $noted = false): void
     {
         $fresh = $this->db->task((int)$task['id']);
@@ -851,6 +878,16 @@ class Heartbeat
             }
             $board->move((int)$task['id'], $fields, false);
             $this->reopenFinishedSteps((int)$task['id']);
+            return;
+        }
+        if ($this->openHumanStep($task)) {
+            if (trim($result) !== '') {
+                $board->move((int)$task['id'], [
+                    'result' => $result,
+                    'failed' => $failed ? 1 : 0,
+                ], false);
+            }
+            $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'orchestrator', 'process', 'Task ' . (int)$task['id'] . ' waiting on the user');
             return;
         }
         $saved = $board->move((int)$task['id'], [

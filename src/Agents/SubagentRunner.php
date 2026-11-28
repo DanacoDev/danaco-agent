@@ -530,6 +530,10 @@ TXT;
                 $tail = ' Task is done. Do not delegate it again.';
             } elseif ($open) {
                 $tail = ' The task is not done. The open step is: ' . trim((string)$open['title']) . '. Do not tell the user the task is finished.';
+                $stepAgent = strtolower(trim((string)($open['assigned_agent'] ?? '')));
+                if ($stepAgent === 'human' || $stepAgent === 'user') {
+                    $tail .= ' It is for the user. Do not cross it off.';
+                }
             } elseif ($repeats) {
                 $tail = ' The steps for this run are finished. Leave the task in progress. Do not delegate it again.';
             } else {

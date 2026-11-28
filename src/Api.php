@@ -1219,7 +1219,8 @@ class Api
     private function clearContext(): void
     {
         $projectId = (int)($this->input()['project_id'] ?? 0);
-        if ($projectId > 0 && !$this->db->project($projectId)) {
+        $project = $projectId > 0 ? $this->db->project($projectId) : null;
+        if ($projectId > 0 && !$project) {
             $this->json(['error' => 'Project not found.'], 404);
             return;
         }
@@ -1229,6 +1230,9 @@ class Api
         $this->db->setSetting('context_compress_' . $key, '0');
         $this->db->setSetting('context_compress_pending_' . $key, '0');
         $this->db->releaseContextCompress($projectId);
+        $folder = is_array($project) ? (string)($project['folder_name'] ?? '') : '';
+        app_services()['memory']->deleteContextSummary($folder !== '' ? $folder : null);
+        $this->db->clearSubagentRuns($projectId);
         if ($projectId > 0) {
             $this->db->setSetting('reread_desc_' . $key, '1');
         }

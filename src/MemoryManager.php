@@ -108,6 +108,14 @@ class MemoryManager
         return 'Remembered under ' . $tool . '.';
     }
 
+    public function deleteContextSummary(?string $projectFolder): void
+    {
+        $path = $this->contextSummaryPath($projectFolder);
+        if (is_file($path)) {
+            unlink($path);
+        }
+    }
+
     public function readContextSummary(?string $projectFolder): string
     {
         $path = $this->contextSummaryPath($projectFolder);

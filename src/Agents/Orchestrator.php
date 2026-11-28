@@ -850,7 +850,7 @@ TXT;
             }
         }
         if ($this->taskIsolate) {
-            $tail .= "\n\nYou are the task manager for this scheduled run. Nobody can answer you here. Do not ask a question. Do not ask the user to approve, choose, or confirm. A research mission is not a task. It keeps running until it is turned off. Do not run its packets from this task.\n";
+            $tail .= "\n\nYou are the task manager for this scheduled run. Nobody can answer you here. Do not ask a question. Do not ask the user to approve, choose, or confirm. A research mission is not a task. It keeps running until it is turned off. Do not run its packets from this task. This task is already on the list. Do the open step. Do not create it. If every step is done, stop. A step assigned to human stays open. Do not cross it off.\n";
         }
         return $tail;
     }
@@ -922,7 +922,7 @@ TXT;
         }
         $kept = [];
         foreach ($history as $message) {
-            if ((int)($message['id'] ?? 0) > $cut) {
+            if ((int)($message['id'] ?? 0) < $cut) {
                 continue;
             }
             $kept[] = $message;
@@ -1197,8 +1197,7 @@ TXT;
                             $note = '';
                         }
                         if ($note === '') {
-                            $this->db->loop('orchestrator', 'process', 'Delegate rejected · no task');
-                            return 'Delegation rejected. The task is not on the list. Create it with tasklist action create, list the tasks and read the new id. If the list says scheduled, do not delegate. The scheduler starts it. Do not invent an id.';
+                            return $this->missingTaskLine($projectId, $args, $instruction);
                         }
                     }
                     $wait = $this->humanStepWait($note);
@@ -1250,8 +1249,7 @@ TXT;
                     $note = '';
                 }
                 if ($note === '') {
-                    $this->db->loop('orchestrator', 'process', 'Delegate rejected · no task');
-                    return 'Delegation rejected. The task is not on the list. Create it with tasklist action create, list the tasks and read the new id. If the list says scheduled, do not delegate. The scheduler starts it. Do not invent an id.';
+                    return $this->missingTaskLine($projectId, $args, $instruction);
                 }
                 $wait = $this->humanStepWait($note);
                 if ($wait !== '') {
@@ -1637,6 +1635,63 @@ TXT;
         return $tools;
     }
 
+    private function missingTaskLine(int $projectId, array $args, string $instruction = ''): string
+    {
+        $id = $this->kanbanDigits($args['task_id'] ?? $args['task'] ?? 0);
+        if ($id <= 0 && preg_match_all('/#(\d+)/', $instruction, $found)) {
+            $unique = array_values(array_unique(array_map('intval', $found[1])));
+            if (count($unique) === 1) {
+                $id = $unique[0];
+            }
+        }
+        if ($id > 0 && $projectId > 0) {
+            $task = $this->db->task($id);
+            if ($task && (int)$task['project_id'] === $projectId && (new Kanban($this->db))->column($task) === 'done') {
+                $this->db->loop('orchestrator', 'process', 'Delegate rejected · task done');
+                return 'Task #' . $id . ' is done. Do not create it again.';
+            }
+        }
+        $this->db->loop('orchestrator', 'process', 'Delegate rejected · no task');
+        return 'Delegation rejected. The task is not on the list. Create it with tasklist action create, list the tasks and read the new id. If the list says scheduled, do not delegate. The scheduler starts it. Do not invent an id.';
+    }
+
+    private function isolatedCreateBlock(int $projectId, string $title): string
+    {
+        if (!$this->taskIsolate || $projectId <= 0) {
+            return '';
+        }
+        $title = trim(preg_replace('/\s+/u', ' ', $title) ?? $title);
+        if (mb_strlen($title) > 125) {
+            $title = rtrim(mb_substr($title, 0, 122)) . '...';
+        }
+        if ($title === '') {
+            return '';
+        }
+        $running = null;
+        foreach ($this->db->messages($projectId, 80) as $row) {
+            if (($row['role'] ?? '') !== 'user') {
+                continue;
+            }
+            $text = ltrim((string)($row['content'] ?? ''));
+            if (!preg_match('/^Scheduled task:\s*#(\d+)\b/', $text, $match)) {
+                continue;
+            }
+            $task = $this->db->task((int)$match[1]);
+            if ($task && (int)$task['project_id'] === $projectId) {
+                $running = $task;
+            }
+        }
+        if ($running === null) {
+            return '';
+        }
+        $existing = trim(preg_replace('/\s+/u', ' ', (string)($running['title'] ?? '')) ?? '');
+        if ($existing === '' || $existing !== $title) {
+            return '';
+        }
+        $board = new Kanban($this->db);
+        return 'Error: Task #' . (int)$running['id'] . ' is already on the task list as ' . $board->column($running) . ' and matches this task exactly: ' . $running['title'] . '. It was not added. Use that task.';
+    }
+
     private function startDelegatedTask(int $projectId, string $agent, string $instruction, array $args, array &$createdTaskIds): string
     {
         if ($projectId <= 0) {
@@ -1751,6 +1806,65 @@ TXT;
         return $plan;
     }
 
+    private function userApprovedFile(int $projectId): bool
+    {
+        if ($this->taskIsolate || $projectId <= 0) {
+            return false;
+        }
+        $approval = '';
+        $approvalId = 0;
+        foreach ($this->db->messages($projectId, 80) as $row) {
+            if (!is_array($row) || (string)($row['role'] ?? '') !== 'user') {
+                continue;
+            }
+            $text = trim((string)($row['content'] ?? ''));
+            if ($text === '' || str_starts_with($text, 'Scheduled task:')) {
+                continue;
+            }
+            $id = (int)($row['id'] ?? 0);
+            if ($id >= $approvalId) {
+                $approvalId = $id;
+                $approval = $text;
+            }
+        }
+        if ($approval === '' || $approvalId <= 0 || !$this->approvalMessage($approval)) {
+            return false;
+        }
+        foreach ($this->db->messages($projectId, 80) as $row) {
+            if (!is_array($row) || (string)($row['role'] ?? '') !== 'assistant') {
+                continue;
+            }
+            if ((int)($row['id'] ?? 0) >= $approvalId) {
+                continue;
+            }
+            if ($this->messageHasFile((string)($row['content'] ?? ''))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function approvalMessage(string $text): bool
+    {
+        $text = trim(preg_replace('/\s+/u', ' ', $text) ?? $text);
+        if ($text === '' || mb_strlen($text) > 120) {
+            return false;
+        }
+        if (preg_match('/\b(but|change|fix|wrong|rewrite|again|men|ändra|andra|fel|skriv|write|create|skapa|gör om)\b/ui', $text)) {
+            return false;
+        }
+        if (preg_match('/^(ja|jo|bra|good|fine|snyggt|kör)[.!]?$/ui', $text)) {
+            return true;
+        }
+        return preg_match('/\b(ok|okay|okey|okej|yes|yeah|yep|approved|approve|godkänd|godkand|godkänt|godkant|looks good|ser bra ut|lgtm|perfekt|perfect)\b/ui', $text) === 1;
+    }
+
+    private function messageHasFile(string $text): bool
+    {
+        return preg_match('/\b[\w.\/-]+\.(?:pdf|md)\b/i', $text) === 1
+            || preg_match('#\b(?:docs|wiki)/#i', $text) === 1;
+    }
+
     private function humanStepWait(string $note): string
     {
         if (!preg_match('/Task #(\d+)/', $note, $card)) {
@@ -1772,10 +1886,13 @@ TXT;
             if ($agent === '') {
                 $agent = strtolower(trim((string)($task['assigned_agent'] ?? '')));
             }
-            if ($agent !== 'human') {
+            if ($agent !== 'human' && $agent !== 'user') {
                 return '';
             }
-            $line = 'Task #' . $task['id'] . ' is waiting on the human. Ask the user and wait. Do not delegate.' . "\n" . $title;
+            if ($this->taskIsolate) {
+                return 'Task #' . $task['id'] . ' is waiting on the human step: ' . $title . '. Leave it open. Do not cross it off. Do not ask the user. This run is finished.';
+            }
+            $line = 'Task #' . $task['id'] . ' is waiting on the human. Show the user the file and wait until they say it is OK. Do not cross the step off before that. Do not delegate.' . "\n" . $title;
             $detail = trim((string)($sub['description'] ?? ''));
             if ($detail !== '') {
                 $line .= "\n" . $detail;
@@ -1910,6 +2027,10 @@ TXT;
                 if ($batch !== null) {
                     return $this->createNowTasks($projectId, $batch, $createdTaskIds, $board);
                 }
+                $blocked = $this->isolatedCreateBlock($projectId, (string)($args['title'] ?? ''));
+                if ($blocked !== '') {
+                    return $blocked;
+                }
                 $task = $board->create($projectId, $args, false);
                 if ($createdTaskIds !== null) {
                     $createdTaskIds[] = (int)$task['id'];
@@ -1921,7 +2042,7 @@ TXT;
                 if ($id <= 0) {
                     return 'Task not found.' . "\n" . $this->kanbanOpenCards($projectId);
                 }
-                $task = $board->move($id, $args, false);
+                $task = $board->move($id, $args, false, $this->userApprovedFile($projectId));
                 $held = (int)($task['held'] ?? 0) === 1 ? ' The task stays held and will not start.' : '';
                 $stepsNote = '';
                 if (array_key_exists('steps', $args) || array_key_exists('subtasks', $args)) {
@@ -1941,6 +2062,10 @@ TXT;
                     $crossed = (int)($write['crossed'] ?? 0);
                     if ($crossed > 0) {
                         $stepsNote .= ' Crossed off ' . $crossed . ($crossed === 1 ? ' step.' : ' steps.');
+                    }
+                    $humanNote = $board->humanStepsNote();
+                    if ($humanNote !== '') {
+                        $stepsNote .= $humanNote;
                     }
                     if ($stepsNote === '') {
                         $stepsNote = $board->unchangedStepsNote();
@@ -2033,6 +2158,11 @@ TXT;
         $added = [];
         $duplicates = [];
         foreach ($cards as $card) {
+            $blocked = $this->isolatedCreateBlock($projectId, $card['title']);
+            if ($blocked !== '') {
+                $duplicates[] = $blocked;
+                continue;
+            }
             try {
                 $saved = $board->create($projectId, [
                     'title' => $card['title'],
