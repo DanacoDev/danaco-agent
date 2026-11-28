@@ -1028,10 +1028,10 @@
           };
           const roots = board ? [mission] : [];
           const nodes = [];
-          const width = 232;
-          const height = 78;
+          const width = 580;
+          const height = 44;
           const gapX = 68;
-          const gapY = 22;
+          const gapY = 14;
           const pad = 28;
           let row = 0;
           const place = (node, depth) => {
@@ -1061,7 +1061,7 @@
           const open = this.researchSelected ? nodes.find((node) => node.id === this.researchSelected) : null;
           if (open) {
             const idea = this.researchIdeaOpen && this.researchIdeaParent === open.id;
-            open.w = 320;
+            open.w = width;
             open.h = this.researchOpenHeight > height ? this.researchOpenHeight : (idea ? 220 : (open.goal ? 160 : 220));
             mapW = Math.max(mapW, open.x + open.w + pad);
             mapH = Math.max(mapH, open.y + open.h + pad);
