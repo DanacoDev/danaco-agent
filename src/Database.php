@@ -218,6 +218,10 @@ CREATE TABLE IF NOT EXISTS loop_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_loop_logs_lookup ON loop_logs(project_id, id);
 SQL);
+        $loopColumns = array_column($this->pdo->query('PRAGMA table_info(loop_logs)')->fetchAll(), 'name');
+        if (!in_array('body', $loopColumns, true)) {
+            $this->pdo->exec("ALTER TABLE loop_logs ADD COLUMN body TEXT NOT NULL DEFAULT ''");
+        }
         $this->pdo->exec(<<<'SQL'
 CREATE TABLE IF NOT EXISTS email_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1356,7 +1360,7 @@ SQL);
         array_pop($this->loopScope);
     }
 
-    public function loop(string $agent, string $kind, string $line, ?int $projectId = null): void
+    public function loop(string $agent, string $kind, string $line, ?int $projectId = null, string $body = ''): void
     {
         $jobId = null;
         $scoped = null;
@@ -1368,10 +1372,10 @@ SQL);
         if ($projectId === null) {
             $projectId = $scoped;
         }
-        $this->loopWrite($jobId, $projectId, $agent, $kind, $line);
+        $this->loopWrite($jobId, $projectId, $agent, $kind, $line, $body);
     }
 
-    public function loopWrite(?int $jobId, ?int $projectId, string $agent, string $kind, string $line): void
+    public function loopWrite(?int $jobId, ?int $projectId, string $agent, string $kind, string $line, string $body = ''): void
     {
         $projectId = $projectId && $projectId > 0 ? $projectId : null;
         $jobId = $jobId && $jobId > 0 ? $jobId : null;
@@ -1387,23 +1391,39 @@ SQL);
         if ($line === '') {
             return;
         }
+        $full = $line;
         if (mb_strlen($line) > 160) {
             $line = rtrim(mb_substr($line, 0, 159)) . '…';
         }
-        $stmt = $this->pdo->prepare('INSERT INTO loop_logs (job_id, project_id, agent_name, kind, line) VALUES (?, ?, ?, ?, ?)');
-        $stmt->execute([$jobId, $projectId, $agent, $kind, $line]);
+        $body = str_replace("\r\n", "\n", trim($body));
+        if ($body === '' && $full !== $line) {
+            $body = $full;
+        }
+        if ($body !== '') {
+            $body = clip_text($body, 8000);
+            $flat = preg_replace('/\s+/', ' ', str_replace("\n", ' ', $body)) ?? '';
+            if ($flat === $line) {
+                $body = '';
+            }
+        }
+        $stmt = $this->pdo->prepare('INSERT INTO loop_logs (job_id, project_id, agent_name, kind, line, body) VALUES (?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$jobId, $projectId, $agent, $kind, $line, $body]);
         $this->trimLoopLogs($projectId);
+        if ($body !== '') {
+            $this->trimLoopBodies($projectId);
+        }
     }
 
     public function loopLogs(?int $projectId = null, int $limit = 400): array
     {
         $projectId = $projectId && $projectId > 0 ? $projectId : null;
         $limit = max(1, min(500, $limit));
+        $columns = 'id, job_id, project_id, agent_name, kind, line, created_at';
         if ($projectId === null) {
-            $stmt = $this->pdo->prepare('SELECT * FROM loop_logs WHERE project_id IS NULL OR project_id = 0 ORDER BY id DESC LIMIT ?');
+            $stmt = $this->pdo->prepare('SELECT ' . $columns . ' FROM loop_logs WHERE project_id IS NULL OR project_id = 0 ORDER BY id DESC LIMIT ?');
             $stmt->bindValue(1, $limit, PDO::PARAM_INT);
         } else {
-            $stmt = $this->pdo->prepare('SELECT * FROM loop_logs WHERE project_id = ? ORDER BY id DESC LIMIT ?');
+            $stmt = $this->pdo->prepare('SELECT ' . $columns . ' FROM loop_logs WHERE project_id = ? ORDER BY id DESC LIMIT ?');
             $stmt->bindValue(1, $projectId, PDO::PARAM_INT);
             $stmt->bindValue(2, $limit, PDO::PARAM_INT);
         }
@@ -1414,32 +1434,217 @@ SQL);
     public function loopLogText(?int $projectId, string $projectName): string
     {
         $projectId = $projectId && $projectId > 0 ? $projectId : null;
+        $name = trim($projectName) !== '' ? trim($projectName) : 'General chat';
+        return $this->formatDebugLog($name, $this->debugLoopRows($projectId), $this->debugAgentLogs($projectId));
+    }
+
+    private function debugLoopRows(?int $projectId): array
+    {
         $limit = 5000;
+        $columns = 'id, job_id, project_id, agent_name, kind, line, body, created_at';
         if ($projectId === null) {
-            $stmt = $this->pdo->prepare('SELECT * FROM loop_logs WHERE project_id IS NULL OR project_id = 0 ORDER BY id ASC LIMIT ?');
+            $stmt = $this->pdo->prepare('SELECT ' . $columns . ' FROM loop_logs WHERE project_id IS NULL OR project_id = 0 ORDER BY id ASC LIMIT ?');
             $stmt->bindValue(1, $limit, PDO::PARAM_INT);
         } else {
-            $stmt = $this->pdo->prepare('SELECT * FROM loop_logs WHERE project_id = ? ORDER BY id ASC LIMIT ?');
+            $stmt = $this->pdo->prepare('SELECT ' . $columns . ' FROM loop_logs WHERE project_id = ? ORDER BY id ASC LIMIT ?');
             $stmt->bindValue(1, $projectId, PDO::PARAM_INT);
             $stmt->bindValue(2, $limit, PDO::PARAM_INT);
         }
         $stmt->execute();
-        $rows = array_map([$this, 'castLoopLog'], $stmt->fetchAll());
-        $name = trim($projectName) !== '' ? trim($projectName) : 'General chat';
-        $lines = [
-            '# Loop trace',
-            '# Project: ' . $name,
-            '# Lines: ' . count($rows),
-            '# id	time	job	agent	kind	line',
-        ];
-        foreach ($rows as $row) {
-            $job = $row['job_id'] !== null ? (string)$row['job_id'] : '-';
-            $lines[] = $row['id'] . "\t" . $row['created_at'] . "\t" . $job . "\t" . $row['agent_name'] . "\t" . $row['kind'] . "\t" . $row['line'];
+        return array_map([$this, 'castLoopLog'], $stmt->fetchAll());
+    }
+
+    private function debugAgentLogs(?int $projectId): array
+    {
+        $limit = 800;
+        if ($projectId === null) {
+            $stmt = $this->pdo->prepare('SELECT id, agent_name, log_type, content, created_at FROM agent_logs WHERE project_id IS NULL OR project_id = 0 ORDER BY id DESC LIMIT ?');
+            $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+        } else {
+            $stmt = $this->pdo->prepare('SELECT id, agent_name, log_type, content, created_at FROM agent_logs WHERE project_id = ? ORDER BY id DESC LIMIT ?');
+            $stmt->bindValue(1, $projectId, PDO::PARAM_INT);
+            $stmt->bindValue(2, $limit, PDO::PARAM_INT);
         }
-        if ($rows === []) {
-            $lines[] = '# No loop trace yet.';
+        $stmt->execute();
+        return array_map([$this, 'castLog'], array_reverse($stmt->fetchAll()));
+    }
+
+    private function formatDebugLog(string $name, array $rows, array $logs): string
+    {
+        $turnAt = [];
+        foreach ($rows as $i => $row) {
+            if (str_starts_with((string)($row['line'] ?? ''), 'Turn ')) {
+                $turnAt[] = $i;
+            }
+        }
+        if ($turnAt === []) {
+            $start = max(0, count($rows) - 100);
+        } else {
+            $cut = count($turnAt) > 100 ? $turnAt[count($turnAt) - 100] : $turnAt[0];
+            $start = $cut;
+            $job = $rows[$cut]['job_id'] ?? null;
+            $floor = max(0, $cut - 40);
+            while ($start > $floor) {
+                $prev = $rows[$start - 1];
+                if ((string)($prev['kind'] ?? '') !== 'process' || str_starts_with((string)($prev['line'] ?? ''), 'Turn ')) {
+                    break;
+                }
+                $prevJob = $prev['job_id'] ?? null;
+                if ($job !== null && $prevJob !== null && $prevJob !== $job) {
+                    break;
+                }
+                $start--;
+            }
+        }
+        $slice = array_slice($rows, $start);
+        $turnCount = 0;
+        foreach ($slice as $row) {
+            if (str_starts_with((string)($row['line'] ?? ''), 'Turn ')) {
+                $turnCount++;
+            }
+        }
+        $from = $slice !== [] ? (string)$slice[0]['created_at'] : '-';
+        $to = $slice !== [] ? (string)$slice[count($slice) - 1]['created_at'] : '-';
+        $lines = [
+            '# Debug log',
+            '# Project: ' . $name,
+            '# Turns: ' . ($turnCount > 0 ? $turnCount . ' latest across all agents' : '0'),
+            '# Lines: ' . count($slice),
+            '# From: ' . $from,
+            '# To: ' . $to,
+            '# reply = what that agent wrote on this pass.',
+            '# call = tool arguments, the same text as Tool in the activity list.',
+            '# result = tool output, the same text as Result in the activity list.',
+            '# A later copy of the same reply, call, or result is marked [same as the previous ...].',
+        ];
+        if ($slice === []) {
+            $lines[] = '# No activity yet.';
+            return implode("\n", $lines) . "\n";
+        }
+        $queues = [];
+        foreach ($logs as $log) {
+            $type = (string)($log['log_type'] ?? '');
+            if (!in_array($type, ['thinking', 'tool_call', 'output'], true)) {
+                continue;
+            }
+            $agent = (string)($log['agent_name'] ?? '');
+            if ($agent === '') {
+                continue;
+            }
+            $queues[$agent][] = [
+                'type' => $type,
+                'time' => strtotime((string)($log['created_at'] ?? '')) ?: 0,
+                'content' => (string)($log['content'] ?? ''),
+            ];
+        }
+        $last = [];
+        foreach ($slice as $row) {
+            $kind = (string)($row['kind'] ?? '');
+            $line = (string)($row['line'] ?? '');
+            $agent = (string)($row['agent_name'] ?? '');
+            $body = trim((string)($row['body'] ?? ''));
+            $time = strtotime((string)($row['created_at'] ?? '')) ?: 0;
+            $job = $row['job_id'] !== null ? (string)$row['job_id'] : '-';
+            if (str_starts_with($line, 'Turn ')) {
+                $lines[] = '';
+                $lines[] = '--- ' . $line . ' · ' . $agent . ' · job ' . $job . ' · ' . $row['created_at'] . ' ---';
+                continue;
+            }
+            $slot = '';
+            $label = '';
+            if ($kind === 'model') {
+                $slot = 'reply';
+                $label = 'reply';
+                $filled = $this->takeDebugLog($queues, $agent, 'thinking', $time);
+                if ($body === '') {
+                    $body = $filled;
+                }
+            } elseif ($kind === 'tool') {
+                $tool = $this->debugToolName($line);
+                $which = $this->debugToolKind($line);
+                if ($which === 'note') {
+                    $slot = 'result|delegate-skipped';
+                    $label = 'result';
+                } else {
+                    $slot = $which . '|' . $tool;
+                    $label = $which;
+                    $filled = $this->takeDebugLog($queues, $agent, $which === 'result' ? 'output' : 'tool_call', $time);
+                    if ($body === '') {
+                        $body = $filled;
+                    }
+                }
+            }
+            if ($label === 'result' && $body !== '') {
+                $flatBody = preg_replace('/\s+/', ' ', trim($body)) ?? '';
+                if ($flatBody !== '' && str_contains($line, $flatBody)) {
+                    $body = '';
+                }
+            }
+            if ($label === '' && $body !== '') {
+                $label = 'detail';
+                $slot = 'detail';
+            }
+            $lines[] = '';
+            $lines[] = $row['created_at'] . ' · job ' . $job . ' · ' . $agent . ' · ' . $kind . ' · ' . $line;
+            if ($body === '' || $label === '') {
+                continue;
+            }
+            $key = $agent . '|' . $slot;
+            if (isset($last[$key]) && $last[$key] === $body) {
+                $lines[] = $label . ': [same as the previous ' . $label . ', ' . strlen($body) . ' chars]';
+                continue;
+            }
+            $last[$key] = $body;
+            $lines[] = $label . ':';
+            $lines[] = $body;
         }
         return implode("\n", $lines) . "\n";
+    }
+
+    private function debugToolName(string $line): string
+    {
+        $name = trim(explode(' · ', $line, 2)[0]);
+        return $name !== '' ? $name : 'tool';
+    }
+
+    private function debugToolKind(string $line): string
+    {
+        if (str_starts_with($line, 'delegate skipped')) {
+            return 'note';
+        }
+        if (preg_match('/ · (ok|error) · \d+ chars/', $line) === 1) {
+            return 'result';
+        }
+        return 'call';
+    }
+
+    private function takeDebugLog(array &$queues, string $agent, string $type, int $time): string
+    {
+        if ($time <= 0 || empty($queues[$agent])) {
+            return '';
+        }
+        $best = null;
+        $bestAbs = 3;
+        foreach ($queues[$agent] as $i => $log) {
+            if ($log['type'] !== $type) {
+                continue;
+            }
+            $delta = (int)$log['time'] - $time;
+            if ($delta > 2) {
+                break;
+            }
+            $abs = abs($delta);
+            if ($abs <= 2 && $abs < $bestAbs) {
+                $bestAbs = $abs;
+                $best = $i;
+            }
+        }
+        if ($best === null) {
+            return '';
+        }
+        $content = (string)$queues[$agent][$best]['content'];
+        array_splice($queues[$agent], $best, 1);
+        return $content;
     }
 
     private function trimLoopLogs(?int $projectId): void
@@ -1451,6 +1656,23 @@ SQL);
         }
         $sql = 'DELETE FROM loop_logs WHERE project_id = ? AND id < COALESCE((SELECT id FROM loop_logs WHERE project_id = ? ORDER BY id DESC LIMIT 1 OFFSET 4999), 0)';
         $this->pdo->prepare($sql)->execute([$projectId, $projectId]);
+    }
+
+    private function trimLoopBodies(?int $projectId): void
+    {
+        if ($projectId === null) {
+            $cut = $this->pdo->query("SELECT id FROM loop_logs WHERE (project_id IS NULL OR project_id = 0) AND line LIKE 'Turn %' ORDER BY id DESC LIMIT 1 OFFSET 99")->fetchColumn();
+            if ($cut) {
+                $this->pdo->prepare("UPDATE loop_logs SET body = '' WHERE (project_id IS NULL OR project_id = 0) AND id < ? AND body != ''")->execute([(int)$cut]);
+            }
+            return;
+        }
+        $stmt = $this->pdo->prepare("SELECT id FROM loop_logs WHERE project_id = ? AND line LIKE 'Turn %' ORDER BY id DESC LIMIT 1 OFFSET 99");
+        $stmt->execute([$projectId]);
+        $cut = $stmt->fetchColumn();
+        if ($cut) {
+            $this->pdo->prepare("UPDATE loop_logs SET body = '' WHERE project_id = ? AND id < ? AND body != ''")->execute([$projectId, (int)$cut]);
+        }
     }
 
     private function loopJobAgent(array $job): string

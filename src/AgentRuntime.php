@@ -1140,7 +1140,7 @@ class AgentRuntime
                 if ($this->mainVoice($agent) && ($tool['name'] ?? '') === 'delegate') {
                     if ($delegated) {
                         $skipped = 'Only one subagent can run at a time. This delegation was not started. Wait for the current result, then delegate the next task.';
-                        $this->db->loop($agent, 'tool', 'delegate skipped · one at a time', $projectId);
+                        $this->db->loop($agent, 'tool', 'delegate skipped · one at a time', $projectId, $skipped);
                         $emit(['type' => 'tool_call', 'agent' => $agent, 'name' => 'delegate', 'args' => $tool['args']]);
                         $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => 'delegate', 'text' => $skipped]);
                         $messages[] = ['role' => 'user', 'content' => "TOOL RESULT delegate:\n{$skipped}"];
@@ -1151,8 +1151,9 @@ class AgentRuntime
                 $this->db->setAgentStatus($agent, 'executing_tool');
                 $emit(['type' => 'status', 'agent' => $agent, 'status' => 'executing_tool']);
                 $emit(['type' => 'tool_call', 'agent' => $agent, 'name' => $tool['name'], 'args' => $tool['args']]);
-                $this->db->logAgent($agent, $projectId, 'tool_call', $tool['name'] . ' ' . json_encode($tool['args'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-                $this->db->loop($agent, 'tool', $this->toolTrace($toolName, $toolArgs), $projectId);
+                $call = $tool['name'] . ' ' . json_encode($tool['args'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                $this->db->logAgent($agent, $projectId, 'tool_call', $call);
+                $this->db->loop($agent, 'tool', $this->toolTrace($toolName, $toolArgs), $projectId, $call);
                 try {
                     if (!isset($toolHandlers[$tool['name']])) {
                         $result = agent_error($agent, 'Unknown tool: ' . $tool['name']);
@@ -1175,7 +1176,7 @@ class AgentRuntime
                     $savedThisTurn = $writePath;
                 }
                 $result = clip_text($result);
-                $this->db->loop($agent, 'tool', $this->toolResultTrace($toolName, $result), $projectId);
+                $this->db->loop($agent, 'tool', $this->toolResultTrace($toolName, $result), $projectId, $result);
                 $this->db->logAgent($agent, $projectId, 'output', $result);
                 $emit(['type' => 'tool_result', 'agent' => $agent, 'name' => $tool['name'], 'text' => $result]);
                 if ($toolName === 'delegate' && str_starts_with($result, 'Delegation rejected') && $this->singleNarrationLine($visible, $visibleMark)) {
@@ -2149,7 +2150,7 @@ class AgentRuntime
         if ($flags !== []) {
             $line .= ' · ' . implode(' · ', $flags);
         }
-        $this->db->loop($agent, 'model', $line, $projectId);
+        $this->db->loop($agent, 'model', $line, $projectId, $turnText);
     }
 
     private function toolTrace(string $name, array $args): string
