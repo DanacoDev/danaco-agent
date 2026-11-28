@@ -159,8 +159,12 @@ class Recovery
         if (!Process::commandExists('ollama')) {
             return false;
         }
-        $log = app_config()['data_dir'] . '/ollama.log';
-        Process::run(['/bin/sh', '-c', 'nohup ollama serve >> ' . escapeshellarg($log) . ' 2>&1 &'], null, null, 5, $this->ollamaServeEnv());
+        if ($this->ollamaServiceInstalled()) {
+            $this->startOllamaService();
+        } else {
+            $log = app_config()['data_dir'] . '/ollama.log';
+            Process::run(['/bin/sh', '-c', 'nohup ollama serve >> ' . escapeshellarg($log) . ' 2>&1 &'], null, null, 5, $this->ollamaServeEnv());
+        }
         $base = $this->ollamaBase();
         for ($i = 0; $i < 16; $i++) {
             if ($this->ping($base . '/api/tags')) {
@@ -169,6 +173,31 @@ class Recovery
             usleep(500000);
         }
         return false;
+    }
+
+    private function ollamaServiceInstalled(): bool
+    {
+        if (PHP_OS_FAMILY !== 'Linux') {
+            return false;
+        }
+        $systemctl = is_file('/usr/bin/systemctl') ? '/usr/bin/systemctl' : 'systemctl';
+        $cat = Process::run([$systemctl, 'cat', 'ollama.service'], null, null, 8);
+        return $cat['code'] === 0;
+    }
+
+    private function startOllamaService(): void
+    {
+        $systemctl = is_file('/usr/bin/systemctl') ? '/usr/bin/systemctl' : 'systemctl';
+        $start = Process::run([$systemctl, 'start', 'ollama'], null, null, 30);
+        if ($start['code'] === 0) {
+            return;
+        }
+        $sudo = is_file('/usr/bin/sudo') ? '/usr/bin/sudo' : 'sudo';
+        $probe = Process::run([$sudo, '-n', 'true'], null, null, 8);
+        if ($probe['code'] !== 0) {
+            return;
+        }
+        Process::run([$sudo, '-n', $systemctl, 'start', 'ollama'], null, null, 30);
     }
 
     private function ollamaServeEnv(): ?array

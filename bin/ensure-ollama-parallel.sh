@@ -171,7 +171,11 @@ ensure_ollama_server() {
     return 0
   fi
   echo "Starting Ollama..."
-  nohup ollama serve >> "$ROOT/data/ollama.log" 2>&1 &
+  if command -v systemctl >/dev/null 2>&1 && systemctl cat ollama.service >/dev/null 2>&1; then
+    as_root systemctl start ollama || true
+  else
+    nohup ollama serve >> "$ROOT/data/ollama.log" 2>&1 &
+  fi
   for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
     if ollama_api_up; then
       return 0

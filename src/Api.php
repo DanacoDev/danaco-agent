@@ -3107,19 +3107,37 @@ class Api
             $this->json(['error' => 'The CPU failsafe model stays installed.'], 422);
             return;
         }
+        if ($this->ollamaStoreNeedsRepair()) {
+            $this->repairOllamaModels(false);
+        }
         $stored = $this->ollamaStoredModel($name);
-        if ($stored !== null) {
+        $this->unloadOllamaModel($name);
+        $result = $this->ollamaRequest('DELETE', '/api/delete', ['model' => $name], 60);
+        if ($result['error'] !== null && $this->ollamaPermissionDenied($result['error']) && $this->repairOllamaModels(true, $result['error'])) {
+            $again = $this->ollamaStoredModel($name);
+            if ($again !== null) {
+                $stored = $again;
+            }
             $this->unloadOllamaModel($name);
+            $result = $this->ollamaRequest('DELETE', '/api/delete', ['model' => $name], 60);
+        }
+        if ($result['error'] !== null) {
+            if ($this->ollamaModelListed($name) === false) {
+                if ($stored !== null) {
+                    $this->removeStoredModelFiles($stored);
+                }
+                $this->json(['ok' => true]);
+                return;
+            }
+            $this->json(['error' => $result['error']], 502);
+            return;
+        }
+        if ($stored !== null) {
             $removed = $this->removeStoredModelFiles($stored);
             if ($removed !== null) {
                 $this->json(['error' => $removed], 500);
                 return;
             }
-        }
-        $result = $this->ollamaRequest('DELETE', '/api/delete', ['model' => $name], 60);
-        if ($result['error'] !== null) {
-            $this->json(['error' => $result['error']], 502);
-            return;
         }
         $this->json(['ok' => true]);
     }
@@ -3409,6 +3427,304 @@ class Api
         return $removed['code'] === 0 && !is_file($real);
     }
 
+    private function ollamaPermissionDenied(string $error): bool
+    {
+        return (bool)preg_match('/(?:open|remove) \\S+: permission denied/', $error);
+    }
+
+    private function ollamaSystemAccount(): ?array
+    {
+        if (PHP_OS_FAMILY !== 'Linux' || !function_exists('posix_getpwnam')) {
+            return null;
+        }
+        $info = posix_getpwnam('ollama');
+        if (!is_array($info) || !isset($info['uid'], $info['dir']) || !is_string($info['dir'])) {
+            return null;
+        }
+        $home = rtrim($info['dir'], '/');
+        if ($home === '' || $home === '/' || str_contains($home, '..') || !preg_match('#^/[A-Za-z0-9_./-]+$#', $home)) {
+            return null;
+        }
+        return [
+            'uid' => (int)$info['uid'],
+            'models' => $home . '/.ollama/models',
+        ];
+    }
+
+    private function ollamaSudoBin(): ?string
+    {
+        if (PHP_OS_FAMILY !== 'Linux') {
+            return null;
+        }
+        $sudo = is_file('/usr/bin/sudo') ? '/usr/bin/sudo' : 'sudo';
+        $probe = Process::run([$sudo, '-n', 'true'], null, null, 8);
+        if ($probe['code'] !== 0) {
+            return null;
+        }
+        return $sudo;
+    }
+
+    private function systemctlBin(): string
+    {
+        return is_file('/usr/bin/systemctl') ? '/usr/bin/systemctl' : 'systemctl';
+    }
+
+    private function ollamaUnitPresent(): bool
+    {
+        if (PHP_OS_FAMILY !== 'Linux') {
+            return false;
+        }
+        $cat = Process::run([$this->systemctlBin(), 'cat', 'ollama.service'], null, null, 8);
+        return $cat['code'] === 0;
+    }
+
+    private function visibleModelsRoot(string $dir): ?string
+    {
+        $dir = rtrim($dir, '/');
+        if ($dir === '' || !is_dir($dir . '/manifests') || !is_dir($dir . '/blobs')) {
+            return null;
+        }
+        $real = realpath($dir);
+        if ($real === false) {
+            return null;
+        }
+        $real = str_replace('\\', '/', $real);
+        if (!str_ends_with($real, '/models')) {
+            return null;
+        }
+        return $real;
+    }
+
+    private function confirmedModelsRoot(string $sudo, string $dir): ?string
+    {
+        $dir = rtrim($dir, '/');
+        if ($dir === '' || str_contains($dir, '..') || !preg_match('#^/[A-Za-z0-9_./-]+$#', $dir) || !str_ends_with($dir, '/models')) {
+            return null;
+        }
+        $visible = $this->visibleModelsRoot($dir);
+        if ($visible !== null) {
+            return $visible;
+        }
+        $blobs = Process::run([$sudo, '-n', 'test', '-d', $dir . '/blobs'], null, null, 15);
+        $manifests = Process::run([$sudo, '-n', 'test', '-d', $dir . '/manifests'], null, null, 15);
+        if ($blobs['code'] !== 0 || $manifests['code'] !== 0) {
+            return null;
+        }
+        return $dir;
+    }
+
+    private function sameModelsPath(string $left, string $right): bool
+    {
+        if ($left === $right) {
+            return true;
+        }
+        $leftReal = realpath($left);
+        $rightReal = realpath($right);
+        return $leftReal !== false && $leftReal === $rightReal;
+    }
+
+    private function knownOllamaStores(string $sudo): array
+    {
+        $dirs = $this->ollamaModelsDirs();
+        foreach ($this->ollamaProcessModelDirs() as $dir) {
+            $dirs[] = $dir;
+        }
+        $roots = [];
+        foreach ($dirs as $dir) {
+            if (!is_string($dir)) {
+                continue;
+            }
+            $root = $this->confirmedModelsRoot($sudo, $dir);
+            if ($root !== null) {
+                $roots[$root] = $root;
+            }
+        }
+        return array_values($roots);
+    }
+
+    private function ollamaStoreNeedsRepair(): bool
+    {
+        $account = $this->ollamaSystemAccount();
+        $sudo = $this->ollamaSudoBin();
+        if ($account === null || $sudo === null || !$this->ollamaUnitPresent()) {
+            return false;
+        }
+        $system = $account['models'];
+        foreach ($this->knownOllamaStores($sudo) as $store) {
+            if (!$this->sameModelsPath($store, $system)) {
+                return true;
+            }
+            $owner = @fileowner($store);
+            if ($owner === false || (int)$owner !== $account['uid']) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private function repairOllamaModels(bool $force, string $error = ''): bool
+    {
+        $account = $this->ollamaSystemAccount();
+        $sudo = $this->ollamaSudoBin();
+        if ($account === null || $sudo === null || !$this->ollamaUnitPresent()) {
+            return false;
+        }
+        $system = $account['models'];
+        if (str_contains($system, '..') || !preg_match('#^/[A-Za-z0-9_./-]+$#', $system)) {
+            return false;
+        }
+        $foreign = [];
+        foreach ($this->knownOllamaStores($sudo) as $store) {
+            if (!$this->sameModelsPath($store, $system)) {
+                $foreign[$store] = $store;
+            }
+        }
+        $denied = $this->confirmedModelsRoot($sudo, $this->modelsRootFromDenied($error) ?? '');
+        if ($denied !== null && !$this->sameModelsPath($denied, $system)) {
+            $foreign[$denied] = $denied;
+        }
+        $systemRoot = $this->confirmedModelsRoot($sudo, $system);
+        $owned = false;
+        if ($systemRoot !== null) {
+            $owner = @fileowner($systemRoot);
+            $owned = $owner !== false && (int)$owner === $account['uid'];
+        }
+        if (!$force && $foreign === [] && $owned) {
+            return false;
+        }
+        @set_time_limit(0);
+        $systemctl = $this->systemctlBin();
+        Process::run([$sudo, '-n', $systemctl, 'stop', 'ollama'], null, null, 30);
+        $pkill = is_file('/usr/bin/pkill') ? '/usr/bin/pkill' : 'pkill';
+        Process::run([$sudo, '-n', $pkill, '-x', 'ollama'], null, null, 15);
+        $ready = Process::run([$sudo, '-n', 'mkdir', '-p', '--', $system . '/blobs', $system . '/manifests'], null, null, 20);
+        if ($ready['code'] !== 0) {
+            $this->restartOllamaService($sudo, $systemctl);
+            return false;
+        }
+        foreach ($foreign as $root) {
+            if (str_starts_with($system . '/', $root . '/') || str_starts_with($root . '/', $system . '/')) {
+                continue;
+            }
+            if (!$this->moveOllamaStore($sudo, $root, $system)) {
+                $this->restartOllamaService($sudo, $systemctl);
+                return false;
+            }
+        }
+        $tree = dirname($system);
+        if (basename($tree) !== '.ollama') {
+            $this->restartOllamaService($sudo, $systemctl);
+            return false;
+        }
+        $chown = Process::run([$sudo, '-n', 'chown', '-R', 'ollama:ollama', '--', $tree], null, null, 600);
+        if ($chown['code'] !== 0 || !$this->writeOllamaModelsDropin($sudo, $systemctl, $system)) {
+            $this->restartOllamaService($sudo, $systemctl);
+            return false;
+        }
+        return $this->restartOllamaService($sudo, $systemctl);
+    }
+
+    private function modelsRootFromDenied(string $error): ?string
+    {
+        if (!preg_match('/(?:open|remove) (\\S+): permission denied/', $error, $match)) {
+            return null;
+        }
+        if (!preg_match('#^(.*?/models)/(?:blobs|manifests)(?:/|$)#', $match[1], $root)) {
+            return null;
+        }
+        return $root[1];
+    }
+
+    private function moveOllamaStore(string $sudo, string $source, string $dest): bool
+    {
+        $result = Process::run([$sudo, '-n', 'find', $source, '-type', 'f', '-print0'], null, null, 120);
+        if ($result['code'] !== 0) {
+            return false;
+        }
+        foreach (explode("\0", $result['stdout']) as $file) {
+            if ($file === '' || !str_starts_with($file, $source . '/')) {
+                continue;
+            }
+            $relative = substr($file, strlen($source) + 1);
+            if ($relative === '' || str_contains($relative, '..') || (!str_starts_with($relative, 'blobs/') && !str_starts_with($relative, 'manifests/'))) {
+                continue;
+            }
+            $target = $dest . '/' . $relative;
+            $parent = dirname($target);
+            if (Process::run([$sudo, '-n', 'mkdir', '-p', '--', $parent], null, null, 20)['code'] !== 0) {
+                return false;
+            }
+            $exists = Process::run([$sudo, '-n', 'test', '-e', $target], null, null, 15);
+            if ($exists['code'] === 0) {
+                if (Process::run([$sudo, '-n', 'rm', '-f', '--', $file], null, null, 20)['code'] !== 0) {
+                    return false;
+                }
+                continue;
+            }
+            if (Process::run([$sudo, '-n', 'mv', '-n', '--', $file, $target], null, null, 3600)['code'] !== 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private function writeOllamaModelsDropin(string $sudo, string $systemctl, string $models): bool
+    {
+        $body = "[Service]\nUser=ollama\nGroup=ollama\nEnvironment=\"OLLAMA_MODELS=" . $models . "\"\n";
+        $tmp = tempnam(sys_get_temp_dir(), 'danaco-ollama-');
+        if ($tmp === false) {
+            return false;
+        }
+        file_put_contents($tmp, $body);
+        chmod($tmp, 0644);
+        $dir = '/etc/systemd/system/ollama.service.d';
+        $dest = $dir . '/models.conf';
+        $made = Process::run([$sudo, '-n', 'mkdir', '-p', '--', $dir], null, null, 15);
+        $copied = Process::run([$sudo, '-n', 'cp', '--', $tmp, $dest], null, null, 15);
+        $mode = Process::run([$sudo, '-n', 'chmod', '644', $dest], null, null, 10);
+        @unlink($tmp);
+        if ($made['code'] !== 0 || $copied['code'] !== 0 || $mode['code'] !== 0) {
+            return false;
+        }
+        $reload = Process::run([$sudo, '-n', $systemctl, 'daemon-reload'], null, null, 20);
+        return $reload['code'] === 0;
+    }
+
+    private function restartOllamaService(string $sudo, string $systemctl): bool
+    {
+        $restart = Process::run([$sudo, '-n', $systemctl, 'restart', 'ollama'], null, null, 40);
+        if ($restart['code'] !== 0) {
+            return false;
+        }
+        for ($i = 0; $i < 30; $i++) {
+            $result = $this->ollamaRequest('GET', '/api/tags', null, 3);
+            if ($result['error'] === null) {
+                return true;
+            }
+            usleep(500000);
+        }
+        return false;
+    }
+
+    private function ollamaModelListed(string $name): ?bool
+    {
+        $result = $this->ollamaRequest('GET', '/api/tags', null, 8);
+        if ($result['error'] !== null) {
+            return null;
+        }
+        $want = strtolower($name);
+        foreach (($result['json']['models'] ?? []) as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+            $live = strtolower(trim((string)($row['name'] ?? '')));
+            if ($live === $want || $live === $want . ':latest' || $want === $live . ':latest') {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private function pullModel(): void
     {
         $target = self::pullTarget((string)($this->input()['name'] ?? ''));
@@ -3424,6 +3740,10 @@ class Api
         @set_time_limit(0);
         session_write_close();
         $this->beginSse();
+        if ($this->ollamaStoreNeedsRepair()) {
+            $this->sse('progress', ['status' => 'Preparing Ollama']);
+            $this->repairOllamaModels(false);
+        }
         if (isset($target['name']) && self::hfModelName($target['name'])) {
             $final = $this->hfFinalUrlForModel($target['name']);
             if ($final === null) {
@@ -3443,63 +3763,71 @@ class Api
     private function pullNamedModel(string $base, string $name, string $directUrl = ''): void
     {
         $failed = null;
-        $buffer = '';
-        $take = function (string $line) use (&$failed): bool {
-            $row = json_decode($line, true);
-            if (!is_array($row)) {
-                return true;
-            }
-            if (!empty($row['error'])) {
-                $failed = (string)$row['error'];
-                return false;
-            }
-            $this->sse('progress', [
-                'status' => (string)($row['status'] ?? 'Working'),
-                'completed' => isset($row['completed']) ? (int)$row['completed'] : null,
-                'total' => isset($row['total']) ? (int)$row['total'] : null,
-            ]);
-            return true;
-        };
-        $ch = curl_init($base . '/api/pull');
-        if ($ch === false) {
-            $this->sse('error', ['error' => 'Could not reach Ollama.']);
-            return;
-        }
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => json_encode(self::pullBody($name, $directUrl)),
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-            CURLOPT_CONNECTTIMEOUT => 5,
-            CURLOPT_TIMEOUT => 0,
-            CURLOPT_FOLLOWLOCATION => false,
-            CURLOPT_WRITEFUNCTION => function ($ch, string $chunk) use (&$buffer, $take): int {
-                $buffer .= $chunk;
-                while (($pos = strpos($buffer, "\n")) !== false) {
-                    $line = trim(substr($buffer, 0, $pos));
-                    $buffer = substr($buffer, $pos + 1);
-                    if ($line !== '' && !$take($line)) {
-                        return 0;
-                    }
+        for ($attempt = 1; $attempt <= 2; $attempt++) {
+            $failed = null;
+            $buffer = '';
+            $take = function (string $line) use (&$failed): bool {
+                $row = json_decode($line, true);
+                if (!is_array($row)) {
+                    return true;
                 }
-                return strlen($chunk);
-            },
-        ]);
-        $ok = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        unset($ch);
-        if ($buffer !== '' && $failed === null) {
-            $take(trim($buffer));
-        }
-        if ($failed !== null) {
-            $this->sse('error', ['error' => $failed]);
+                if (!empty($row['error'])) {
+                    $failed = (string)$row['error'];
+                    return false;
+                }
+                $this->sse('progress', [
+                    'status' => (string)($row['status'] ?? 'Working'),
+                    'completed' => isset($row['completed']) ? (int)$row['completed'] : null,
+                    'total' => isset($row['total']) ? (int)$row['total'] : null,
+                ]);
+                return true;
+            };
+            $ch = curl_init($base . '/api/pull');
+            if ($ch === false) {
+                $this->sse('error', ['error' => 'Could not reach Ollama.']);
+                return;
+            }
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode(self::pullBody($name, $directUrl)),
+                CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT => 0,
+                CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_WRITEFUNCTION => function ($ch, string $chunk) use (&$buffer, $take): int {
+                    $buffer .= $chunk;
+                    while (($pos = strpos($buffer, "\n")) !== false) {
+                        $line = trim(substr($buffer, 0, $pos));
+                        $buffer = substr($buffer, $pos + 1);
+                        if ($line !== '' && !$take($line)) {
+                            return 0;
+                        }
+                    }
+                    return strlen($chunk);
+                },
+            ]);
+            $ok = curl_exec($ch);
+            $errno = curl_errno($ch);
+            $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            unset($ch);
+            if ($buffer !== '' && $failed === null) {
+                $take(trim($buffer));
+            }
+            if ($failed !== null && $attempt === 1 && $this->ollamaPermissionDenied($failed) && $this->repairOllamaModels(true, $failed)) {
+                continue;
+            }
+            if ($failed !== null) {
+                $this->sse('error', ['error' => $failed]);
+                return;
+            }
+            if ($ok === false || $errno !== 0 || $code >= 400) {
+                $this->sse('error', ['error' => 'Could not download the model.']);
+                return;
+            }
+            $this->sse('done', ['name' => $name]);
             return;
         }
-        if ($ok === false || $errno !== 0 || $code >= 400) {
-            $this->sse('error', ['error' => 'Could not download the model.']);
-            return;
-        }
-        $this->sse('done', ['name' => $name]);
+        $this->sse('error', ['error' => $failed ?? 'Could not download the model.']);
     }
 
     private static function pullBody(string $name, string $directUrl): array
@@ -4047,6 +4375,22 @@ class Api
         if (!preg_match('/^sha256:[a-f0-9]{64}$/', $digest)) {
             return 'Could not store the model.';
         }
+        $error = 'Could not store the model in Ollama.';
+        for ($attempt = 1; $attempt <= 2; $attempt++) {
+            $error = $this->uploadOllamaBlob($base, $digest, $path);
+            if ($error === null) {
+                return null;
+            }
+            if ($attempt === 1 && $this->ollamaPermissionDenied($error) && $this->repairOllamaModels(true, $error)) {
+                continue;
+            }
+            break;
+        }
+        return $error;
+    }
+
+    private function uploadOllamaBlob(string $base, string $digest, string $path): ?string
+    {
         $head = curl_init($base . '/api/blobs/' . $digest);
         if ($head !== false) {
             curl_setopt_array($head, [
@@ -4077,19 +4421,29 @@ class Api
             CURLOPT_INFILE => $in,
             CURLOPT_INFILESIZE => $size === false ? 0 : $size,
             CURLOPT_CUSTOMREQUEST => 'POST',
+            CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_TIMEOUT => 0,
             CURLOPT_FOLLOWLOCATION => false,
         ]);
-        $ok = curl_exec($ch);
+        $raw = curl_exec($ch);
         $errno = curl_errno($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         unset($ch);
         fclose($in);
-        if ($ok === false || $errno !== 0 || $code >= 400) {
-            return 'Could not store the model in Ollama.';
+        if ($raw !== false && $errno === 0 && $code < 400) {
+            return null;
         }
-        return null;
+        if (is_string($raw) && $raw !== '') {
+            $json = json_decode($raw, true);
+            if (is_array($json) && isset($json['error']) && is_string($json['error']) && $this->ollamaPermissionDenied($json['error'])) {
+                return $json['error'];
+            }
+            if ($this->ollamaPermissionDenied($raw)) {
+                return trim($raw);
+            }
+        }
+        return 'Could not store the model in Ollama.';
     }
 
     private function ollamaCreate(string $base, string $model, array $files, string $template, ?array $parameters): void
