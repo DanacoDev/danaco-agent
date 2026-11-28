@@ -896,7 +896,7 @@
             let question = String(this.researchForm.question || '').trim();
             const limits = String(this.researchForm.limits || '').trim();
             if (limits !== '') {
-              question += '\n\nRequirements and limitations:\n' + limits;
+              question += '\n\nRequirements:\n' + limits;
             }
             const data = await this.api('/api/research/mission', {
               method: 'POST',
@@ -1150,6 +1150,19 @@
           if (this.researchDash === 'conclusions') return 'No conclusion yet. Findings that hold up show up here.';
           if (this.researchDash === 'results') return 'Nothing has been ruled out or parked yet.';
           return 'Nothing is waiting on you.';
+        },
+        async createResearchReport() {
+          const board = this.researchBoard;
+          const conclusions = this.researchGroups().conclusions;
+          if (!board || !conclusions.length || !this.researchSlug) return;
+          const title = String(board.title || board.name || this.researchSlug);
+          const slug = String(this.researchSlug);
+          const message = 'Write a report that summarizes all the findings in this project, from the research mission "' + title + '".\n\nThe mission slug is ' + slug + '. Read it with research_loop before you write. Cover the goal, the requirements, and every conclusion that held up.\n\nSave the report as a PDF in this project.';
+          if (this.tab !== 'chat') this.setTab('chat');
+          this.draft = message;
+          this.fitComposer();
+          if (this.chatLocked) return;
+          await this.send();
         },
         researchProgress() {
           const board = this.researchBoard;

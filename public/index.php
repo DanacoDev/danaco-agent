@@ -567,6 +567,7 @@ header('X-Danaco: 1');
                   <button v-for="item in researchDashTabs()" :key="item.id" type="button" :class="{ active: researchDash === item.id }" @click="researchDash = item.id">
                     {{ item.label }}<span class="count">{{ item.count }}</span>
                   </button>
+                  <button v-if="researchDash === 'conclusions' && researchGroups().conclusions.length" class="btn btn-gold research-report" type="button" @click="createResearchReport">Create report</button>
                 </div>
                 <div class="research-cards">
                   <p v-if="!researchDashItems().length" class="muted">{{ researchDashEmpty() }}</p>
@@ -694,9 +695,9 @@ header('X-Danaco: 1');
             <div v-if="researchFormOpen" class="modal-back" @click.self="researchFormOpen = false">
               <form class="modal project-modal" @submit.prevent="createResearch">
                 <h2>New mission</h2>
-                <label class="field">Short name<input v-model="researchForm.title" required></label>
+                <label class="field">Short name<input v-model="researchForm.title" maxlength="30" required></label>
                 <label class="field">Goal<textarea v-model="researchForm.question" rows="4" required placeholder="What this mission should find out"></textarea></label>
-                <label class="field">Requirements and limitations<textarea v-model="researchForm.limits" rows="3" placeholder="Cost, size, materials, or other limits the answer has to respect"></textarea></label>
+                <label class="field">Requirements<textarea v-model="researchForm.limits" rows="3" placeholder="Budget, scale, materials or other boundaries to respect"></textarea></label>
                 <p class="form-error">{{ researchError }}</p>
                 <div class="view-actions">
                   <button class="btn btn-gold" type="submit" :disabled="researchBusy">Create mission</button>

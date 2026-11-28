@@ -215,7 +215,7 @@ class Projects
             $to = self::root($newFolder);
             if (!is_dir($from)) {
                 $newFolder = $oldFolder;
-            } elseif (file_exists($to)) {
+            } elseif (file_exists($to) && !self::reclaimStaleFolder($to, $from)) {
                 throw new InvalidArgumentException('A project with that folder already exists.');
             } elseif (!rename($from, $to)) {
                 throw new RuntimeException('Could not rename the project folder.');
@@ -252,6 +252,52 @@ class Projects
         } catch (Throwable $e) {
         }
         return $updated;
+    }
+
+    private static function reclaimStaleFolder(string $path, string $source): bool
+    {
+        if (!is_dir($path) || is_link($path) || !self::coveredBy($path, $source)) {
+            return false;
+        }
+        $real = realpath($path);
+        $data = realpath(rtrim(app_config()['data_dir'], '/'));
+        if ($real === false || $data === false || $real === $data || !str_starts_with($real, $data . DIRECTORY_SEPARATOR)) {
+            return false;
+        }
+        self::removeTree($real);
+        return !file_exists($path);
+    }
+
+    private static function coveredBy(string $dest, string $source): bool
+    {
+        if (!is_dir($dest) || is_link($dest) || !is_dir($source) || is_link($source)) {
+            return false;
+        }
+        foreach (scandir($dest) ?: [] as $name) {
+            if ($name === '.' || $name === '..') {
+                continue;
+            }
+            $full = $dest . '/' . $name;
+            $other = $source . '/' . $name;
+            if (is_link($full)) {
+                return false;
+            }
+            if (is_dir($full)) {
+                if (!self::coveredBy($full, $other)) {
+                    return false;
+                }
+                continue;
+            }
+            if (!is_file($full) || !is_file($other) || is_link($other)) {
+                return false;
+            }
+            $destSize = filesize($full);
+            $sourceSize = filesize($other);
+            if ($destSize === false || $sourceSize === false || $sourceSize < $destSize) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static function rollbackMove(string $oldFolder, string $newFolder): void
