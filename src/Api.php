@@ -1556,6 +1556,9 @@ class Api
                 $this->db->finishJob($id);
             }
         }
+        if ($ids && $projectId > 0) {
+            $this->db->pauseHeartbeat($projectId);
+        }
         $this->db->addMessage($projectId, 'notice', 'All processes stopped by user. Waiting for further instructions.', 'orchestrator');
         $this->db->loopWrite(null, $projectId > 0 ? $projectId : null, 'heartbeat', 'process', 'Stopped by user');
         $this->json(['ok' => true, 'held' => array_values($held)]);

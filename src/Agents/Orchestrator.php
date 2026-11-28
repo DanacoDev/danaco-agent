@@ -1643,7 +1643,7 @@ TXT;
             return '';
         }
         $board = new Kanban($this->db);
-        $id = (int)($args['task_id'] ?? $args['task'] ?? 0);
+        $id = $this->kanbanDigits($args['task_id'] ?? $args['task'] ?? 0);
         if ($id <= 0 && preg_match_all('/#(\d+)/', $instruction, $found)) {
             $unique = array_values(array_unique(array_map('intval', $found[1])));
             if (count($unique) === 1) {

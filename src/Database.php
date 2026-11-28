@@ -2072,6 +2072,9 @@ SQL);
             $this->idleWorker($agent);
             $lines[] = 'Stopped the ' . strtolower($this->workerLabel($agent)) . '. Job ' . $id . '.';
         }
+        if ($projectId > 0) {
+            $this->pauseHeartbeat($projectId);
+        }
         return implode("\n", $lines);
     }
 
