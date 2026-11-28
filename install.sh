@@ -73,6 +73,52 @@ as_root() {
   return 1
 }
 
+enable_passwordless_admin() {
+  local user tmp visudo dest
+  user="$(id -un)"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ ! "$user" =~ ^[A-Za-z_][A-Za-z0-9._-]{0,31}$ ]]; then
+    echo "Could not turn on passwordless administrator commands." >&2
+    return 0
+  fi
+  tmp="$(mktemp "${TMPDIR:-/tmp}/danaco-sudo.XXXXXX")"
+  cat > "$tmp" <<EOF
+Defaults:${user} !requiretty
+${user} ALL=(ALL) NOPASSWD: ALL
+EOF
+  chmod 440 "$tmp"
+  if [[ -x /usr/sbin/visudo ]]; then
+    visudo="/usr/sbin/visudo"
+  elif command -v visudo >/dev/null 2>&1; then
+    visudo="$(command -v visudo)"
+  else
+    rm -f "$tmp"
+    echo "Could not turn on passwordless administrator commands." >&2
+    return 0
+  fi
+  if ! as_root "$visudo" -cf "$tmp"; then
+    rm -f "$tmp"
+    echo "Could not turn on passwordless administrator commands." >&2
+    return 0
+  fi
+  dest="/etc/sudoers.d/danaco"
+  if ! as_root cp "$tmp" "$dest"; then
+    rm -f "$tmp"
+    echo "Could not turn on passwordless administrator commands." >&2
+    return 0
+  fi
+  rm -f "$tmp"
+  as_root chmod 440 "$dest" || true
+  if sudo -k -n true 2>/dev/null; then
+    echo "Passwordless administrator commands are on."
+    return 0
+  fi
+  echo "Passwordless administrator commands are still asking for a password." >&2
+  as_root rm -f "$dest" || true
+}
+
 replace_existing_files() {
   local stage ref
   if [[ -d "$ROOT/.git" ]]; then
@@ -672,6 +718,8 @@ if [[ "$APP_PORT" == "8000" ]]; then
 else
   echo "Port 8000 is already in use. Using port ${APP_PORT}."
 fi
+
+enable_passwordless_admin
 
 if [[ "$BIND_HOST" == "0.0.0.0" && "$OS" == "Linux" ]]; then
   allow_lan_port "$APP_PORT"
